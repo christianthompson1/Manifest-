@@ -1,0 +1,9 @@
+APP "CapabilityDemo"
+
+USE WEB
+USE DATABASE
+USE SOLANA
+
+WHEN app.starts
+    SHOW "All requested modules registered safely in core registry."
+END

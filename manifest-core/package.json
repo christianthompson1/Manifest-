@@ -1,0 +1,14 @@
+{
+  "name": "manifest-core",
+  "version": "0.1.0",
+  "description": "Manifest Core v0.1 — A human-readable general-purpose programming language",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "tsx tests/run_tests.ts",
+    "run": "tsx src/cli.ts"
+  },
+  "keywords": ["manifest", "language", "interpreter", "runtime", "parser", "ast"],
+  "author": "Manifest Core Team",
+  "license": "Apache-2.0"
+}

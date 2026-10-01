@@ -1,0 +1,5 @@
+APP "Hello"
+
+WHEN app.starts
+SHOW "Hello World"
+END

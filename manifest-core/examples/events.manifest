@@ -1,0 +1,8 @@
+APP "Events"
+
+SET systemStatus TO "All systems operational"
+
+WHEN app.starts
+    SHOW "Manifest program initialized!"
+    SHOW systemStatus
+END

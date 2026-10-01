@@ -1,0 +1,8 @@
+APP "Counter"
+
+SET counter TO 0
+
+WHEN app.starts
+SET counter TO counter + 1
+SHOW counter
+END

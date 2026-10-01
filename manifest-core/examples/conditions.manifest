@@ -1,0 +1,13 @@
+APP "Condition"
+
+SET balance TO 100
+
+WHEN app.starts
+
+IF balance >= 10
+    SHOW "You can pay"
+ELSE
+    SHOW "Insufficient balance"
+END
+
+END

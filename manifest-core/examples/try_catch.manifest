@@ -1,0 +1,11 @@
+APP "ErrorHandling"
+
+WHEN app.starts
+    TRY
+        SHOW "Attempting risky calculation..."
+        SET val TO 10 / 0
+        SHOW val
+    IF FAILED
+        SHOW "Something went wrong — error handled cleanly!"
+    END
+END

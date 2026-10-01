@@ -1,0 +1,12 @@
+APP "Variables"
+
+SET name TO "Christian"
+SET age TO 18
+SET balance TO 100
+SET balance TO balance - 10
+
+WHEN app.starts
+    SHOW name
+    SHOW age
+    SHOW balance
+END

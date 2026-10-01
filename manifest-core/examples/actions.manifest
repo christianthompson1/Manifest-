@@ -1,0 +1,9 @@
+APP "Actions"
+
+ACTION greet user
+    SHOW "Hello " + user
+END
+
+WHEN app.starts
+    CALL greet "Manifest"
+END

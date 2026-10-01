@@ -1,0 +1,15 @@
+APP "Loops"
+
+SET names TO ["Alice", "Bob", "Charlie"]
+
+WHEN app.starts
+    SHOW "Counting:"
+    REPEAT 3 TIMES
+        SHOW "Hello"
+    END
+
+    SHOW "Names in list:"
+    FOR EACH name IN names
+        SHOW name
+    END
+END
