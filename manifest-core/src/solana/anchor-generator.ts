@@ -1,10 +1,23 @@
 /**
  * Manifest Solana Target Compiler - Anchor Rust Generator
  * Transforms Solana IR into production-ready Anchor 0.30+ compatible Rust code
- * and corresponding Anchor IDL JSON definition.
+ * and corresponding Anchor IDL JSON definition with:
+ * - Safe checked arithmetic (checked_add, checked_sub, checked_mul)
+ * - Exact dynamic account space calculation (LEN constant)
+ * - PDA seeds & bump constraints
+ * - Anchor #[event] generation
+ * - Manifest program error enums (#[error_code])
+ * - Source map line tracking
  */
 
-import { SolanaProgramIR, SolanaAccountIR, SolanaInstructionIR } from './solana-ir.ts';
+import {
+  SolanaProgramIR,
+  SolanaAccountIR,
+  SolanaInstructionIR,
+  calculateAccountSpace,
+  normalizeSolanaType,
+  SolanaFieldIR,
+} from './solana-ir.ts';
 import { SourceMapGenerator } from '../sourcemap/sourcemap.ts';
 
 export interface AnchorCompilationResult {
@@ -40,7 +53,17 @@ export class AnchorGenerator {
     for (const inst of program.instructions) {
       const instSnake = this.toSnakeCase(inst.name);
       const ctxStructName = `${this.toPascalCase(inst.name)}Context`;
-      lines.push(`    pub fn ${instSnake}(ctx: Context<${ctxStructName}>) -> Result<()> {`);
+
+      // Instruction signature with args if present
+      const argDefs: string[] = [];
+      if (inst.args && inst.args.length > 0) {
+        for (const arg of inst.args) {
+          argDefs.push(`${this.toSnakeCase(arg.name)}: ${this.toRustType(arg.argType)}`);
+        }
+      }
+      const argsSig = argDefs.length > 0 ? `, ${argDefs.join(', ')}` : '';
+
+      lines.push(`    pub fn ${instSnake}(ctx: Context<${ctxStructName}>${argsSig}) -> Result<()> {`);
 
       // Account references
       for (const acc of inst.accounts) {
@@ -55,9 +78,10 @@ export class AnchorGenerator {
         lines.push(`        require!(${rustCondition}, ErrorCode::ConstraintFailed);`);
       }
 
-      // State mutations
+      // Safe state mutations with checked arithmetic
       for (const mutItem of inst.mutations) {
-        lines.push(`        ${mutItem.target} = ${mutItem.expression};`);
+        const safeAssignment = this.translateMutationToSafeRust(mutItem.target, mutItem.expression);
+        lines.push(`        ${safeAssignment}`);
       }
 
       // CPI calls
@@ -74,6 +98,17 @@ export class AnchorGenerator {
           lines.push(`        token::transfer(cpi_ctx, ${cpi.params.amount || '0'})?;`);
         } else {
           lines.push(`        // Custom CPI to ${cpi.targetProgram}::${cpi.instructionName}`);
+        }
+      }
+
+      // Events emission
+      if (inst.events && inst.events.length > 0) {
+        for (const ev of inst.events) {
+          lines.push(`        emit!(${this.toPascalCase(ev.name)} {`);
+          for (const ef of ev.fields) {
+            lines.push(`            ${this.toSnakeCase(ef.name)}: ctx.accounts.authority.key(),`);
+          }
+          lines.push('        });');
         }
       }
 
@@ -100,19 +135,42 @@ export class AnchorGenerator {
 
       for (const acc of inst.accounts) {
         const accSnake = this.toSnakeCase(acc.name);
-        const mutAttr = acc.isMut ? '#[account(mut)]\n    ' : '';
-        const signerAttr = acc.isSigner ? '#[account(signer)]\n    ' : '';
+        const typePascal = acc.accountType ? this.toPascalCase(acc.accountType) : '';
+
+        // Determine attributes
+        const attrs: string[] = [];
+
+        if (acc.pda) {
+          const seedsStr = acc.pda.seeds
+            .map((s) => (s.kind === 'literal' ? `b"${s.value}"` : `${s.value}.as_ref()`))
+            .join(', ');
+          attrs.push(`seeds = [${seedsStr}], bump`);
+        }
+
+        if (acc.constraints?.init) {
+          const payer = acc.constraints.payer || 'authority';
+          attrs.push(`init, payer = ${payer}, space = ${typePascal}::LEN`);
+        } else if (acc.isMut) {
+          attrs.push('mut');
+        }
+
+        if (acc.isSigner && !acc.constraints?.init) {
+          attrs.push('signer');
+        }
+
+        const attrLine = attrs.length > 0 ? `    #[account(${attrs.join(', ')})]\n` : '';
+
         const typeStr = acc.accountType
-          ? `Account<'info, ${this.toPascalCase(acc.accountType)}>`
+          ? `Account<'info, ${typePascal}>`
           : acc.isSigner
           ? "Signer<'info>"
           : "AccountInfo<'info>";
 
-        lines.push(`    ${mutAttr}${signerAttr}pub ${accSnake}: ${typeStr},`);
+        lines.push(`${attrLine}    pub ${accSnake}: ${typeStr},`);
       }
 
       // If instruction uses CPI token, ensure token_program is added
-      if (inst.cpis.some(c => c.targetProgram.toLowerCase() === 'token')) {
+      if (inst.cpis.some((c) => c.targetProgram.toLowerCase() === 'token')) {
         lines.push("    pub token_program: Program<'info, Token>,");
       }
 
@@ -121,9 +179,11 @@ export class AnchorGenerator {
       lines.push('');
     }
 
-    // Account Data Schemas (#[account])
+    // Account Data Schemas (#[account]) with dynamic space calculation
     for (const acc of program.accounts) {
       const typeName = this.toPascalCase(acc.name);
+      const space = calculateAccountSpace(acc.fields);
+
       lines.push('#[account]');
       lines.push('#[derive(Default)]');
       lines.push(`pub struct ${typeName} {`);
@@ -133,15 +193,45 @@ export class AnchorGenerator {
       }
       lines.push('}');
       lines.push('');
+
+      // Emitted Account Space constant
+      lines.push(`impl ${typeName} {`);
+      lines.push(`    pub const LEN: usize = ${space}; // 8 byte discriminator + fields`);
+      lines.push('}');
+      lines.push('');
     }
 
-    // Error Codes
+    // Events (#[event])
+    if (program.events && program.events.length > 0) {
+      for (const ev of program.events) {
+        lines.push('#[event]');
+        lines.push(`pub struct ${this.toPascalCase(ev.name)} {`);
+        for (const ef of ev.fields) {
+          lines.push(`    pub ${this.toSnakeCase(ef.name)}: ${this.toRustType(ef.fieldType)},`);
+        }
+        lines.push('}');
+        lines.push('');
+      }
+    }
+
+    // Error Codes (#[error_code])
     lines.push('#[error_code]');
     lines.push('pub enum ErrorCode {');
     lines.push('    #[msg("Constraint validation failed in Manifest instruction")]');
     lines.push('    ConstraintFailed,');
     lines.push('    #[msg("Unauthorized signer for this instruction")]');
     lines.push('    Unauthorized,');
+    lines.push('    #[msg("Numerical overflow during checked arithmetic")]');
+    lines.push('    NumericalOverflow,');
+    lines.push('    #[msg("Numerical underflow during checked arithmetic")]');
+    lines.push('    NumericalUnderflow,');
+
+    if (program.errors && program.errors.length > 0) {
+      for (const err of program.errors) {
+        lines.push(`    #[msg("${err.msg}")]`);
+        lines.push(`    ${this.toPascalCase(err.name)},`);
+      }
+    }
     lines.push('}');
     lines.push('');
 
@@ -168,6 +258,39 @@ export class AnchorGenerator {
     };
   }
 
+  /**
+   * Translates mutation to safe checked Rust arithmetic:
+   * e.g. state.count + 1 -> state.count = state.count.checked_add(1).ok_or(ErrorCode::NumericalOverflow)?;
+   * e.g. state.count - 1 -> state.count = state.count.checked_sub(1).ok_or(ErrorCode::NumericalUnderflow)?;
+   */
+  public static translateMutationToSafeRust(target: string, expression: string): string {
+    const expr = expression.trim();
+
+    // Check for addition: target + N
+    const addMatch = expr.match(/^(.+?)\s*\+\s*(.+)$/);
+    if (addMatch && addMatch[1].trim() === target.trim()) {
+      const operand = addMatch[2].trim();
+      return `${target} = ${target}.checked_add(${operand}).ok_or(ErrorCode::NumericalOverflow)?;`;
+    }
+
+    // Check for subtraction: target - N
+    const subMatch = expr.match(/^(.+?)\s*-\s*(.+)$/);
+    if (subMatch && subMatch[1].trim() === target.trim()) {
+      const operand = subMatch[2].trim();
+      return `${target} = ${target}.checked_sub(${operand}).ok_or(ErrorCode::NumericalUnderflow)?;`;
+    }
+
+    // Check for multiplication: target * N
+    const mulMatch = expr.match(/^(.+?)\s*\*\s*(.+)$/);
+    if (mulMatch && mulMatch[1].trim() === target.trim()) {
+      const operand = mulMatch[2].trim();
+      return `${target} = ${target}.checked_mul(${operand}).ok_or(ErrorCode::NumericalOverflow)?;`;
+    }
+
+    // Direct assignment
+    return `${target} = ${expr};`;
+  }
+
   private static generateIdl(program: SolanaProgramIR): any {
     return {
       version: '0.1.0',
@@ -186,7 +309,10 @@ export class AnchorGenerator {
           isMut: a.isMut,
           isSigner: a.isSigner,
         })),
-        args: [],
+        args: (inst.args || []).map((arg) => ({
+          name: this.toSnakeCase(arg.name),
+          type: this.toIdlType(arg.argType),
+        })),
       })),
       accounts: program.accounts.map((acc) => ({
         name: this.toPascalCase(acc.name),
@@ -201,7 +327,21 @@ export class AnchorGenerator {
       errors: [
         { code: 6000, name: 'ConstraintFailed', msg: 'Constraint validation failed in Manifest instruction' },
         { code: 6001, name: 'Unauthorized', msg: 'Unauthorized signer for this instruction' },
+        { code: 6002, name: 'NumericalOverflow', msg: 'Numerical overflow during checked arithmetic' },
+        { code: 6003, name: 'NumericalUnderflow', msg: 'Numerical underflow during checked arithmetic' },
+        ...(program.errors || []).map((e, idx) => ({
+          code: e.code || 6004 + idx,
+          name: this.toPascalCase(e.name),
+          msg: e.msg,
+        })),
       ],
+      events: (program.events || []).map((ev) => ({
+        name: this.toPascalCase(ev.name),
+        fields: ev.fields.map((ef) => ({
+          name: this.toSnakeCase(ef.name),
+          type: this.toIdlType(ef.fieldType),
+        })),
+      })),
     };
   }
 
@@ -214,60 +354,78 @@ export class AnchorGenerator {
       .replace(/authority/gi, 'ctx.accounts.authority.key()');
   }
 
-  private static toRustType(t: string): string {
-    switch (t.toLowerCase()) {
-      case 'number':
-      case 'u64':
-        return 'u64';
-      case 'u32':
-        return 'u32';
-      case 'i64':
-        return 'i64';
+  public static toRustType(t: string): string {
+    switch (t.toLowerCase().trim()) {
       case 'bool':
       case 'boolean':
         return 'bool';
+      case 'u8':
+        return 'u8';
+      case 'u16':
+        return 'u16';
+      case 'u32':
+        return 'u32';
+      case 'u64':
+      case 'number':
+        return 'u64';
+      case 'u128':
+        return 'u128';
+      case 'i64':
+        return 'i64';
+      case 'bytes':
+        return 'Vec<u8>';
       case 'text':
       case 'string':
         return 'String';
       case 'address':
       case 'pubkey':
+      case 'public_key':
         return 'Pubkey';
       default:
         return 'u64';
     }
   }
 
-  private static toIdlType(t: string): string {
-    switch (t.toLowerCase()) {
-      case 'number':
-      case 'u64':
-        return 'u64';
-      case 'u32':
-        return 'u32';
-      case 'i64':
-        return 'i64';
+  public static toIdlType(t: string): string {
+    switch (t.toLowerCase().trim()) {
       case 'bool':
       case 'boolean':
         return 'bool';
+      case 'u8':
+        return 'u8';
+      case 'u16':
+        return 'u16';
+      case 'u32':
+        return 'u32';
+      case 'u64':
+      case 'number':
+        return 'u64';
+      case 'u128':
+        return 'u128';
+      case 'i64':
+        return 'i64';
+      case 'bytes':
+        return 'bytes';
       case 'text':
       case 'string':
         return 'string';
       case 'address':
       case 'pubkey':
+      case 'public_key':
         return 'publicKey';
       default:
         return 'u64';
     }
   }
 
-  private static toSnakeCase(str: string): string {
+  public static toSnakeCase(str: string): string {
     return str
       .replace(/([A-Z])/g, '_$1')
       .toLowerCase()
       .replace(/^_/, '');
   }
 
-  private static toPascalCase(str: string): string {
+  public static toPascalCase(str: string): string {
     return str.replace(/(^|_)([a-z])/g, (_, __, letter) => letter.toUpperCase());
   }
 }

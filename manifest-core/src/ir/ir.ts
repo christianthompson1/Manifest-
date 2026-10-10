@@ -35,6 +35,7 @@ export type IRNodeType =
   | 'IRImage'
   | 'IRForm'
   | 'IRRoute'
+  | 'IRNavigate'
   // Manifest v0.3 UI Primitives & Design System
   | 'IRContainer'
   | 'IRCard'
@@ -364,6 +365,14 @@ export interface IRRouteNode extends IRBaseNode {
   kind: 'IRRoute';
   path: string;
   targetPage: string;
+  pageName?: string;
+}
+
+export type IRNode = any;
+
+export interface IRNavigateNode extends IRBaseNode {
+  kind: 'IRNavigate';
+  target: IRExpressionNode;
 }
 
 export interface IRTableNode extends IRBaseNode {
@@ -545,6 +554,7 @@ export type IRInstructionNode =
   | IRComponentDeclNode
   | IRComponentCallNode
   | IRRouteNode
+  | IRNavigateNode
   | IRTableNode
   | IRDialogNode
   | IRTabsNode
@@ -597,6 +607,7 @@ export interface IRProgramNode extends IRBaseNode {
   pages?: IRPageNode[];
   routes?: IRRouteNode[];
   uiNodes?: IRUINode[];
+  solanaProgram?: any;
   sourceFile?: string;
   version: string;
 }

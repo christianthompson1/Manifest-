@@ -1,136 +1,114 @@
-/**
- * Manifest Core v0.1
- * Main Entry Point and Public API
- */
-
 export * from './lexer/tokens.ts';
 export * from './lexer/lexer.ts';
 export * from './ast/ast.ts';
 export * from './parser/parser.ts';
 export * from './validator/validator.ts';
-export * from './runtime/values.ts';
-export * from './runtime/scope.ts';
 export * from './runtime/runtime.ts';
+export * from './runtime/scope.ts';
+export * from './runtime/values.ts';
 export * from './events/event-bus.ts';
 export * from './modules/capabilities.ts';
 export * from './errors/manifest-error.ts';
 export * from './ir/index.ts';
 export * from './compiler/index.ts';
+export * from './sourcemap/sourcemap.ts';
+export * from './libraries/library-registry.ts';
+export * from './solana/solana-ir.ts';
+export * from './solana/anchor-generator.ts';
+export * from './solana/solana-simulator.ts';
+export * from './solana/solana-toolchain.ts';
+export * from './compiler/targets/solana-target.ts';
 
 import { Lexer } from './lexer/lexer.ts';
 import { Parser } from './parser/parser.ts';
-import { Validator, ValidationIssue } from './validator/validator.ts';
+import { Validator } from './validator/validator.ts';
 import { Runtime } from './runtime/runtime.ts';
-import { ProgramNode } from './ast/ast.ts';
-import { Token } from './lexer/tokens.ts';
-import { IRProgramNode } from './ir/ir.ts';
-import { IRBuilder } from './ir/ir-builder.ts';
-import { Compiler } from './compiler/compiler.ts';
-import { CompilationResult, TargetCompilerOptions } from './compiler/compiler-interface.ts';
+import { TargetCompiler, CompilationResult, TargetCompilerOptions } from './compiler/compiler-interface.ts';
+import { CompilerRegistry, compileManifest, generateManifestIR } from './compiler/compiler.ts';
 
-export interface ExecuteResult {
-  output: string[];
-  runtime: Runtime;
-  program: ProgramNode;
-  tokens: Token[];
-  validationIssues: ValidationIssue[];
+export class Compiler {
+  private localCompilers: Map<string, TargetCompiler> = new Map();
+
+  public registerTarget(compiler: TargetCompiler): void {
+    this.localCompilers.set(compiler.targetName.toLowerCase(), compiler);
+    CompilerRegistry.register(compiler);
+  }
+
+  public getSupportedTargets(): string[] {
+    const set = new Set<string>(['js', 'solana']);
+    for (const k of this.localCompilers.keys()) {
+      set.add(k);
+    }
+    return Array.from(set);
+  }
+
+  public async compile(
+    source: string,
+    targetName = 'js',
+    options: TargetCompilerOptions = {}
+  ): Promise<CompilationResult> {
+    const local = this.localCompilers.get(targetName.toLowerCase());
+    if (local) {
+      const ir = generateManifestIR(source);
+      return await local.compile(ir, options);
+    }
+    return await compileManifest(source, targetName, options);
+  }
 }
 
-/**
- * Runs a complete Manifest source string from start to finish via interpreter.
- * Lexes -> Parses -> Validates -> Executes -> Emits app.starts -> Returns output.
- */
+export interface ExecuteOptions {
+  onOutput?: (line: string) => void;
+  validate?: boolean;
+}
+
 export async function executeManifest(
   source: string,
-  options?: {
-    onOutput?: (line: string) => void;
-    validate?: boolean;
-  }
-): Promise<ExecuteResult> {
+  options: ExecuteOptions = {}
+): Promise<{
+  output: string[];
+  validationIssues: any[];
+  error?: string;
+  scope?: any;
+  runtime: Runtime;
+}> {
   const output: string[] = [];
+  const validationIssues: any[] = [];
+  const runtime = new Runtime();
 
-  const handleOutput = (text: string) => {
-    output.push(text);
-    if (options?.onOutput) {
-      options.onOutput(text);
-    }
-  };
-
-  // 1. Lexer
-  const lexer = new Lexer(source);
-  const tokens = lexer.tokenize();
-
-  // 2. Parser
-  const parser = new Parser(tokens, source);
-  const program = parser.parse();
-
-  // 3. Validator (optional static check)
-  const validator = new Validator(program, source);
-  const validationResult = validator.validate();
-  if (options?.validate !== false) {
-    validator.ensureValid();
-  }
-
-  // 4. Runtime
-  const runtime = new Runtime(handleOutput);
-  await runtime.execute(program);
-
-  return {
-    output,
-    runtime,
-    program,
-    tokens,
-    validationIssues: validationResult.issues,
-  };
-}
-
-/**
- * Parses and validates Manifest source without executing it.
- * Useful for IDE inspection, syntax checkers, and AST visualization.
- */
-export function inspectManifest(source: string) {
-  const lexer = new Lexer(source);
-  const tokens = lexer.tokenize();
-  const parser = new Parser(tokens, source);
-  const program = parser.parse();
-  const validator = new Validator(program, source);
-  const validation = validator.validate();
-
-  return {
-    tokens,
-    program,
-    validation,
-  };
-}
-
-/**
- * Transforms Manifest source or AST into target-agnostic Manifest IR.
- */
-export function generateManifestIR(sourceOrAst: string | ProgramNode): IRProgramNode {
-  let ast: ProgramNode;
-  if (typeof sourceOrAst === 'string') {
-    const lexer = new Lexer(sourceOrAst);
+  try {
+    const lexer = new Lexer(source);
     const tokens = lexer.tokenize();
-    const parser = new Parser(tokens, sourceOrAst);
-    ast = parser.parse();
-    const validator = new Validator(ast, sourceOrAst);
-    validator.ensureValid();
-  } else {
-    ast = sourceOrAst;
+    const parser = new Parser(tokens);
+    const ast = parser.parse();
+
+    if (options.validate !== false) {
+      const validator = new Validator();
+      const valRes = validator.validate(ast);
+      if (!valRes.isValid) {
+        validationIssues.push(...valRes.issues);
+      }
+    }
+
+    await runtime.execute(ast);
+    const logs = runtime.getLogs();
+    for (const log of logs) {
+      output.push(log);
+      options.onOutput?.(log);
+    }
+
+    return {
+      output,
+      validationIssues,
+      scope: runtime.getGlobalScope(),
+      runtime,
+    };
+  } catch (err: any) {
+    return {
+      output,
+      validationIssues,
+      error: err.message || String(err),
+      scope: runtime.getGlobalScope(),
+      runtime,
+    };
   }
-
-  const builder = new IRBuilder();
-  return builder.build(ast);
-}
-
-/**
- * Compiles Manifest source into target code (e.g. JavaScript).
- */
-export async function compileManifest(
-  source: string,
-  target: string = 'js',
-  options?: TargetCompilerOptions
-): Promise<CompilationResult> {
-  const compiler = new Compiler();
-  return await compiler.compile(source, target, options);
 }

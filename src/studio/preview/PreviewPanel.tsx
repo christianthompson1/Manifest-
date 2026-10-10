@@ -542,7 +542,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 font-mono text-[11px]">
-                    {Object.entries(getSimulatedSolanaState()).map(([pk, acc]) => (
+                    {Object.entries(getSimulatedSolanaState()).map(([pk, acc]: [string, any]) => (
                       <div key={pk} className="p-2.5 rounded bg-[#1f1f1f] border border-[#2d2d2d] space-y-1">
                         <div className="flex justify-between items-center text-[#858585]">
                           <span>Account: {pk.substring(0, 10)}...</span>

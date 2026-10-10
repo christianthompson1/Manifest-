@@ -1,280 +1,219 @@
 /**
- * Manifest Studio - GitHub Import & Source Control Modal
- * Implements Section 4: Real GitHub Workflow
- * - Imports public repositories via GitHub Trees API & raw endpoints without credentials
- * - Displays repository metadata, branch, stars, and language breakdown
- * - Populates Manifest Studio virtual filesystem
- * - Provides architecture and setup state for authenticated Git operations (commit, push, PRs)
+ * Manifest Studio - GitHub Import Modal
+ * Supports cloning/importing public or private GitHub repositories
+ * with optional personal access token (PAT) stored in localStorage.
  */
 
 import React, { useState } from 'react';
-import {
-  Github,
-  X,
-  Download,
-  AlertCircle,
-  CheckCircle2,
-  GitBranch,
-  Star,
-  FileCode,
-  Loader2,
-  Lock,
-  Key,
-} from 'lucide-react';
-import { GitHubProvider, RepositoryMetadata } from '../services/git-provider.ts';
+import { GitBranch, Key, X, Download, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { ManifestProject } from '../types.ts';
+import { GitHubProvider, parseGitHubUrl } from '../services/git-provider.ts';
 
 interface GitHubImportModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImportComplete: (project: ManifestProject) => void;
+  onImportProject: (project: ManifestProject) => void;
   onShowToast: (msg: string) => void;
 }
 
 export const GitHubImportModal: React.FC<GitHubImportModalProps> = ({
   isOpen,
   onClose,
-  onImportComplete,
+  onImportProject,
   onShowToast,
 }) => {
   const [repoUrl, setRepoUrl] = useState('');
+  const [branch, setBranch] = useState('');
+  const [personalToken, setPersonalToken] = useState(() => {
+    return typeof window !== 'undefined' ? localStorage.getItem('manifest_github_pat') || '' : '';
+  });
+  const [activeTab, setActiveTab] = useState<'url' | 'token'>('url');
   const [isLoading, setIsLoading] = useState(false);
-  const [progressMsg, setProgressMsg] = useState('');
-  const [progressPercent, setProgressPercent] = useState(0);
-  const [metadata, setMetadata] = useState<RepositoryMetadata | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'import' | 'auth'>('import');
-  const [personalToken, setPersonalToken] = useState('');
 
   if (!isOpen) return null;
 
-  const gitHub = new GitHubProvider();
-
-  const handleFetchMetadata = async () => {
-    if (!repoUrl.trim()) return;
-    setError(null);
-    setIsLoading(true);
-    setProgressMsg('Inspecting repository...');
-
-    try {
-      const meta = await gitHub.getMetadata(repoUrl.trim());
-      setMetadata(meta);
-      setProgressMsg(`Repository found: ${meta.name} (branch: ${meta.defaultBranch})`);
-    } catch (err: any) {
-      setError(err.message || 'Could not reach GitHub repository. Please verify URL.');
-      setMetadata(null);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   const handleImport = async () => {
-    if (!repoUrl.trim()) return;
     setError(null);
+    const cleaned = repoUrl.trim();
+    if (!cleaned) {
+      setError('Please enter a GitHub repository URL or owner/repo format');
+      return;
+    }
+
+    const parsed = parseGitHubUrl(cleaned);
+    if (!parsed) {
+      setError('Invalid format. Examples: https://github.com/owner/repo or owner/repo');
+      return;
+    }
+
     setIsLoading(true);
-    setProgressPercent(10);
-    setProgressMsg('Fetching repository file tree...');
-
     try {
-      const project = await gitHub.importRepository(
-        repoUrl.trim(),
-        (msg, current, total) => {
-          setProgressMsg(msg);
-          if (total > 0) {
-            setProgressPercent(Math.round((current / total) * 100));
-          }
-        }
-      );
-
-      onImportComplete(project);
+      const gitHub = new GitHubProvider(personalToken);
+      const project = await gitHub.importRepository(cleaned, branch.trim() || undefined);
+      onImportProject(project);
       onShowToast(`Imported ${project.name} (${project.files.length} files) from GitHub`);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to import repository from GitHub.');
+      setError(err.message || 'Failed to import GitHub repository');
     } finally {
       setIsLoading(false);
     }
   };
 
+  const handleSaveToken = () => {
+    const token = personalToken.trim();
+    if (typeof window !== 'undefined') {
+      if (token) {
+        localStorage.setItem('manifest_github_pat', token);
+        onShowToast('Personal access token saved');
+      } else {
+        localStorage.removeItem('manifest_github_pat');
+        onShowToast('Personal access token removed');
+      }
+    }
+    setActiveTab('url');
+  };
+
   return (
-    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-[#181818] border border-[#2d2d2d] rounded-xl w-full max-w-lg shadow-2xl overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-4">
+      <div className="w-full max-w-lg bg-[#1e1e1e] border border-[#2d2d2d] rounded-xl shadow-2xl overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="px-5 py-4 border-b border-[#2d2d2d] flex items-center justify-between bg-[#1f1f1f]">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-[#252526] border border-[#2d2d2d] flex items-center justify-center text-[#ffffff]">
-              <Github className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-[#ffffff]">GitHub Integration</h2>
-              <p className="text-[11px] text-[#858585]">Import public repos & manage source control</p>
-            </div>
+        <div className="h-12 border-b border-[#2d2d2d] bg-[#252526] px-4 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <GitBranch className="w-4 h-4 text-[#89d185]" />
+            <span className="font-semibold text-sm text-[#ffffff]">Import from GitHub</span>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded text-[#858585] hover:text-[#ffffff] hover:bg-[#2d2d2d] transition"
+            className="p-1 rounded text-[#858585] hover:text-[#cccccc] hover:bg-[#333333] transition"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Tab Selector */}
-        <div className="flex border-b border-[#2d2d2d] px-5 bg-[#181818] gap-4 text-xs font-medium">
+        {/* Tab Strip */}
+        <div className="flex border-b border-[#2d2d2d] bg-[#181818] px-4 text-xs">
           <button
-            onClick={() => setActiveTab('import')}
-            className={`py-2.5 border-b-2 transition ${
-              activeTab === 'import'
+            onClick={() => setActiveTab('url')}
+            className={`py-2 px-3 border-b-2 font-medium transition ${
+              activeTab === 'url'
                 ? 'border-[#569cd6] text-[#ffffff]'
                 : 'border-transparent text-[#858585] hover:text-[#cccccc]'
             }`}
           >
-            Import Public Repository
+            Repository URL
           </button>
           <button
-            onClick={() => setActiveTab('auth')}
-            className={`py-2.5 border-b-2 transition ${
-              activeTab === 'auth'
+            onClick={() => setActiveTab('token')}
+            className={`py-2 px-3 border-b-2 font-medium transition flex items-center gap-1.5 ${
+              activeTab === 'token'
                 ? 'border-[#569cd6] text-[#ffffff]'
                 : 'border-transparent text-[#858585] hover:text-[#cccccc]'
             }`}
           >
-            Authenticated Operations
+            <Key className="w-3 h-3" />
+            <span>Token {personalToken ? '✓' : ''}</span>
           </button>
         </div>
 
         {/* Content */}
-        <div className="p-5 space-y-4">
-          {activeTab === 'import' && (
-            <div className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs text-[#cccccc] font-medium">GitHub Repository URL</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={repoUrl}
-                    onChange={(e) => setRepoUrl(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleImport();
-                    }}
-                    placeholder="https://github.com/user/project or user/project"
-                    className="flex-1 bg-[#1f1f1f] border border-[#2d2d2d] rounded-md px-3 py-1.5 text-xs text-[#ffffff] outline-none focus:border-[#569cd6] font-mono"
-                  />
-                  <button
-                    onClick={handleFetchMetadata}
-                    disabled={isLoading || !repoUrl.trim()}
-                    className="px-3 py-1.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] border border-[#2d2d2d] text-xs text-[#cccccc] font-medium transition cursor-pointer"
-                  >
-                    Check
-                  </button>
-                </div>
-                <p className="text-[11px] text-[#858585]">
-                  Public repositories require no authentication. Enter any public repository or owner/repo format.
-                </p>
-              </div>
-
-              {/* Repository Metadata Card */}
-              {metadata && (
-                <div className="p-3.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-[#ffffff]">{metadata.name}</span>
-                    <div className="flex items-center gap-3 text-[11px] text-[#858585]">
-                      <span className="flex items-center gap-1">
-                        <GitBranch className="w-3 h-3 text-[#569cd6]" />
-                        <span>{metadata.defaultBranch}</span>
-                      </span>
-                      {metadata.stars !== undefined && (
-                        <span className="flex items-center gap-1 text-[#cca700]">
-                          <Star className="w-3 h-3" />
-                          <span>{metadata.stars}</span>
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  {metadata.description && (
-                    <p className="text-[11px] text-[#858585]">{metadata.description}</p>
-                  )}
-                </div>
-              )}
-
-              {/* Progress Indicator */}
-              {isLoading && (
-                <div className="space-y-1.5 p-3 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d]">
-                  <div className="flex items-center justify-between text-xs text-[#cccccc]">
-                    <span className="flex items-center gap-2">
-                      <Loader2 className="w-3.5 h-3.5 animate-spin text-[#569cd6]" />
-                      <span>{progressMsg}</span>
-                    </span>
-                    <span className="font-mono text-[11px]">{progressPercent}%</span>
-                  </div>
-                  <div className="h-1.5 rounded-full bg-[#252526] overflow-hidden">
-                    <div
-                      className="h-full bg-[#569cd6] transition-all duration-300"
-                      style={{ width: `${progressPercent}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Error Message */}
-              {error && (
-                <div className="p-3 rounded-lg bg-[#2d1818] border border-[#f14c4c]/40 text-[#f85149] text-xs flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <span>{error}</span>
-                </div>
-              )}
-
-              <button
-                onClick={handleImport}
-                disabled={isLoading || !repoUrl.trim()}
-                className="w-full py-2.5 px-4 rounded-md bg-[#238636] hover:bg-[#2ea043] disabled:opacity-50 text-white text-xs font-semibold transition cursor-pointer flex items-center justify-center gap-2"
-              >
-                <Download className="w-4 h-4" />
-                <span>Import Repository into Studio</span>
-              </button>
+        <div className="p-4 space-y-4 text-xs">
+          {error && (
+            <div className="p-3 rounded-lg bg-[#2d1818] border border-[#5a1d1d] text-[#f14c4c] flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <span>{error}</span>
             </div>
           )}
 
-          {activeTab === 'auth' && (
-            <div className="space-y-4">
-              <div className="p-3.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-2">
-                <div className="flex items-center gap-2 text-xs font-semibold text-[#ffffff]">
-                  <Lock className="w-3.5 h-3.5 text-[#cca700]" />
-                  <span>Authenticated Git Operations</span>
-                </div>
-                <p className="text-[11px] text-[#858585]">
-                  To commit, push changes, manage branches, or trigger remote GitHub Actions workflows directly from Manifest Studio, provide a GitHub Personal Access Token (PAT) with `repo` and `workflow` scopes.
-                </p>
-                <p className="text-[10px] text-[#858585] italic">
-                  Note: Tokens are held securely in memory during your session and never written to permanent disk or transmitted to third parties.
-                </p>
+          {activeTab === 'url' ? (
+            <>
+              <div>
+                <label className="block text-[11px] font-medium text-[#cccccc] mb-1">
+                  GitHub Repository URL or Slug
+                </label>
+                <input
+                  type="text"
+                  value={repoUrl}
+                  onChange={(e) => setRepoUrl(e.target.value)}
+                  placeholder="https://github.com/owner/repo or owner/repo"
+                  className="w-full px-3 py-2 rounded-md bg-[#252526] border border-[#3c3c3c] text-[#cccccc] placeholder-[#666666] focus:border-[#569cd6] focus:outline-none"
+                />
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-xs text-[#cccccc] font-medium flex items-center gap-1.5">
-                  <Key className="w-3.5 h-3.5 text-[#569cd6]" />
-                  <span>GitHub Personal Access Token (PAT)</span>
+              <div>
+                <label className="block text-[11px] font-medium text-[#cccccc] mb-1">
+                  Branch (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  placeholder="main (default)"
+                  className="w-full px-3 py-2 rounded-md bg-[#252526] border border-[#3c3c3c] text-[#cccccc] placeholder-[#666666] focus:border-[#569cd6] focus:outline-none"
+                />
+              </div>
+
+              <div className="text-[11px] text-[#858585]">
+                Manifest Studio will extract the project tree and load source files directly into your workspace.
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="block text-[11px] font-medium text-[#cccccc] mb-1">
+                  GitHub Personal Access Token (PAT)
                 </label>
                 <input
                   type="password"
                   value={personalToken}
                   onChange={(e) => setPersonalToken(e.target.value)}
                   placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
-                  className="w-full bg-[#1f1f1f] border border-[#2d2d2d] rounded-md px-3 py-1.5 text-xs text-[#ffffff] outline-none focus:border-[#569cd6] font-mono"
+                  className="w-full px-3 py-2 rounded-md bg-[#252526] border border-[#3c3c3c] text-[#cccccc] placeholder-[#666666] focus:border-[#569cd6] focus:outline-none font-mono"
                 />
+                <div className="text-[10px] text-[#858585] mt-1.5">
+                  Stored locally in your browser to avoid GitHub API unauthenticated rate limits (60 req/hr) and access private repos.
+                </div>
               </div>
 
               <div className="flex justify-end gap-2 pt-2">
                 <button
-                  onClick={() => {
-                    onShowToast('Session token configured');
-                    onClose();
-                  }}
-                  className="py-1.5 px-3 rounded-md bg-[#252526] hover:bg-[#2d2d2d] border border-[#2d2d2d] text-xs text-[#cccccc] font-medium transition cursor-pointer"
+                  onClick={handleSaveToken}
+                  className="px-3 py-1.5 rounded-md bg-[#569cd6] hover:bg-[#4a86b9] text-[#ffffff] font-medium transition cursor-pointer"
                 >
-                  Save for Session
+                  Save Token
                 </button>
               </div>
-            </div>
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="h-12 border-t border-[#2d2d2d] bg-[#252526] px-4 flex items-center justify-between">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 rounded-md bg-[#2d2d2d] hover:bg-[#383838] text-[#cccccc] transition"
+          >
+            Cancel
+          </button>
+          {activeTab === 'url' && (
+            <button
+              onClick={handleImport}
+              disabled={isLoading || !repoUrl.trim()}
+              className="px-4 py-1.5 rounded-md bg-[#238636] hover:bg-[#2ea043] disabled:opacity-50 text-[#ffffff] font-medium transition flex items-center gap-1.5 cursor-pointer"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Importing...</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Import Project</span>
+                </>
+              )}
+            </button>
           )}
         </div>
       </div>

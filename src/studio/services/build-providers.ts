@@ -11,6 +11,7 @@
 import { SolanaProgramIR } from '../../../manifest-core/src/solana/solana-ir.ts';
 import { AnchorGenerator } from '../../../manifest-core/src/solana/anchor-generator.ts';
 import { SolanaSimulator } from '../../../manifest-core/src/solana/solana-simulator.ts';
+import { LiteSVMClient } from './litesvm-client.ts';
 
 export type BuildCapabilityStatus =
   | 'available'
@@ -305,18 +306,62 @@ export class SolanaLocalSimulatorProvider implements BuildProvider {
 }
 
 /**
- * GitHub Actions Solana Build Provider
+ * Native LiteSVM in-process test and build provider
  */
-export class GitHubActionsSolanaBuildProvider implements BuildProvider {
-  public readonly id = 'solana-github-actions';
-  public readonly name = 'GitHub Actions Anchor Builder';
+export class SolanaLiteSVMBuildProvider implements BuildProvider {
+  public readonly id = 'solana-litesvm';
+  public readonly name = 'LiteSVM In-Process Test & Build';
   public readonly target = 'solana';
 
   public getCapabilities(): BuildProviderCapabilities {
     return {
-      status: 'requires_credentials',
-      label: 'GitHub Actions Cloud Compiler',
-      description: 'Executes pinned cargo build & anchor build in automated cloud runner.',
+      status: 'available',
+      label: 'Native LiteSVM Runner',
+      description: 'Executes Solana instruction testing, compute units measurement, and state transition checks in-process.',
+      offlineCapable: true,
+    };
+  }
+
+  public async build(program: SolanaProgramIR): Promise<BuildProviderResult> {
+    const startTime = performance.now();
+    const artifacts = AnchorProjectGenerator.generateProjectFiles(program);
+    const compilation = AnchorGenerator.generate(program);
+
+    const testResults = await LiteSVMClient.executeTests(program);
+
+    const logs: string[] = [
+      `[LiteSVM Engine] Executing in-process test suite for: ${program.programName}`,
+      `[Anchor Generator] Created Rust module: ${program.programName.toLowerCase()}`,
+      `[Anchor Generator] Generated IDL for ${program.instructions.length} instructions`,
+      `[LiteSVM] Total Compute Units Consumed: ${testResults.totalComputeUnits}`,
+      `[LiteSVM] Test Steps Completed: ${testResults.passedCount}/${testResults.stepsCount} passed`,
+      ...testResults.steps.flatMap((s) => s.logs),
+    ];
+
+    return {
+      success: testResults.success,
+      artifacts,
+      logs,
+      durationMs: Math.round(performance.now() - startTime),
+      programId: program.programId,
+      idl: compilation.idl,
+    };
+  }
+}
+
+/**
+ * Remote toolchain build provider via GitHub Actions CI
+ */
+export class GitHubActionsSolanaBuildProvider implements BuildProvider {
+  public readonly id = 'solana-github-actions';
+  public readonly name = 'GitHub Actions Toolchain Runner';
+  public readonly target = 'solana';
+
+  public getCapabilities(): BuildProviderCapabilities {
+    return {
+      status: 'requires_remote_build',
+      label: 'GitHub Actions Anchor CI',
+      description: 'Generates pinned Rust 1.83.0, Solana 1.18.26, and Anchor 0.30.1 workflow for remote CI verification.',
       offlineCapable: false,
     };
   }
@@ -327,10 +372,11 @@ export class GitHubActionsSolanaBuildProvider implements BuildProvider {
     const compilation = AnchorGenerator.generate(program);
 
     const logs: string[] = [
-      `[GitHub Actions Provider] Prepared workflow .github/workflows/anchor-build.yml`,
-      `[GitHub Actions Provider] Pinned toolchain: Rust ${PINNED_TOOLCHAIN.rustVersion}, Solana ${PINNED_TOOLCHAIN.solanaVersion}, Anchor ${PINNED_TOOLCHAIN.anchorVersion}`,
-      `[Security Check] No private keys or sensitive variables included in workflow.`,
-      `[Status] Ready to trigger remote build on repository push or manual workflow dispatch.`,
+      `[GitHub Actions Provider] Prepared Anchor workspace for program: ${program.programName}`,
+      `[Toolchain Pinned] Rust: ${PINNED_TOOLCHAIN.rustVersion}, Solana: ${PINNED_TOOLCHAIN.solanaVersion}, Anchor: ${PINNED_TOOLCHAIN.anchorVersion}`,
+      `[Workflow Config] Generated .github/workflows/manifest-solana.yml`,
+      `[Target Check] Configured cargo check and anchor build definitions`,
+      `[Artifacts] Generated ${artifacts.length} workspace, source, and workflow files`,
     ];
 
     return {
@@ -343,3 +389,10 @@ export class GitHubActionsSolanaBuildProvider implements BuildProvider {
     };
   }
 }
+
+export const BUILD_PROVIDERS: BuildProvider[] = [
+  new SolanaLiteSVMBuildProvider(),
+  new SolanaLocalSimulatorProvider(),
+  new GitHubActionsSolanaBuildProvider(),
+];
+

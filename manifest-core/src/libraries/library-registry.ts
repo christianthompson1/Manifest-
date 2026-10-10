@@ -1,8 +1,8 @@
 /**
  * Manifest Library & Package System
- * Provides capability metadata, permission controls, and runtime adapters
- * allowing Manifest applications to orchestrate third-party libraries
- * without requiring the developer to hand-write underlying JavaScript or Rust.
+ * Section 10: Library Foundation & LibraryAdapter abstraction
+ * Provides capability metadata, permission controls, compiler transforms, and runtime adapters
+ * allowing Manifest applications to orchestrate third-party libraries.
  */
 
 export interface LibraryCapability {
@@ -32,11 +32,18 @@ export interface LibraryManifest {
   crateName?: string;
 }
 
+/**
+ * Section 10: Canonical LibraryAdapter Abstraction
+ */
 export interface LibraryAdapter {
-  init?: (container: HTMLElement | any, options?: Record<string, any>) => void;
-  applyAnimation?: (element: HTMLElement, config: AnimateConfig) => void;
-  renderIcon?: (name: string, size?: number, color?: string) => string | HTMLElement;
-  renderChart?: (canvas: HTMLCanvasElement, data: any) => any;
+  readonly id: string;
+  readonly version: string;
+  readonly permissions: PermissionKind[];
+  readonly manifestSyntax: string;
+  compilerTransform(node: any): string;
+  runtimeIntegration(container: HTMLElement, options?: Record<string, any>): any;
+  renderIcon?(name: string, size?: number, color?: string): string | HTMLElement;
+  applyAnimation?(element: HTMLElement, config: AnimateConfig): void;
 }
 
 export interface AnimateConfig {
@@ -44,6 +51,65 @@ export interface AnimateConfig {
   to?: Record<string, any>;
   duration?: number;
   ease?: string;
+}
+
+/**
+ * Section 10: First Real End-to-End Adapter: Lucide Icons
+ */
+export class LucideLibraryAdapter implements LibraryAdapter {
+  public readonly id = 'lucide';
+  public readonly version = '0.546.0';
+  public readonly permissions: PermissionKind[] = [];
+  public readonly manifestSyntax = 'ICON "name" [SIZE n] [COLOR "#hex"]';
+
+  private static readonly ICONS: Record<string, string> = {
+    home: '<path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
+    check: '<polyline points="20 6 9 17 4 12"/>',
+    alert: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+    activity: '<polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>',
+    coins: '<circle cx="8" cy="8" r="6"/><path d="M18.09 10.37A6 6 0 1 1 10.34 18"/><path d="M7 6h1v4"/><path d="m16.71 13.88.7.71-2.82 2.82"/>',
+    settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+    user: '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+    box: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+    arrow: '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
+    sparkles: '<path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z"/>',
+  };
+
+  public compilerTransform(node: any): string {
+    const iconName = String(node.name || 'sparkles').toLowerCase();
+    const size = node.size || 20;
+    const color = node.color || 'currentColor';
+    return `__manifest.libraries.lucide.renderIcon("${iconName}", ${size}, "${color}")`;
+  }
+
+  public runtimeIntegration(container: HTMLElement, options: Record<string, any> = {}): HTMLElement {
+    const icon = this.renderIcon(options.name || 'sparkles', options.size || 20, options.color || 'currentColor');
+    if (typeof icon !== 'string') {
+      container.appendChild(icon);
+      return icon;
+    }
+    const span = document.createElement('span');
+    span.innerHTML = icon;
+    container.appendChild(span);
+    return span;
+  }
+
+  public renderIcon(name: string, size = 20, color = 'currentColor'): HTMLElement {
+    const clean = name.toLowerCase().trim();
+    const paths = LucideLibraryAdapter.ICONS[clean] || LucideLibraryAdapter.ICONS.sparkles;
+
+    const span = document.createElement('span');
+    span.className = `manifest-icon manifest-icon-${clean}`;
+    span.setAttribute('data-lucide', clean);
+    span.style.display = 'inline-flex';
+    span.style.alignItems = 'center';
+    span.style.justifyContent = 'center';
+    span.style.width = `${size}px`;
+    span.style.height = `${size}px`;
+    span.style.color = color;
+    span.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+    return span;
+  }
 }
 
 export class LibraryRegistry {
@@ -73,6 +139,12 @@ export class LibraryRegistry {
       offlineSupported: true,
       npmPackage: 'motion',
     }, {
+      id: 'framer-motion',
+      version: '12.0.0',
+      permissions: [],
+      manifestSyntax: 'ANIMATE [INITIAL ...] [TO ...] [DURATION n]',
+      compilerTransform: () => '',
+      runtimeIntegration: () => {},
       applyAnimation: (element: HTMLElement, config: AnimateConfig) => {
         const duration = (config.duration || 300) / 1000;
         const ease = config.ease || 'ease-out';
@@ -89,56 +161,19 @@ export class LibraryRegistry {
       },
     });
 
-    // 2. Lucide Icons
+    // 2. Lucide Icons End-to-End Real Adapter (Section 10)
+    const lucideAdapter = new LucideLibraryAdapter();
     this.registerLibrary({
       name: 'lucide',
-      version: '0.546.0',
-      description: 'Clean, consistent SVG icons directly in Manifest UI without SVG markup',
+      version: lucideAdapter.version,
+      description: 'Clean, consistent SVG icons directly in Manifest UI without hand-crafted SVG markup',
       capabilities: ['icons', 'svg', 'ui'],
       requiredPermissions: [],
       offlineSupported: true,
       npmPackage: 'lucide-react',
-    }, {
-      renderIcon: (name: string, size = 18, color = 'currentColor') => {
-        // Return structured SVG icon placeholder or DOM element
-        const iconName = name.toLowerCase().replace(/[^a-z0-9-]/g, '');
-        const span = document.createElement('span');
-        span.className = `manifest-icon manifest-icon-${iconName}`;
-        span.setAttribute('data-icon', iconName);
-        span.style.display = 'inline-flex';
-        span.style.alignItems = 'center';
-        span.style.justifyContent = 'center';
-        span.style.width = `${size}px`;
-        span.style.height = `${size}px`;
-        span.style.color = color;
-        span.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>`;
-        return span;
-      },
-    });
+    }, lucideAdapter);
 
-    // 3. Chart.js Adapter
-    this.registerLibrary({
-      name: 'chartjs',
-      version: '4.4.0',
-      description: 'Responsive canvas charts for data-driven Manifest dashboards',
-      capabilities: ['charts', 'canvas', 'visualization'],
-      requiredPermissions: [],
-      offlineSupported: true,
-      npmPackage: 'chart.js',
-    });
-
-    // 4. Three.js 3D Adapter
-    this.registerLibrary({
-      name: 'threejs',
-      version: '0.170.0',
-      description: '3D scenes, WebGL shaders and spatial UI for Manifest apps',
-      capabilities: ['3d', 'webgl', 'spatial'],
-      requiredPermissions: ['webgl'],
-      offlineSupported: true,
-      npmPackage: 'three',
-    });
-
-    // 5. Solana Web3 & Wallet Adapter
+    // 3. Solana Web3 Adapter
     this.registerLibrary({
       name: 'solana-web3',
       version: '1.95.0',
@@ -165,52 +200,37 @@ export class LibraryRegistry {
     return this.adapters.get(name.toLowerCase());
   }
 
-  public hasLibrary(name: string): boolean {
-    return this.libraries.has(name.toLowerCase());
-  }
-
-  public listLibraries(): LibraryManifest[] {
+  public getAllLibraries(): LibraryManifest[] {
     return Array.from(this.libraries.values());
   }
 
-  public validateManifestLibraries(
-    libs: Array<{ name: string; requestedCapabilities?: string[] }>,
-    grantedPermissions: PermissionKind[] = ['network', 'wallet', 'storage', 'webgl']
-  ): { valid: boolean; errors: string[] } {
-    const errors: string[] = [];
-    for (const lib of libs) {
-      const manifest = this.getLibrary(lib.name);
-      if (!manifest) {
-        errors.push(`Unknown library "${lib.name}"`);
-        continue;
-      }
-      const permCheck = this.checkPermissions(lib.name, grantedPermissions);
-      if (!permCheck.allowed) {
-        errors.push(`Library "${lib.name}" requires permissions: ${permCheck.missingPermissions.join(', ')}`);
-      }
-    }
-    return { valid: errors.length === 0, errors };
+  public listLibraries(): LibraryManifest[] {
+    return this.getAllLibraries();
   }
 
-  /**
-   * Validates whether a requested library's required permissions are allowed in manifest.toml
-   */
-  public checkPermissions(
-    libraryName: string,
-    grantedPermissions: PermissionKind[] = []
-  ): { allowed: boolean; missingPermissions: PermissionKind[] } {
-    const lib = this.getLibrary(libraryName);
-    if (!lib) {
-      return { allowed: true, missingPermissions: [] };
+  public validateManifestLibraries(
+    requests: Array<{ name: string; requestedCapabilities?: string[] }>
+  ): { valid: boolean; errors: string[] } {
+    const errors: string[] = [];
+    for (const req of requests) {
+      const lib = this.getLibrary(req.name);
+      if (!lib) {
+        errors.push(`Library "${req.name}" is not registered in the Manifest Library Registry.`);
+        continue;
+      }
+      if (req.requestedCapabilities && req.requestedCapabilities.length > 0) {
+        for (const cap of req.requestedCapabilities) {
+          if (!lib.capabilities.includes(cap)) {
+            errors.push(
+              `Capability "${cap}" is not declared by library "${req.name}". Available: ${lib.capabilities.join(', ')}`
+            );
+          }
+        }
+      }
     }
-
-    const missing = lib.requiredPermissions.filter(
-      (perm) => !grantedPermissions.includes(perm)
-    );
-
     return {
-      allowed: missing.length === 0,
-      missingPermissions: missing,
+      valid: errors.length === 0,
+      errors,
     };
   }
 }

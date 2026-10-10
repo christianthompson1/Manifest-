@@ -1,10 +1,10 @@
-/**
- * Manifest Compiler Interfaces and Target Abstraction
- * Defines clean decoupled abstractions for targeting multiple runtimes/backends.
- */
-
-import { ProgramNode } from '../ast/ast.ts';
 import { IRProgramNode } from '../ir/ir.ts';
+
+export interface GeneratedArtifact {
+  fileName: string;
+  content: string;
+  fileType: 'text' | 'json' | 'binary';
+}
 
 export interface CompilationDiagnostic {
   severity: 'error' | 'warning' | 'info';
@@ -15,10 +15,11 @@ export interface CompilationDiagnostic {
   hint?: string;
 }
 
-export interface GeneratedArtifact {
-  fileName: string;
-  content: string;
-  fileType: 'javascript' | 'typescript' | 'json' | 'html' | 'text' | 'binary';
+export interface TargetCompilerOptions {
+  minify?: boolean;
+  sourceMaps?: boolean;
+  targetVersion?: string;
+  [key: string]: any;
 }
 
 export interface CompilationResult {
@@ -30,32 +31,8 @@ export interface CompilationResult {
   ir?: IRProgramNode;
 }
 
-export interface TargetCompilerOptions {
-  moduleFormat?: 'esm' | 'cjs' | 'iife';
-  minify?: boolean;
-  sourceMap?: boolean;
-  includeRuntime?: boolean;
-  runtimeImportPath?: string;
-  strictTypes?: boolean;
-}
-
-/**
- * Interface implemented by any backend/target code generator.
- */
 export interface TargetCompiler {
   readonly targetName: string;
   readonly fileExtension: string;
   compile(ir: IRProgramNode, options?: TargetCompilerOptions): Promise<CompilationResult> | CompilationResult;
-}
-
-/**
- * High-level compiler interface that orchestrates the entire compilation pipeline:
- * Manifest Source -> Lexer -> Parser -> Validator -> IR Builder -> Target Compiler.
- */
-export interface ManifestCompiler {
-  compile(source: string, targetName: string, options?: TargetCompilerOptions): Promise<CompilationResult>;
-  compileAST(ast: ProgramNode, targetName: string, options?: TargetCompilerOptions): Promise<CompilationResult>;
-  compileIR(ir: IRProgramNode, targetName: string, options?: TargetCompilerOptions): Promise<CompilationResult>;
-  registerTarget(target: TargetCompiler): void;
-  getSupportedTargets(): string[];
 }

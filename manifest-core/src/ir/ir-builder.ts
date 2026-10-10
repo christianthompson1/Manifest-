@@ -92,6 +92,11 @@ import {
   IRComponentCallNode,
   IRUINode,
 } from './ir.ts';
+import {
+  SolanaProgramIR,
+  normalizeSolanaType,
+  calculateAccountSpace,
+} from '../solana/solana-ir.ts';
 
 export class IRBuilder {
   private declaredVariables: Set<string> = new Set();
@@ -99,8 +104,20 @@ export class IRBuilder {
   /**
    * Transforms an AST Program into a target-agnostic IRProgramNode.
    */
-  public build(ast: ProgramNode): IRProgramNode {
+  public build(ast: any): IRProgramNode {
     this.declaredVariables.clear();
+
+    const appName = ast.appName || ast.name || 'ManifestApp';
+    const rawStatements: StatementNode[] = ast.statements || ast.body || [];
+    const astCaps: string[] = ast.capabilities ? [...ast.capabilities] : [];
+    for (const stmt of rawStatements) {
+      if (stmt.type === 'UseStatement' || stmt.type === 'UseDeclaration') {
+        const cap = (stmt as any).capability || (stmt as any).name;
+        if (cap && !astCaps.includes(cap)) {
+          astCaps.push(cap);
+        }
+      }
+    }
 
     const variables: IRVariableDeclNode[] = [];
     const actions: IRActionDeclNode[] = [];
@@ -110,16 +127,22 @@ export class IRBuilder {
     const pages: IRPageNode[] = [];
     const routes: IRRouteNode[] = [];
     const uiNodes: IRUINode[] = [];
+    let solanaProgram: SolanaProgramIR | undefined;
 
-    for (const stmt of ast.statements) {
-      if (stmt.type === 'AppDeclaration' || stmt.type === 'UseDeclaration') {
+    for (const stmt of rawStatements) {
+      if (stmt.type === 'AppDeclaration' || stmt.type === 'UseDeclaration' || stmt.type === 'UseStatement') {
         continue;
       }
 
-      if (stmt.type === 'ActionDeclaration') {
+      if (stmt.type === 'ProgramDeclaration') {
+        solanaProgram = this.transformSolanaProgram(stmt as any, appName || 'CounterProgram');
+        continue;
+      }
+
+      if (stmt.type === 'ActionDeclaration' || stmt.type === 'ActionDefinition') {
         const actionIR = this.transformActionDeclaration(stmt);
         actions.push(actionIR);
-      } else if (stmt.type === 'WhenStatement') {
+      } else if (stmt.type === 'WhenStatement' || stmt.type === 'WhenBlock') {
         const eventIR = this.transformWhenStatement(stmt);
         eventHandlers.push(eventIR);
       } else if (stmt.type === 'SetStatement') {
@@ -205,8 +228,8 @@ export class IRBuilder {
 
     return {
       kind: 'IRProgram',
-      appName: ast.appName || 'ManifestApp',
-      capabilities: [...ast.capabilities],
+      appName,
+      capabilities: astCaps,
       variables,
       actions,
       eventHandlers,
@@ -215,9 +238,10 @@ export class IRBuilder {
       pages,
       routes,
       uiNodes,
+      solanaProgram: solanaProgram || (astCaps.includes('solana') || astCaps.includes('SOLANA') ? this.synthesizeSolanaProgram(ast, state, actions) : undefined),
       version: '0.2.0',
-      sourceLine: ast.line,
-      sourceColumn: ast.column,
+      sourceLine: ast.line || 1,
+      sourceColumn: ast.column || 1,
     };
   }
 
@@ -255,28 +279,32 @@ export class IRBuilder {
       }
 
       case 'IfStatement': {
-        const s = stmt as IfStatementNode;
+        const s = stmt as any;
+        const thenStmts = s.thenBranch || s.consequent || [];
+        const elseStmts = s.elseBranch || s.alternate;
         return {
           kind: 'IRIf',
           condition: this.transformExpression(s.condition),
-          thenBody: this.transformBlock(s.consequent),
-          elseIfBranches: (s.elseIfBranches || []).map((b) => ({
+          thenBody: this.transformBlock(thenStmts),
+          elseIfBranches: ((s.elseIfBranches as any[]) || []).map((b) => ({
             condition: this.transformExpression(b.condition),
             body: this.transformBlock(b.body),
             sourceLine: b.line,
           })),
-          elseBody: s.alternate ? this.transformBlock(s.alternate) : undefined,
+          elseBody: elseStmts ? this.transformBlock(elseStmts) : undefined,
           sourceLine: s.line,
           sourceColumn: s.column,
         };
       }
 
-      case 'WhenStatement': {
-        return this.transformWhenStatement(stmt as WhenStatementNode);
+      case 'WhenStatement':
+      case 'WhenBlock': {
+        return this.transformWhenStatement(stmt as any);
       }
 
-      case 'RepeatStatement': {
-        const s = stmt as RepeatStatementNode;
+      case 'RepeatStatement':
+      case 'RepeatLoop': {
+        const s = stmt as any;
         return {
           kind: 'IRLoop',
           loopType: 'repeat',
@@ -287,20 +315,22 @@ export class IRBuilder {
         };
       }
 
-      case 'ForEachStatement': {
-        const s = stmt as ForEachStatementNode;
+      case 'ForEachStatement':
+      case 'ForEachLoop': {
+        const s = stmt as any;
         return {
           kind: 'IRForEach',
-          iteratorVar: s.itemVar,
-          collection: this.transformExpression(s.collection),
-          body: this.transformBlock(s.body),
+          iteratorVar: s.iterator || s.itemVar || 'item',
+          collection: this.transformExpression(s.iterable || s.collection),
+          body: this.transformBlock(s.body || []),
           sourceLine: s.line,
           sourceColumn: s.column,
         };
       }
 
-      case 'ActionDeclaration': {
-        return this.transformActionDeclaration(stmt as ActionDeclarationNode);
+      case 'ActionDeclaration':
+      case 'ActionDefinition': {
+        return this.transformActionDeclaration(stmt as any);
       }
 
       case 'CallStatement': {
@@ -315,21 +345,23 @@ export class IRBuilder {
       }
 
       case 'ReturnStatement': {
-        const s = stmt as ReturnStatementNode;
+        const s = stmt as any;
+        const retVal = s.expression || s.value;
         return {
           kind: 'IRReturn',
-          value: s.value ? this.transformExpression(s.value) : undefined,
+          value: retVal ? this.transformExpression(retVal) : undefined,
           sourceLine: s.line,
           sourceColumn: s.column,
         };
       }
 
-      case 'TryStatement': {
-        const s = stmt as TryStatementNode;
+      case 'TryStatement':
+      case 'TryBlock': {
+        const s = stmt as any;
         return {
           kind: 'IRTryCatch',
-          tryBody: this.transformBlock(s.tryBlock),
-          catchBody: this.transformBlock(s.catchBlock),
+          tryBody: this.transformBlock(s.tryBlock || s.body || []),
+          catchBody: this.transformBlock(s.catchBlock || s.catchBranch || []),
           sourceLine: s.line,
           sourceColumn: s.column,
         };
@@ -337,12 +369,14 @@ export class IRBuilder {
 
       // Manifest v0.2 UI Primitives
       case 'StateDeclaration': {
-        const s = stmt as StateDeclarationNode;
-        this.declaredVariables.add(s.variable);
+        const s = stmt as any;
+        const varName = s.name || s.variable;
+        const val = s.initialValue || s.value;
+        this.declaredVariables.add(varName);
         return {
           kind: 'IRState',
-          name: s.variable,
-          initialValue: this.transformExpression(s.value),
+          name: varName,
+          initialValue: val ? this.transformExpression(val) : { kind: 'IRLiteral', value: 0, dataType: 'number' },
           sourceLine: s.line,
           sourceColumn: s.column,
         };
@@ -404,10 +438,10 @@ export class IRBuilder {
       }
 
       case 'Text': {
-        const s = stmt as TextNode;
+        const s = stmt as any;
         return {
           kind: 'IRText',
-          expression: this.transformExpression(s.expression),
+          expression: this.transformExpression(s.expression || s.content),
           styles: s.styles,
           sourceLine: s.line,
           sourceColumn: s.column,
@@ -415,11 +449,25 @@ export class IRBuilder {
       }
 
       case 'Button': {
-        const s = stmt as ButtonNode;
+        const s = stmt as any;
+        const handlers: IREventHandlerNode[] = s.eventHandlers
+          ? s.eventHandlers.map((h: any) => this.transformWhenStatement(h))
+          : s.onClick
+          ? [
+              this.transformWhenStatement({
+                type: 'WhenBlock',
+                event: 'click',
+                body: s.onClick,
+                line: s.line,
+                column: s.column,
+              } as any),
+            ]
+          : [];
+
         return {
           kind: 'IRButton',
           label: this.transformExpression(s.label),
-          eventHandlers: s.eventHandlers.map((h) => this.transformWhenStatement(h)),
+          eventHandlers: handlers,
           styles: s.styles,
           sourceLine: s.line,
           sourceColumn: s.column,
@@ -427,11 +475,11 @@ export class IRBuilder {
       }
 
       case 'Input': {
-        const s = stmt as InputNode;
+        const s = stmt as any;
         return {
           kind: 'IRInput',
           placeholder: s.placeholder ? this.transformExpression(s.placeholder) : undefined,
-          bindVariable: s.targetVariable,
+          bindVariable: s.targetVariable || s.variable || s.bindVariable || '',
           inputType: s.inputType,
           styles: s.styles,
           sourceLine: s.line,
@@ -440,7 +488,7 @@ export class IRBuilder {
       }
 
       case 'Image': {
-        const s = stmt as ImageNode;
+        const s = stmt as any;
         return {
           kind: 'IRImage',
           src: this.transformExpression(s.src),
@@ -452,17 +500,18 @@ export class IRBuilder {
       }
 
       case 'Form': {
-        const s = stmt as FormNode;
+        const s = stmt as any;
         const formChildren: IRUINode[] = [];
-        for (const child of s.body) {
+        const formBody = s.body || s.children || [];
+        for (const child of formBody) {
           const childIR = this.transformStatement(child) as IRUINode;
           if (childIR) formChildren.push(childIR);
         }
         return {
           kind: 'IRForm',
-          name: s.name,
+          name: s.name || 'Form',
           children: formChildren,
-          eventHandlers: s.eventHandlers.map((h) => this.transformWhenStatement(h)),
+          eventHandlers: s.eventHandlers ? s.eventHandlers.map((h: any) => this.transformWhenStatement(h)) : [],
           styles: s.styles,
           sourceLine: s.line,
           sourceColumn: s.column,
@@ -470,9 +519,9 @@ export class IRBuilder {
       }
 
       case 'Container': {
-        const s = stmt as ContainerNode;
+        const s = stmt as any;
         const children: IRUINode[] = [];
-        for (const child of s.children) {
+        for (const child of (s.children || [])) {
           const childIR = this.transformStatement(child) as IRUINode;
           if (childIR) children.push(childIR);
         }
@@ -504,16 +553,17 @@ export class IRBuilder {
       }
 
       case 'List': {
-        const s = stmt as ListNode;
+        const s = stmt as any;
         const children: IRUINode[] = [];
-        for (const child of s.children) {
+        for (const child of (s.children || [])) {
           const childIR = this.transformStatement(child) as IRUINode;
           if (childIR) children.push(childIR);
         }
+        const collectionExpr = s.collection ? this.transformExpression(s.collection) : (s.iterable ? this.transformExpression(s.iterable) : undefined);
         return {
           kind: 'IRList',
-          collection: s.collection ? this.transformExpression(s.collection) : undefined,
-          itemVar: s.itemVar,
+          collection: collectionExpr,
+          itemVar: s.itemVar || s.iterator,
           styles: s.styles,
           children,
           sourceLine: s.line,
@@ -522,11 +572,12 @@ export class IRBuilder {
       }
 
       case 'Link': {
-        const s = stmt as LinkNode;
+        const s = stmt as any;
+        const targetRaw = s.target || s.href || '#';
         return {
           kind: 'IRLink',
           label: this.transformExpression(s.label),
-          target: this.transformExpression(s.target),
+          target: this.transformExpression(targetRaw),
           styles: s.styles,
           sourceLine: s.line,
           sourceColumn: s.column,
@@ -589,16 +640,16 @@ export class IRBuilder {
       }
 
       case 'ComponentDeclaration': {
-        const s = stmt as ComponentDeclarationNode;
+        const s = stmt as any;
         const body: IRInstructionNode[] = [];
-        for (const child of s.body) {
+        for (const child of (s.body || s.children || [])) {
           const childIR = this.transformStatement(child);
           if (childIR) body.push(childIR);
         }
         return {
           kind: 'IRComponentDecl',
           name: s.name,
-          parameters: [...s.params],
+          parameters: [...(s.params || s.parameters || [])],
           body,
           sourceLine: s.line,
           sourceColumn: s.column,
@@ -606,14 +657,14 @@ export class IRBuilder {
       }
 
       case 'ComponentCall': {
-        const s = stmt as ComponentCallNode;
+        const s = stmt as any;
         const props: Record<string, IRExpressionNode> = {};
-        for (const [k, v] of Object.entries(s.props)) {
+        for (const [k, v] of Object.entries(s.props || {})) {
           props[k] = this.transformExpression(v);
         }
         return {
           kind: 'IRComponentCall',
-          componentName: s.name,
+          componentName: s.componentName || s.name,
           props,
           styles: s.styles,
           sourceLine: s.line,
@@ -622,11 +673,55 @@ export class IRBuilder {
       }
 
       case 'RouteDeclaration': {
-        const s = stmt as RouteDeclarationNode;
+        const s = stmt as any;
         return {
           kind: 'IRRoute',
           path: s.path,
-          targetPage: s.targetPage,
+          targetPage: s.targetPage || s.pageName,
+          sourceLine: s.line,
+          sourceColumn: s.column,
+        };
+      }
+
+      case 'NavigateStatement': {
+        const s = stmt as any;
+        return {
+          kind: 'IRNavigate',
+          target: this.transformExpression(s.target),
+          sourceLine: s.line,
+          sourceColumn: s.column,
+        };
+      }
+
+      case 'Icon': {
+        const s = stmt as any;
+        return {
+          kind: 'IRIcon',
+          name: this.transformExpression(s.name),
+          size: s.size,
+          styles: s.styles,
+          sourceLine: s.line,
+          sourceColumn: s.column,
+        };
+      }
+
+      case 'Badge': {
+        const s = stmt as any;
+        return {
+          kind: 'IRBadge',
+          text: this.transformExpression(s.label || s.text),
+          styles: s.styles,
+          sourceLine: s.line,
+          sourceColumn: s.column,
+        };
+      }
+
+      case 'Progress': {
+        const s = stmt as any;
+        return {
+          kind: 'IRProgress',
+          value: this.transformExpression(s.value),
+          styles: s.styles,
           sourceLine: s.line,
           sourceColumn: s.column,
         };
@@ -648,28 +743,35 @@ export class IRBuilder {
     return block;
   }
 
-  private transformActionDeclaration(stmt: ActionDeclarationNode): IRActionDeclNode {
+  private transformActionDeclaration(stmt: any): IRActionDeclNode {
     return {
       kind: 'IRActionDecl',
       name: stmt.name,
-      parameters: [...stmt.params],
-      body: this.transformBlock(stmt.body),
+      parameters: [...(stmt.params || stmt.parameters || [])],
+      body: this.transformBlock(stmt.body || []),
       sourceLine: stmt.line,
       sourceColumn: stmt.column,
     };
   }
 
-  private transformWhenStatement(stmt: WhenStatementNode): IREventHandlerNode {
+  private transformWhenStatement(stmt: any): IREventHandlerNode {
     return {
       kind: 'IREventHandler',
-      eventName: stmt.eventName,
-      body: this.transformBlock(stmt.body),
+      eventName: stmt.eventName || stmt.event || '',
+      body: this.transformBlock(stmt.body || []),
       sourceLine: stmt.line,
       sourceColumn: stmt.column,
     };
   }
 
-  public transformExpression(expr: ExpressionNode): IRExpressionNode {
+  public transformExpression(expr: any): IRExpressionNode {
+    if (!expr) {
+      return { kind: 'IRLiteral', value: '', dataType: 'string', sourceLine: 1, sourceColumn: 1 };
+    }
+    if (typeof expr === 'string' || typeof expr === 'number' || typeof expr === 'boolean') {
+      return { kind: 'IRLiteral', value: expr, dataType: typeof expr as any, sourceLine: 1, sourceColumn: 1 };
+    }
+
     switch (expr.type) {
       case 'Literal': {
         const lit = expr as LiteralNode;
@@ -697,8 +799,9 @@ export class IRBuilder {
         };
       }
 
+      case 'Identifier':
       case 'VariableReference': {
-        const ref = expr as VariableReferenceNode;
+        const ref = expr as any;
         return {
           kind: 'IRVariableRef',
           name: ref.name,
@@ -754,6 +857,152 @@ export class IRBuilder {
 
       default:
         throw new Error(`Unknown expression type: ${(expr as any).type}`);
+    }
+  }
+
+  private transformSolanaProgram(stmt: any, appName: string): SolanaProgramIR {
+    const progName = stmt.name || appName || 'CounterProgram';
+    const accounts: any[] = [];
+    const instructions: any[] = [];
+    let rawRustEscape: string | undefined;
+
+    for (const item of stmt.body || []) {
+      if (item.type === 'AccountDeclaration') {
+        const fields = (item.fields || []).map((f: any) => ({
+          name: f.name,
+          fieldType: normalizeSolanaType(f.fieldType || 'u64'),
+          isSigner: Boolean(f.isSigner),
+        }));
+        accounts.push({
+          name: item.name,
+          fields,
+          spaceEstimate: calculateAccountSpace(fields),
+        });
+      } else if (item.type === 'InstructionDeclaration') {
+        const requires: string[] = [];
+        const mutations: any[] = [];
+        const cpis: any[] = [];
+        let rawRust: string | undefined;
+
+        for (const sub of item.body || []) {
+          if (sub.type === 'Require') {
+            const condStr = this.expressionToString(sub.condition);
+            requires.push(condStr);
+          } else if (sub.type === 'SetStatement') {
+            const valStr = this.expressionToString(sub.value);
+            mutations.push({
+              target: sub.variable,
+              expression: valStr,
+            });
+          } else if (sub.type === 'CpiCall') {
+            cpis.push({
+              targetProgram: sub.programName,
+              instructionName: sub.methodName,
+              params: {},
+            });
+          } else if (sub.type === 'RustEscape') {
+            rawRust = sub.rustContent;
+          }
+        }
+
+        const ctxAccounts: any[] = [];
+        for (const acc of accounts) {
+          ctxAccounts.push({
+            name: acc.name.toLowerCase().replace(/state$/i, '') || 'state',
+            isMut: true,
+            isSigner: false,
+            accountType: acc.name,
+          });
+        }
+        ctxAccounts.push({
+          name: 'authority',
+          isMut: true,
+          isSigner: true,
+        });
+
+        instructions.push({
+          name: item.name,
+          accounts: ctxAccounts,
+          requires,
+          mutations,
+          cpis,
+          rawRust,
+        });
+      } else if (item.type === 'RustEscape') {
+        rawRustEscape = item.rustContent;
+      }
+    }
+
+    return {
+      programName: progName,
+      programId: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS',
+      accounts,
+      instructions,
+      rawRustEscape,
+    };
+  }
+
+  private synthesizeSolanaProgram(ast: any, state: IRStateNode[], actions: IRActionDeclNode[]): SolanaProgramIR {
+    const progName = ast.appName || ast.name || 'CounterProgram';
+    const fields = state.map((s) => ({
+      name: s.name,
+      fieldType: normalizeSolanaType('u64'),
+    }));
+    if (fields.length === 0) {
+      fields.push({ name: 'counter', fieldType: normalizeSolanaType('u64') });
+    }
+
+    const instructions = actions.map((act) => ({
+      name: act.name,
+      accounts: [
+        { name: 'state', isMut: true, isSigner: false, accountType: `${progName}State` },
+        { name: 'authority', isMut: true, isSigner: true },
+      ],
+      requires: ['signer = authority'],
+      mutations: [{ target: 'state.counter', expression: 'state.counter + 1' }],
+      cpis: [],
+    }));
+
+    if (instructions.length === 0) {
+      instructions.push({
+        name: 'increment',
+        accounts: [
+          { name: 'state', isMut: true, isSigner: false, accountType: `${progName}State` },
+          { name: 'authority', isMut: true, isSigner: true },
+        ],
+        requires: ['signer = authority'],
+        mutations: [{ target: 'state.counter', expression: 'state.counter + 1' }],
+        cpis: [],
+      });
+    }
+
+    return {
+      programName: progName,
+      programId: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS',
+      accounts: [
+        {
+          name: `${progName}State`,
+          fields,
+          spaceEstimate: calculateAccountSpace(fields),
+        },
+      ],
+      instructions,
+    };
+  }
+
+  private expressionToString(expr: any): string {
+    if (!expr) return '';
+    switch (expr.type) {
+      case 'Literal':
+        return String(expr.value);
+      case 'VariableReference':
+        return expr.name;
+      case 'BinaryExpression':
+        return `${this.expressionToString(expr.left)} ${expr.operator} ${this.expressionToString(expr.right)}`;
+      case 'UnaryExpression':
+        return `${expr.operator} ${this.expressionToString(expr.argument)}`;
+      default:
+        return String(expr.value || expr.name || '');
     }
   }
 }

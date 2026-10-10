@@ -1,171 +1,113 @@
-/**
- * Manifest Compiler Core Engine
- * Coordinates Lexer -> Parser -> Validator -> IR Builder -> TargetCompiler
- */
-
 import { Lexer } from '../lexer/lexer.ts';
 import { Parser } from '../parser/parser.ts';
-import { Validator } from '../validator/validator.ts';
-import { ProgramNode } from '../ast/ast.ts';
-import { IRProgramNode } from '../ir/ir.ts';
+import { Validator, ValidationResult } from '../validator/validator.ts';
 import { IRBuilder } from '../ir/ir-builder.ts';
+import { IRProgramNode } from '../ir/ir.ts';
 import {
-  ManifestCompiler,
   TargetCompiler,
   CompilationResult,
   TargetCompilerOptions,
 } from './compiler-interface.ts';
-import { JavaScriptTargetCompiler } from './targets/js-target.ts';
+import { JSTargetCompiler } from './targets/js-target.ts';
 import { SolanaTargetCompiler } from './targets/solana-target.ts';
 
-export class Compiler implements ManifestCompiler {
-  private targets: Map<string, TargetCompiler> = new Map();
-  private irBuilder: IRBuilder;
+export class CompilerRegistry {
+  private static compilers: Map<string, TargetCompiler> = new Map();
 
-  constructor() {
-    this.irBuilder = new IRBuilder();
-    // Register default reference targets
-    this.registerTarget(new JavaScriptTargetCompiler());
-    // Alias 'javascript' and 'web' to 'js'
-    const jsTarget = this.targets.get('js')!;
-    this.targets.set('javascript', jsTarget);
-    this.targets.set('web', jsTarget);
-
-    // Register Solana Anchor target
-    const solanaTarget = new SolanaTargetCompiler();
-    this.registerTarget(solanaTarget);
-    this.targets.set('anchor', solanaTarget);
+  static {
+    this.register(new JSTargetCompiler());
+    this.register(new SolanaTargetCompiler());
   }
 
-  public registerTarget(target: TargetCompiler): void {
-    this.targets.set(target.targetName.toLowerCase(), target);
+  public static register(compiler: TargetCompiler): void {
+    this.compilers.set(compiler.targetName.toLowerCase(), compiler);
   }
 
-  public getSupportedTargets(): string[] {
-    return Array.from(new Set(this.targets.keys()));
+  public static get(targetName: string): TargetCompiler | undefined {
+    return this.compilers.get(targetName.toLowerCase());
   }
 
-  public async compile(
-    source: string,
-    targetName: string = 'js',
-    options?: TargetCompilerOptions
-  ): Promise<CompilationResult> {
-    const normTarget = targetName.toLowerCase();
-    const targetCompiler = this.targets.get(normTarget);
+  public static has(targetName: string): boolean {
+    return this.compilers.has(targetName.toLowerCase());
+  }
+}
 
-    if (!targetCompiler) {
-      return {
-        success: false,
-        target: targetName,
-        artifacts: [],
-        diagnostics: [
-          {
-            severity: 'error',
-            message: `Unsupported target '${targetName}'. Supported targets are: ${this.getSupportedTargets().join(', ')}`,
-            target: targetName,
-            hint: 'Use target "js" or "javascript" to compile to modern JavaScript.',
-          },
-        ],
-      };
-    }
+export function inspectManifest(source: string): {
+  tokens?: any[];
+  ast?: any;
+  program?: any;
+  validation?: ValidationResult;
+  diagnostics: any[];
+} {
+  const diagnostics: any[] = [];
+  try {
+    const lexer = new Lexer(source);
+    const tokens = lexer.tokenize();
+    const parser = new Parser(tokens);
+    const ast = parser.parse();
+    const validator = new Validator();
+    const validation = validator.validate(ast);
+    return { tokens, ast, program: ast, validation, diagnostics };
+  } catch (err: any) {
+    diagnostics.push({
+      line: err.line || 1,
+      column: err.column || 1,
+      message: err.message || String(err),
+      severity: 'error',
+      hint: err.hint,
+      example: err.example,
+    });
+    return { diagnostics };
+  }
+}
 
-    try {
-      // 1. Lexer
-      const lexer = new Lexer(source);
-      const tokens = lexer.tokenize();
+export function generateManifestIR(source: string): IRProgramNode {
+  const lexer = new Lexer(source);
+  const tokens = lexer.tokenize();
+  const parser = new Parser(tokens);
+  const ast = parser.parse();
+  const builder = new IRBuilder();
+  return builder.build(ast);
+}
 
-      // 2. Parser
-      const parser = new Parser(tokens, source);
-      const ast = parser.parse();
-
-      // 3. Validator
-      const validator = new Validator(ast, source);
-      const validation = validator.validate();
-      if (!validation.isValid) {
-        return {
-          success: false,
-          target: targetName,
-          artifacts: [],
-          diagnostics: validation.issues.map((issue) => ({
-            severity: issue.severity,
-            message: issue.message,
-            line: issue.line,
-            column: issue.column,
-            hint: issue.hint,
-          })),
-        };
-      }
-
-      // 4. IR Builder
-      const ir = this.irBuilder.build(ast);
-
-      // 5. Target Compiler
-      return await targetCompiler.compile(ir, options);
-    } catch (err: any) {
-      return {
-        success: false,
-        target: targetName,
-        artifacts: [],
-        diagnostics: [
-          {
-            severity: 'error',
-            message: err.message || String(err),
-            line: err.line,
-            column: err.column,
-          },
-        ],
-      };
-    }
+export async function compileManifest(
+  source: string,
+  targetName = 'js',
+  options: TargetCompilerOptions = {}
+): Promise<CompilationResult> {
+  const compiler = CompilerRegistry.get(targetName);
+  if (!compiler) {
+    return {
+      success: false,
+      target: targetName,
+      artifacts: [],
+      diagnostics: [
+        {
+          severity: 'error',
+          message: `Unsupported target '${targetName}'. Available targets: js, solana`,
+          hint: 'Register a target compiler using CompilerRegistry.register()',
+        },
+      ],
+    };
   }
 
-  public async compileAST(
-    ast: ProgramNode,
-    targetName: string = 'js',
-    options?: TargetCompilerOptions
-  ): Promise<CompilationResult> {
-    const normTarget = targetName.toLowerCase();
-    const targetCompiler = this.targets.get(normTarget);
-
-    if (!targetCompiler) {
-      return {
-        success: false,
-        target: targetName,
-        artifacts: [],
-        diagnostics: [
-          {
-            severity: 'error',
-            message: `Unsupported target '${targetName}'. Supported targets: ${this.getSupportedTargets().join(', ')}`,
-          },
-        ],
-      };
-    }
-
-    const ir = this.irBuilder.build(ast);
-    return await targetCompiler.compile(ir, options);
-  }
-
-  public async compileIR(
-    ir: IRProgramNode,
-    targetName: string = 'js',
-    options?: TargetCompilerOptions
-  ): Promise<CompilationResult> {
-    const normTarget = targetName.toLowerCase();
-    const targetCompiler = this.targets.get(normTarget);
-
-    if (!targetCompiler) {
-      return {
-        success: false,
-        target: targetName,
-        artifacts: [],
-        diagnostics: [
-          {
-            severity: 'error',
-            message: `Unsupported target '${targetName}'. Supported targets: ${this.getSupportedTargets().join(', ')}`,
-          },
-        ],
-      };
-    }
-
-    return await targetCompiler.compile(ir, options);
+  try {
+    const ir = generateManifestIR(source);
+    return await compiler.compile(ir, options);
+  } catch (err: any) {
+    return {
+      success: false,
+      target: targetName,
+      artifacts: [],
+      diagnostics: [
+        {
+          severity: 'error',
+          message: err.message || String(err),
+          line: err.line || 1,
+          column: err.column || 1,
+          hint: err.hint,
+        },
+      ],
+    };
   }
 }

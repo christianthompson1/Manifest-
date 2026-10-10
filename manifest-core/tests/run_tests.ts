@@ -366,7 +366,7 @@ export async function runAllTests(): Promise<{ passed: number; failed: number; t
   const v03Total = v03Summary.total;
 
   // Run Manifest v0.4 Solana, IDE & Architecture Tests
-  const v04Summary = runV04Tests();
+  const v04Summary = await runV04Tests();
   const v04Passed = v04Summary.passed;
   const v04Total = v04Summary.total;
 

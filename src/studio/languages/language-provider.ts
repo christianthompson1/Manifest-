@@ -1,25 +1,17 @@
-/**
- * Manifest Studio - Language Provider Abstraction & Capability Metadata
- * Section 2: All-Purpose Language Architecture
- *
- * Honestly defines what capabilities (editing, highlighting, completion, diagnostics,
- * formatting, localRun, cloudBuild, debugging) are supported locally offline vs cloud.
- */
-
 import { Extension } from '@codemirror/state';
 
 export interface LanguageCapabilities {
   editing: boolean;
   highlighting: boolean;
-  completion: 'native' | 'basic' | 'optional' | 'none';
+  completion: 'native' | 'basic' | 'none';
   diagnostics: 'native' | 'optional' | 'none';
   formatting: 'native' | 'optional' | 'none';
   localRun: boolean;
   cloudBuild: boolean;
-  debugging: 'supported' | 'simulated' | 'future' | 'none';
+  debugging: 'simulated' | 'future' | 'none';
 }
 
-export interface LanguageCommentSyntax {
+export interface CommentSyntax {
   lineComment?: string;
   blockComment?: { open: string; close: string };
 }
@@ -30,6 +22,6 @@ export interface LanguageProvider {
   extensions: string[];
   filenames?: string[];
   capabilities: LanguageCapabilities;
-  commentSyntax?: LanguageCommentSyntax;
+  commentSyntax?: CommentSyntax;
   getExtensions?: (readOnly?: boolean) => Extension[];
 }

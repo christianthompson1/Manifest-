@@ -2,18 +2,10 @@
  * Manifest Studio - Type Definitions
  */
 
-import { ManifestError } from '../../manifest-core/src/index.ts';
-
 export type FileLanguage =
   | 'manifest'
   | 'javascript'
-  | 'jsx'
   | 'typescript'
-  | 'tsx'
-  | 'html'
-  | 'css'
-  | 'json'
-  | 'markdown'
   | 'python'
   | 'rust'
   | 'c'
@@ -33,23 +25,39 @@ export type FileLanguage =
   | 'elixir'
   | 'haskell'
   | 'sql'
-  | 'toml'
+  | 'html'
+  | 'css'
+  | 'json'
   | 'yaml'
   | 'xml'
+  | 'markdown'
   | 'shell'
   | 'dockerfile'
-  | 'plaintext';
-
-export type ProjectKind = 'manifest' | 'solana' | 'node' | 'rust' | 'python' | 'web' | 'mixed';
+  | 'toml'
+  | 'plaintext'
+  | string;
 
 export interface ProjectFile {
   id: string;
   name: string;
-  path: string; // e.g. "src/main.manifest", "manifest.toml", "package.json", "src/App.tsx"
-  content: string;
-  isReadOnly?: boolean;
+  path: string;
   language: FileLanguage;
+  content: string;
+  isEntry?: boolean;
+  isReadOnly?: boolean;
 }
+
+export type ProjectKind =
+  | 'manifest'
+  | 'solana'
+  | 'node'
+  | 'rust'
+  | 'python'
+  | 'web'
+  | 'mixed'
+  | 'polyglot'
+  | 'other'
+  | string;
 
 export interface ProjectTemplate {
   id: string;
@@ -65,17 +73,17 @@ export interface ManifestProject {
   description?: string;
   kind?: ProjectKind;
   files: ProjectFile[];
-  activeFilePath: string;
-  createdAt: number;
-  updatedAt: number;
+  activeFilePath?: string;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export interface StudioDiagnostic {
   line: number;
-  column?: number;
+  column: number;
   message: string;
   severity: 'error' | 'warning' | 'info';
-  source?: 'lexer' | 'parser' | 'validator' | 'ir' | 'compiler' | 'runtime';
+  source: 'lexer' | 'parser' | 'validator' | 'ir' | 'compiler' | string;
   hint?: string;
   example?: string;
   sourceLine?: string;
@@ -101,10 +109,40 @@ export interface BuildResult {
 
 export interface ConsoleEntry {
   id: string;
-  timestamp: string;
-  type: 'output' | 'info' | 'error' | 'build';
+  type: 'log' | 'error' | 'warn' | 'info' | 'system' | 'build' | 'output';
   message: string;
+  timestamp: number | string;
 }
 
-export type MobileTab = 'files' | 'editor' | 'preview' | 'console' | 'problems';
-export type BottomPanelTab = 'console' | 'problems' | 'ir' | 'build-output';
+export interface LiteSVMStepResult {
+  stepName: string;
+  instructionName: string;
+  success: boolean;
+  signature: string;
+  computeUnitsUsed: number;
+  logs: string[];
+  error?: string;
+  accountsState: Array<{
+    address: string;
+    role: string;
+    lamports: string;
+    balanceSol: number;
+  }>;
+}
+
+export interface LiteSVMTestSuiteResult {
+  success: boolean;
+  programName: string;
+  programId: string;
+  durationMs: number;
+  stepsCount: number;
+  passedCount: number;
+  failedCount: number;
+  totalComputeUnits: number;
+  steps: LiteSVMStepResult[];
+  idl: any;
+  rustGenerated: boolean;
+  error?: string;
+}
+
+export type BottomPanelTab = 'problems' | 'console' | 'build-output' | 'terminal' | 'litesvm';

@@ -67,6 +67,7 @@ interface SidebarProps {
   onOpenGitHubImport?: () => void;
   onOpenSolanaDeploy?: () => void;
   onOpenMainnetWarning?: () => void;
+  onOpenSettings?: () => void;
   onShowToast?: (msg: string) => void;
   settings: StudioSettings;
   onUpdateSettings: (settings: StudioSettings) => void;
@@ -90,6 +91,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenGitHubImport,
   onOpenSolanaDeploy,
   onOpenMainnetWarning,
+  onOpenSettings,
   onShowToast,
   settings,
   onUpdateSettings,
@@ -609,36 +611,34 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 )}
               </div>
 
-              {/* Deployment Actions */}
+              {/* Solana Verification & Controls */}
               <div className="space-y-1.5">
-                <div className="text-[10px] uppercase font-semibold text-[#858585]">Deployment Controls</div>
+                <div className="text-[10px] uppercase font-semibold text-[#858585]">Solana Verification &amp; Tx</div>
                 <button
                   onClick={onOpenSolanaDeploy}
                   className="w-full py-2 px-3 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] border border-[#8b5cf6]/40 text-[#ffffff] text-xs font-semibold flex items-center justify-between cursor-pointer"
                 >
                   <div className="flex items-center gap-2">
-                    <Play className="w-3.5 h-3.5 text-[#8b5cf6] fill-current" />
-                    <span>Deploy to Devnet</span>
+                    <Coins className="w-3.5 h-3.5 text-[#8b5cf6]" />
+                    <span>Solana Verification Panel</span>
                   </div>
                   <ChevronRight className="w-3.5 h-3.5 text-[#858585]" />
                 </button>
 
-                <button
-                  onClick={() => {
-                    if (walletState.network !== 'mainnet') {
-                      onOpenMainnetWarning?.();
-                    } else {
-                      onOpenSolanaDeploy?.();
-                    }
-                  }}
-                  className="w-full py-2 px-3 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] border border-[#f14c4c]/40 text-[#f85149] text-xs font-semibold flex items-center justify-between cursor-pointer"
-                >
-                  <div className="flex items-center gap-2">
-                    <ShieldAlert className="w-3.5 h-3.5" />
-                    <span>Deploy to Mainnet</span>
+                <div className="p-2.5 rounded-lg bg-[#252526]/50 border border-[#2d2d2d] text-[11px] text-[#858585] space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span>Program Build:</span>
+                    <span className="text-[#89d185] font-mono">Phase 3 Ready</span>
                   </div>
-                  <ChevronRight className="w-3.5 h-3.5 text-[#858585]" />
-                </button>
+                  <div className="flex items-center justify-between">
+                    <span>Native LiteSVM:</span>
+                    <span className="text-[#89d185] font-mono">In-Process Active</span>
+                  </div>
+                  <div className="flex items-center justify-between pt-1 border-t border-[#2d2d2d]">
+                    <span>Deployment:</span>
+                    <span className="text-[#f85149] font-mono font-semibold">Phase 4 (Not Implemented)</span>
+                  </div>
+                </div>
               </div>
 
               {/* Priority Fees */}
@@ -710,7 +710,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div className="text-[10px] font-semibold text-[#858585] uppercase mb-1">
                 Declared Libraries & Capabilities
               </div>
-              {LibraryRegistry.getInstance().listLibraries().map((lib) => (
+              {LibraryRegistry.getInstance().listLibraries().map((lib: any) => (
                 <div
                   key={lib.name}
                   className="p-2.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-1"
@@ -742,7 +742,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 />
               </div>
 
-              <div className="pt-2 border-t border-[#2d2d2d]">
+              <div className="pt-2 border-t border-[#2d2d2d] space-y-2">
+                {onOpenSettings && (
+                  <button
+                    onClick={onOpenSettings}
+                    className="w-full py-1.5 px-2.5 rounded bg-[#242424] hover:bg-[#2d2d2d] text-[#cccccc] font-medium text-xs transition cursor-pointer flex items-center justify-center gap-1.5 border border-[#2d2d2d]"
+                  >
+                    <Settings className="w-3.5 h-3.5 text-[#9cdcfe]" />
+                    <span>Project & Studio Settings</span>
+                  </button>
+                )}
                 <button
                   onClick={onOpenDevTools}
                   className="w-full py-1.5 px-2.5 rounded bg-[#242424] hover:bg-[#2d2d2d] text-[#cccccc] font-medium text-xs transition cursor-pointer flex items-center justify-center gap-1.5 border border-[#2d2d2d]"

@@ -13,8 +13,10 @@ import { AnchorGenerator } from '../src/solana/anchor-generator.ts';
 import { SolanaSimulator } from '../src/solana/solana-simulator.ts';
 import { LibraryRegistry } from '../src/libraries/library-registry.ts';
 import { LanguageRegistry } from '../../src/studio/languages/language-registry.ts';
+import { TEMPLATES } from '../../src/studio/project-store.ts';
+import { compileManifest } from '../src/index.ts';
 
-export function runV04Tests(): { passed: number; failed: number; total: number } {
+export async function runV04Tests(): Promise<{ passed: number; failed: number; total: number }> {
   let passed = 0;
   let failed = 0;
 
@@ -200,6 +202,24 @@ export function runV04Tests(): { passed: number; failed: number; total: number }
     assert(ast.statements.some((s) => s.type === 'JsEscape'), '6. AST captures JsEscape block');
   } catch (err: any) {
     assert(false, `6. Escape hatches error: ${err.message}`);
+  }
+
+  // Test 7: All Manifest Templates Compile Cleanly (Section 3 Regression Test)
+  try {
+    for (const tpl of TEMPLATES) {
+      const mf = tpl.files.find((f) => f.path.endsWith('.manifest'));
+      if (mf) {
+        const target = tpl.id === 'solana-dapp' ? 'solana' : 'js';
+        const res = await compileManifest(mf.content, target);
+        const errorCount = res.diagnostics.filter((d) => d.severity === 'error').length;
+        assert(
+          res.success === true && errorCount === 0,
+          `7. Template "${tpl.name}" (${tpl.id}) compiles cleanly with 0 errors`
+        );
+      }
+    }
+  } catch (err: any) {
+    assert(false, `7. Templates regression error: ${err.message}`);
   }
 
   const total = passed + failed;

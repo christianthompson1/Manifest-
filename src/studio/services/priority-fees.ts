@@ -1,10 +1,10 @@
 /**
  * Manifest Studio - Dynamic Priority Fee Service
- * Implements Section 17: Dynamic Priority Fees
+ * Implements Section 19: Dynamic Priority Fees
  * - PriorityFeeProvider abstraction
  * - Helius getPriorityFeeEstimate integration
- * - Levels: AUTO, LOW, MEDIUM, HIGH (Default: MEDIUM)
- * - Computes micro-lamports per compute unit
+ * - Base fee, Priority fee, and Total estimated fee
+ * - Encodes micro-lamports into ComputeBudgetProgram.setComputeUnitPrice
  */
 
 import { SolanaWalletService } from './solana-wallet.ts';
@@ -14,7 +14,10 @@ export type PriorityFeeLevel = 'auto' | 'low' | 'medium' | 'high';
 export interface PriorityFeeEstimate {
   level: PriorityFeeLevel;
   microLamports: number;
-  estimatedSolCost: number; // For standard 200,000 CU limit
+  baseFeeSol: number;       // Base Solana transaction fee (5,000 lamports = 0.000005 SOL)
+  priorityFeeSol: number;   // Calculated priority fee in SOL for 200,000 CU
+  totalFeeSol: number;      // Total = Base fee + Priority fee
+  estimatedSolCost: number; // Alias for estimated priority fee cost in SOL
   source: 'helius_api' | 'cluster_heuristic' | 'fallback';
 }
 
@@ -38,8 +41,9 @@ export class HeliusPriorityFeeProvider implements PriorityFeeProvider {
   ): Promise<PriorityFeeEstimate> {
     const walletService = SolanaWalletService.getInstance();
     const endpoint = walletService.getRpcEndpoint();
+    const baseFeeSol = 0.000005; // 5,000 lamports
 
-    // Base heuristics (micro-lamports per CU)
+    // Heuristics baseline (micro-lamports per CU)
     const baseEstimates: Record<PriorityFeeLevel, number> = {
       low: 1000,      // 0.000001 lamports/CU
       medium: 50000,  // 0.00005 lamports/CU (~0.00001 SOL per 200k CU)
@@ -47,7 +51,7 @@ export class HeliusPriorityFeeProvider implements PriorityFeeProvider {
       auto: 75000,    // Dynamic average
     };
 
-    // Attempt real Helius Priority Fee RPC call if API key / endpoint is configured
+    // Attempt real Helius Priority Fee RPC call if endpoint is configured
     try {
       if (endpoint.includes('helius')) {
         const response = await fetch(endpoint, {
@@ -77,32 +81,78 @@ export class HeliusPriorityFeeProvider implements PriorityFeeProvider {
             else if (level === 'medium') fee = Math.round(levels.medium || baseEstimates.medium);
             else if (level === 'high') fee = Math.round(levels.high || baseEstimates.high);
             else if (level === 'auto') {
-              // Auto balances between medium and high
               fee = Math.round((levels.medium || 50000) * 1.25);
             }
 
-            const estimatedSol = (fee * 200000) / 1e15; // microLamports to SOL
+            const priorityFeeSol = Number(((fee * 200000) / 1e15).toFixed(6));
             return {
               level,
               microLamports: Math.max(1000, fee),
-              estimatedSolCost: Number(estimatedSol.toFixed(6)),
+              baseFeeSol,
+              priorityFeeSol,
+              totalFeeSol: Number((baseFeeSol + priorityFeeSol).toFixed(6)),
+              estimatedSolCost: priorityFeeSol,
               source: 'helius_api',
             };
           }
         }
+      } else {
+        // Query standard Solana RPC getRecentPrioritizationFees
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 'rpc-prioritization-fees',
+            method: 'getRecentPrioritizationFees',
+            params: accountKeys.length > 0 ? [accountKeys] : [],
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const recent = data?.result as Array<{ slot: number; prioritizationFee: number }> | undefined;
+          if (recent && recent.length > 0) {
+            const nonZero = recent.map((r) => r.prioritizationFee).filter((f) => f > 0).sort((a, b) => a - b);
+            if (nonZero.length > 0) {
+              const p25 = nonZero[Math.floor(nonZero.length * 0.25)] || 1000;
+              const p50 = nonZero[Math.floor(nonZero.length * 0.5)] || 5000;
+              const p75 = nonZero[Math.floor(nonZero.length * 0.75)] || 25000;
+
+              let fee = p50;
+              if (level === 'low') fee = Math.max(1000, p25);
+              else if (level === 'medium') fee = Math.max(5000, p50);
+              else if (level === 'high') fee = Math.max(20000, p75);
+              else if (level === 'auto') fee = Math.max(7500, Math.round(p50 * 1.5));
+
+              const priorityFeeSol = Number(((fee * 200000) / 1e15).toFixed(6));
+              return {
+                level,
+                microLamports: fee,
+                baseFeeSol,
+                priorityFeeSol,
+                totalFeeSol: Number((baseFeeSol + priorityFeeSol).toFixed(6)),
+                estimatedSolCost: priorityFeeSol,
+                source: 'cluster_heuristic',
+              };
+            }
+          }
+        }
       }
     } catch (err) {
-      console.warn('Helius priority fee RPC call fallback:', err);
+      console.warn('Priority fee RPC query fallback:', err);
     }
 
-    // Cluster fallback estimate
     const fee = baseEstimates[level];
-    const estimatedSol = (fee * 200000) / 1e15;
+    const priorityFeeSol = Number(((fee * 200000) / 1e15).toFixed(6));
 
     return {
       level,
       microLamports: fee,
-      estimatedSolCost: Number(estimatedSol.toFixed(6)),
+      baseFeeSol,
+      priorityFeeSol,
+      totalFeeSol: Number((baseFeeSol + priorityFeeSol).toFixed(6)),
+      estimatedSolCost: priorityFeeSol,
       source: 'cluster_heuristic',
     };
   }

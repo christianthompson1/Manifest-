@@ -28,22 +28,72 @@ export class SolanaTargetCompiler implements TargetCompiler {
 
     try {
       const result = AnchorGenerator.generate(solanaProgram);
+      const snakeName = solanaProgram.programName.toLowerCase().replace(/[^a-z0-9_]/g, '_');
 
-      // 1. Rust Source Code (src/lib.rs)
+      // 1. Rust Source Code (src/lib.rs and programs/<name>/src/lib.rs)
       artifacts.push({
         fileName: 'lib.rs',
         content: result.rustCode,
         fileType: 'text',
       });
-
-      // 2. Anchor IDL JSON
       artifacts.push({
-        fileName: `${solanaProgram.programName.toLowerCase()}.json`,
+        fileName: `programs/${snakeName}/src/lib.rs`,
+        content: result.rustCode,
+        fileType: 'text',
+      });
+
+      // 2. Program Cargo.toml
+      artifacts.push({
+        fileName: `programs/${snakeName}/Cargo.toml`,
+        content: `[package]
+name = "${snakeName}"
+version = "0.1.0"
+description = "Created with Manifest Studio"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "${snakeName}"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+
+[dependencies]
+anchor-lang = "0.30.1"
+anchor-spl = "0.30.1"
+`,
+        fileType: 'text',
+      });
+
+      // 3. Root Workspace Cargo.toml
+      artifacts.push({
+        fileName: 'Cargo.toml',
+        content: `[workspace]
+members = [
+    "programs/*"
+]
+resolver = "2"
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1
+`,
+        fileType: 'text',
+      });
+
+      // 4. Anchor IDL JSON
+      artifacts.push({
+        fileName: `${snakeName}.json`,
         content: result.idlJson,
         fileType: 'json',
       });
 
-      // 3. Anchor Configuration (Anchor.toml)
+      // 5. Anchor Configuration (Anchor.toml)
       artifacts.push({
         fileName: 'Anchor.toml',
         content: `[features]
@@ -51,7 +101,7 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-${solanaProgram.programName.toLowerCase()} = "${solanaProgram.programId}"
+${snakeName} = "${solanaProgram.programId}"
 
 [registry]
 url = "https://api.apr.dev"

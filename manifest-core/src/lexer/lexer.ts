@@ -1,532 +1,473 @@
-/**
- * Manifest Core v0.1 - Lexer
- * Converts raw Manifest source code into a clean stream of tokens.
- */
-
 import { Token, TokenType } from './tokens.ts';
 import { ManifestError } from '../errors/manifest-error.ts';
 
-const KEYWORDS: Record<string, TokenType> = {
-  APP: TokenType.APP,
-  USE: TokenType.USE,
-  SET: TokenType.SET,
-  TO: TokenType.TO,
-  SHOW: TokenType.SHOW,
-  IF: TokenType.IF,
-  ELSE: TokenType.ELSE,
-  END: TokenType.END,
-  WHEN: TokenType.WHEN,
-  REPEAT: TokenType.REPEAT,
-  TIMES: TokenType.TIMES,
-  FOR: TokenType.FOR,
-  EACH: TokenType.EACH,
-  IN: TokenType.IN,
-  AS: TokenType.AS,
-  ACTION: TokenType.ACTION,
-  CALL: TokenType.CALL,
-  RETURN: TokenType.RETURN,
-  TRY: TokenType.TRY,
-  FAILED: TokenType.FAILED,
-
-  // Manifest v0.2 Application Primitives
-  PAGE: TokenType.PAGE,
-  TEXT: TokenType.TEXT,
-  BUTTON: TokenType.BUTTON,
-  INPUT: TokenType.INPUT,
-  IMAGE: TokenType.IMAGE,
-  FORM: TokenType.FORM,
-  STATE: TokenType.STATE,
-  ROUTE: TokenType.ROUTE,
-  CLICK: TokenType.CLICK,
-  SUBMIT: TokenType.SUBMIT,
-  CHANGE: TokenType.CHANGE,
-  INTO: TokenType.INTO,
-  BIND: TokenType.BIND,
-  ALT: TokenType.ALT,
-
-  // Manifest v0.3 UI Primitives, Layout & Design System
-  CONTAINER: TokenType.CONTAINER,
-  CARD: TokenType.CARD,
-  LIST: TokenType.LIST,
-  LINK: TokenType.LINK,
-  SELECT: TokenType.SELECT,
-  CHECKBOX: TokenType.CHECKBOX,
-  TEXTAREA: TokenType.TEXTAREA,
-  HEADER: TokenType.HEADER,
-  FOOTER: TokenType.FOOTER,
-  NAV: TokenType.NAV,
-  MODAL: TokenType.MODAL,
-  COMPONENT: TokenType.COMPONENT,
-  STYLE: TokenType.STYLE,
-  LAYOUT: TokenType.LAYOUT,
-  DIRECTION: TokenType.DIRECTION,
-
-  // Manifest v0.4 UI Primitives
-  TABLE: TokenType.TABLE,
-  DIALOG: TokenType.DIALOG,
-  TABS: TokenType.TABS,
-  MENU: TokenType.MENU,
-  SIDEBAR: TokenType.SIDEBAR,
-  AVATAR: TokenType.AVATAR,
-  BADGE: TokenType.BADGE,
-  PROGRESS: TokenType.PROGRESS,
-  ICON: TokenType.ICON,
-  VIDEO: TokenType.VIDEO,
-  AUDIO: TokenType.AUDIO,
-
-  // Escape Hatches
-  CSS: TokenType.CSS,
-  JS: TokenType.JS,
-  RUST: TokenType.RUST,
-
-  // Library & Animation
-  LIBRARY: TokenType.LIBRARY,
-  ANIMATE: TokenType.ANIMATE,
-
-  // Solana First-Class Primitives
-  PROGRAM: TokenType.PROGRAM,
-  ACCOUNT: TokenType.ACCOUNT,
-  INSTRUCTION: TokenType.INSTRUCTION,
-  REQUIRE: TokenType.REQUIRE,
-  SIGNER: TokenType.SIGNER,
-
-  // Responsive Styling
-  MOBILE: TokenType.MOBILE,
-  TABLET: TokenType.TABLET,
-  DESKTOP: TokenType.DESKTOP,
-
-  AND: TokenType.AND,
-  OR: TokenType.OR,
-  NOT: TokenType.NOT,
-
-  TRUE: TokenType.BOOLEAN,
-  FALSE: TokenType.BOOLEAN,
-  NULL: TokenType.NULL,
-  NONE: TokenType.NULL,
-  EMPTY: TokenType.NULL,
-};
-
 export class Lexer {
-  private readonly source: string;
-  private readonly lines: string[];
-  private cursor: number = 0;
-  private line: number = 1;
-  private column: number = 1;
+  private source: string;
+  private position = 0;
+  private line = 1;
+  private column = 1;
+  private tokens: Token[] = [];
+
+  private static KEYWORDS: Record<string, TokenType> = {
+    APP: TokenType.APP,
+    WHEN: TokenType.WHEN,
+    SET: TokenType.SET,
+    TO: TokenType.TO,
+    SHOW: TokenType.SHOW,
+    CALL: TokenType.CALL,
+    WITH: TokenType.WITH,
+    ACTION: TokenType.ACTION,
+    RETURNS: TokenType.RETURNS,
+    RETURN: TokenType.RETURN,
+    IF: TokenType.IF,
+    ELSE: TokenType.ELSE,
+    REPEAT: TokenType.REPEAT,
+    TIMES: TokenType.TIMES,
+    FOR: TokenType.FOR,
+    EACH: TokenType.EACH,
+    IN: TokenType.IN,
+    TRY: TokenType.TRY,
+    FAILED: TokenType.FAILED,
+    USE: TokenType.USE,
+    END: TokenType.END,
+    TRUE: TokenType.BOOLEAN,
+    FALSE: TokenType.BOOLEAN,
+    PAGE: TokenType.PAGE,
+    TEXT: TokenType.TEXT,
+    BUTTON: TokenType.BUTTON,
+    CLICK: TokenType.CLICK,
+    STATE: TokenType.STATE,
+    INPUT: TokenType.INPUT,
+    FORM: TokenType.FORM,
+    SUBMIT: TokenType.SUBMIT,
+    ROUTE: TokenType.ROUTE,
+    CONTAINER: TokenType.CONTAINER,
+    CARD: TokenType.CARD,
+    LIST: TokenType.LIST,
+    LINK: TokenType.LINK,
+    SELECT: TokenType.SELECT,
+    OPTION: TokenType.OPTION,
+    CHECKBOX: TokenType.CHECKBOX,
+    TEXTAREA: TokenType.TEXTAREA,
+    HEADER: TokenType.HEADER,
+    NAV: TokenType.NAV,
+    FOOTER: TokenType.FOOTER,
+    STYLE: TokenType.STYLE,
+    COMPONENT: TokenType.COMPONENT,
+    SOLANA: TokenType.SOLANA,
+    PROGRAM: TokenType.PROGRAM,
+    ACCOUNT: TokenType.ACCOUNT,
+    INSTRUCTION: TokenType.INSTRUCTION,
+    ACCOUNTS: TokenType.ACCOUNTS,
+    SIGNER: TokenType.SIGNER,
+    MUT: TokenType.MUT,
+    REQUIRE: TokenType.REQUIRE,
+  };
 
   constructor(source: string) {
     this.source = source;
-    this.lines = source.split('\n');
   }
 
   public tokenize(): Token[] {
-    const tokens: Token[] = [];
+    while (this.position < this.source.length) {
+      const char = this.source[this.position];
 
-    while (!this.isAtEnd()) {
-      const char = this.peek();
+      // Newlines
+      if (char === '\n') {
+        this.tokens.push({
+          type: TokenType.NEWLINE,
+          value: '\n',
+          line: this.line,
+          column: this.column,
+        });
+        this.line++;
+        this.column = 1;
+        this.position++;
+        continue;
+      }
 
-      // Comments: support '--', '//', '#', or lines starting with 'NOTE:' / 'COMMENT:'
+      // Whitespace
+      if (char === ' ' || char === '\t' || char === '\r') {
+        this.column++;
+        this.position++;
+        continue;
+      }
+
+      // Hex color values like #2563EB or #fff
+      if (char === '#' && this.isHexDigit(this.source[this.position + 1])) {
+        this.readHexColor();
+        continue;
+      }
+
+      // Comments: -- , // , # , NOTE:
       if (
-        (char === '-' && this.peekNext() === '-') ||
-        (char === '/' && this.peekNext() === '/') ||
+        (char === '-' && this.source[this.position + 1] === '-') ||
+        (char === '/' && this.source[this.position + 1] === '/') ||
         char === '#'
       ) {
         this.skipLine();
         continue;
       }
 
-      // Check for NOTE: or COMMENT: comment
-      if (this.isCommentPrefix()) {
+      if (this.source.startsWith('NOTE:', this.position)) {
         this.skipLine();
         continue;
       }
 
-      // Newlines
-      if (char === '\n') {
-        const line = this.line;
-        const col = this.column;
-        this.advance();
-        this.line++;
-        this.column = 1;
-
-        // Avoid duplicate consecutive NEWLINE tokens
-        if (tokens.length > 0 && tokens[tokens.length - 1].type !== TokenType.NEWLINE) {
-          tokens.push({
-            type: TokenType.NEWLINE,
-            value: '\n',
-            line,
-            column: col,
-            length: 1,
-          });
-        }
+      // Escape hatches
+      if (this.source.startsWith('CSS```', this.position)) {
+        this.readEscapeHatch(TokenType.CSS_ESCAPE, 'CSS```');
+        continue;
+      }
+      if (/^CSS(?:\r?\n|[ \t]+\r?\n)/.test(this.source.slice(this.position))) {
+        this.readBlockEscapeHatch(TokenType.CSS_ESCAPE, 'CSS');
         continue;
       }
 
-      // Whitespace
-      if (char === ' ' || char === '\t' || char === '\r') {
-        this.advance();
+      if (this.source.startsWith('JS```', this.position)) {
+        this.readEscapeHatch(TokenType.JS_ESCAPE, 'JS```');
+        continue;
+      }
+      if (/^JS(?:\r?\n|[ \t]+\r?\n)/.test(this.source.slice(this.position))) {
+        this.readBlockEscapeHatch(TokenType.JS_ESCAPE, 'JS');
         continue;
       }
 
-      // Strings ("..." or '...')
+      // Strings
       if (char === '"' || char === "'") {
-        tokens.push(this.readString(char));
+        this.readString(char);
         continue;
       }
 
       // Numbers
       if (this.isDigit(char)) {
-        tokens.push(this.readNumber());
+        this.readNumber();
         continue;
       }
 
-      // Two-character operators & special unicode symbols
-      if (char === '=' && this.peekNext() === '=') {
-        tokens.push(this.makeToken(TokenType.EQUALS, '==', 2));
-        this.advance(2);
-        continue;
-      }
-
-      if (char === '!' && this.peekNext() === '=') {
-        tokens.push(this.makeToken(TokenType.NOT_EQUALS, '!=', 2));
-        this.advance(2);
-        continue;
-      }
-
-      if (char === '<' && this.peekNext() === '>') {
-        tokens.push(this.makeToken(TokenType.NOT_EQUALS, '<>', 2));
-        this.advance(2);
-        continue;
-      }
-
-      if (char === '<' && this.peekNext() === '=') {
-        tokens.push(this.makeToken(TokenType.LESS_OR_EQUAL, '<=', 2));
-        this.advance(2);
-        continue;
-      }
-
-      if (char === '>' && this.peekNext() === '=') {
-        tokens.push(this.makeToken(TokenType.GREATER_OR_EQUAL, '>=', 2));
-        this.advance(2);
-        continue;
-      }
-
-      // Support guillemet / unicode symbols «» and «=»
-      if (this.source.startsWith('«»', this.cursor)) {
-        tokens.push(this.makeToken(TokenType.NOT_EQUALS, '«»', 2));
-        this.advance(2);
-        continue;
-      }
-
-      if (this.source.startsWith('«=»', this.cursor)) {
-        tokens.push(this.makeToken(TokenType.LESS_OR_EQUAL, '«=»', 3));
-        this.advance(3);
-        continue;
-      }
-
-      if (this.source.startsWith('«>=»', this.cursor)) {
-        tokens.push(this.makeToken(TokenType.GREATER_OR_EQUAL, '«>=»', 4));
-        this.advance(4);
-        continue;
-      }
-
-      // Single-character operators & punctuation
-      if (char === '+') {
-        tokens.push(this.makeToken(TokenType.PLUS, '+', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '-') {
-        tokens.push(this.makeToken(TokenType.MINUS, '-', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '*') {
-        tokens.push(this.makeToken(TokenType.MULTIPLY, '*', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '/') {
-        tokens.push(this.makeToken(TokenType.DIVIDE, '/', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '%') {
-        tokens.push(this.makeToken(TokenType.MODULO, '%', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '<') {
-        tokens.push(this.makeToken(TokenType.LESS_THAN, '<', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '>') {
-        tokens.push(this.makeToken(TokenType.GREATER_THAN, '>', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '.') {
-        tokens.push(this.makeToken(TokenType.DOT, '.', 1));
-        this.advance();
-        continue;
-      }
-      if (char === ',') {
-        tokens.push(this.makeToken(TokenType.COMMA, ',', 1));
-        this.advance();
-        continue;
-      }
-      if (char === ':') {
-        tokens.push(this.makeToken(TokenType.COLON, ':', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '(') {
-        tokens.push(this.makeToken(TokenType.LPAREN, '(', 1));
-        this.advance();
-        continue;
-      }
-      if (char === ')') {
-        tokens.push(this.makeToken(TokenType.RPAREN, ')', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '[') {
-        tokens.push(this.makeToken(TokenType.LBRACKET, '[', 1));
-        this.advance();
-        continue;
-      }
-      if (char === ']') {
-        tokens.push(this.makeToken(TokenType.RBRACKET, ']', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '=') {
-        tokens.push(this.makeToken(TokenType.ASSIGN, '=', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '{') {
-        tokens.push(this.makeToken(TokenType.LBRACE, '{', 1));
-        this.advance();
-        continue;
-      }
-      if (char === '}') {
-        tokens.push(this.makeToken(TokenType.RBRACE, '}', 1));
-        this.advance();
-        continue;
-      }
-      if (char === ';') {
-        tokens.push(this.makeToken(TokenType.SEMICOLON, ';', 1));
-        this.advance();
-        continue;
-      }
-
-      // Identifiers, keywords, booleans
+      // Identifiers & Keywords
       if (this.isAlpha(char)) {
-        tokens.push(this.readIdentifier());
+        this.readIdentifier();
         continue;
       }
 
-      // Unknown character error with beginner-friendly diagnostics
-      const errLine = this.getCurrentLineText();
-      throw new ManifestError({
-        message: `I encountered an unexpected character: '${char}'`,
-        line: this.line,
-        column: this.column,
-        sourceLine: errLine,
-        expected: 'a keyword, variable name, number, or string',
-        found: `'${char}'`,
-        example: 'SHOW "Hello World"',
-        hint: 'Check if there is a stray symbol or typo on this line.',
-        phase: 'lexer',
-      });
+      // Multi-char operators
+      if (char === '=' && this.source[this.position + 1] === '=') {
+        this.addToken(TokenType.EQ_EQ, '==', 2);
+        continue;
+      }
+      if (char === '!' && this.source[this.position + 1] === '=') {
+        this.addToken(TokenType.NOT_EQUALS, '!=', 2);
+        continue;
+      }
+      if (char === '<' && this.source[this.position + 1] === '=') {
+        this.addToken(TokenType.LESS_EQ, '<=', 2);
+        continue;
+      }
+      if (char === '>' && this.source[this.position + 1] === '=') {
+        this.addToken(TokenType.GREATER_EQ, '>=', 2);
+        continue;
+      }
+      if (char === '«' && this.source[this.position + 1] === '=') {
+        this.addToken(TokenType.LESS_EQ, '<=', 2);
+        continue;
+      }
+      if (char === '»' && this.source[this.position + 1] === '=') {
+        this.addToken(TokenType.GREATER_EQ, '>=', 2);
+        continue;
+      }
+
+      // Single-char symbols & operators
+      switch (char) {
+        case '=':
+          this.addToken(TokenType.EQUALS, '=');
+          break;
+        case '<':
+        case '«':
+          this.addToken(TokenType.LESS, '<');
+          break;
+        case '>':
+        case '»':
+          this.addToken(TokenType.GREATER, '>');
+          break;
+        case '+':
+          this.addToken(TokenType.PLUS, '+');
+          break;
+        case '-':
+          this.addToken(TokenType.MINUS, '-');
+          break;
+        case '*':
+          this.addToken(TokenType.STAR, '*');
+          break;
+        case '/':
+          this.addToken(TokenType.SLASH, '/');
+          break;
+        case '%':
+          this.addToken(TokenType.PERCENT, '%');
+          break;
+        case '.':
+          this.addToken(TokenType.DOT, '.');
+          break;
+        case ',':
+          this.addToken(TokenType.COMMA, ',');
+          break;
+        case ':':
+          this.addToken(TokenType.COLON, ':');
+          break;
+        case '(':
+          this.addToken(TokenType.LPAREN, '(');
+          break;
+        case ')':
+          this.addToken(TokenType.RPAREN, ')');
+          break;
+        case '[':
+          this.addToken(TokenType.LBRACKET, '[');
+          break;
+        case ']':
+          this.addToken(TokenType.RBRACKET, ']');
+          break;
+        case '{':
+          this.addToken(TokenType.LBRACE, '{');
+          break;
+        case '}':
+          this.addToken(TokenType.RBRACE, '}');
+          break;
+        default:
+          throw new ManifestError(
+            `Unexpected character: '${char}'`,
+            this.line,
+            this.column,
+            'Check for syntax errors or unsupported symbols.'
+          );
+      }
     }
 
-    // Append EOF token
-    tokens.push({
+    this.tokens.push({
       type: TokenType.EOF,
       value: '',
       line: this.line,
       column: this.column,
-      length: 0,
     });
 
-    return tokens;
+    return this.tokens;
   }
 
-  private isAtEnd(): boolean {
-    return this.cursor >= this.source.length;
-  }
-
-  private peek(): string {
-    return this.source[this.cursor] ?? '';
-  }
-
-  private peekNext(): string {
-    return this.source[this.cursor + 1] ?? '';
-  }
-
-  private advance(count: number = 1): void {
-    this.cursor += count;
-    this.column += count;
-  }
-
-  private skipLine(): void {
-    while (!this.isAtEnd() && this.peek() !== '\n') {
-      this.advance();
-    }
-  }
-
-  private isCommentPrefix(): boolean {
-    const remaining = this.source.slice(this.cursor);
-    return remaining.startsWith('NOTE:') || remaining.startsWith('COMMENT:');
-  }
-
-  private makeToken(type: TokenType, value: string, length: number): Token {
-    return {
+  private addToken(type: TokenType, value: string, length = 1) {
+    this.tokens.push({
       type,
       value,
       line: this.line,
       column: this.column,
-      length,
-    };
+    });
+    this.position += length;
+    this.column += length;
   }
 
-  private readString(quoteChar: string): Token {
+  private skipLine() {
+    while (this.position < this.source.length && this.source[this.position] !== '\n') {
+      this.position++;
+    }
+  }
+
+  private readEscapeHatch(type: TokenType, prefix: string) {
     const startLine = this.line;
-    const startColumn = this.column;
-    this.advance(); // Skip opening quote
-    let value = '';
+    const startCol = this.column;
+    this.position += prefix.length;
+    this.column += prefix.length;
 
-    while (!this.isAtEnd() && this.peek() !== quoteChar) {
-      if (this.peek() === '\n') {
-        const errLine = this.lines[startLine - 1] ?? '';
-        throw new ManifestError({
-          message: 'This text string was opened but never closed before the line ended.',
-          line: startLine,
-          column: startColumn,
-          sourceLine: errLine,
-          expected: `a closing quote (${quoteChar}) before the end of the line`,
-          found: 'an unclosed string',
-          example: `SHOW "Hello World"`,
-          hint: `Add a closing ${quoteChar} at the end of your text.`,
-          phase: 'lexer',
-        });
-      }
-
-      if (this.peek() === '\\') {
-        this.advance(); // Skip backslash
-        const escaped = this.peek();
-        if (escaped === 'n') value += '\n';
-        else if (escaped === 't') value += '\t';
-        else if (escaped === '"') value += '"';
-        else if (escaped === "'") value += "'";
-        else if (escaped === '\\') value += '\\';
-        else value += escaped;
-        this.advance();
+    let content = '';
+    while (this.position < this.source.length && !this.source.startsWith('```', this.position)) {
+      if (this.source[this.position] === '\n') {
+        this.line++;
+        this.column = 1;
       } else {
-        value += this.peek();
-        this.advance();
+        this.column++;
       }
+      content += this.source[this.position];
+      this.position++;
     }
 
-    if (this.isAtEnd()) {
-      const errLine = this.lines[startLine - 1] ?? '';
-      throw new ManifestError({
-        message: 'This text string was never closed.',
-        line: startLine,
-        column: startColumn,
-        sourceLine: errLine,
-        expected: `a closing quote (${quoteChar})`,
-        found: 'end of program',
-        example: `SHOW "Hello World"`,
-        phase: 'lexer',
-      });
+    if (this.source.startsWith('```', this.position)) {
+      this.position += 3;
+      this.column += 3;
     }
 
-    this.advance(); // Skip closing quote
-
-    return {
-      type: TokenType.STRING,
-      value,
+    this.tokens.push({
+      type,
+      value: content.trim(),
       line: startLine,
-      column: startColumn,
-      length: this.cursor - (this.cursor - (value.length + 2)),
-    };
+      column: startCol,
+    });
   }
 
-  private readNumber(): Token {
-    const startColumn = this.column;
+  private readBlockEscapeHatch(type: TokenType, prefix: string) {
+    const startLine = this.line;
+    const startCol = this.column;
+    this.position += prefix.length;
+    this.column += prefix.length;
+
+    let content = '';
+    while (this.position < this.source.length) {
+      const remaining = this.source.slice(this.position);
+      const matchEnd = remaining.match(/^[ \t]*END\b/);
+      if (matchEnd) {
+        this.position += matchEnd[0].length;
+        this.column += matchEnd[0].length;
+        break;
+      }
+
+      if (this.source[this.position] === '\n') {
+        this.line++;
+        this.column = 1;
+      } else {
+        this.column++;
+      }
+      content += this.source[this.position];
+      this.position++;
+    }
+
+    this.tokens.push({
+      type,
+      value: content.trim(),
+      line: startLine,
+      column: startCol,
+    });
+  }
+
+  private readString(quote: string) {
+    const startLine = this.line;
+    const startCol = this.column;
+    this.position++; // Skip open quote
+    this.column++;
+
+    let val = '';
+    while (this.position < this.source.length && this.source[this.position] !== quote) {
+      if (this.source[this.position] === '\n') {
+        throw new ManifestError(
+          'Unclosed string literal across newline',
+          startLine,
+          startCol,
+          'Make sure every string is closed on the same line with matching quotes.'
+        );
+      }
+      val += this.source[this.position];
+      this.position++;
+      this.column++;
+    }
+
+    if (this.position >= this.source.length) {
+      throw new ManifestError(
+        'Unclosed string literal at end of file',
+        startLine,
+        startCol,
+        'Close string literal with matching quote.'
+      );
+    }
+
+    this.position++; // Skip closing quote
+    this.column++;
+
+    this.tokens.push({
+      type: TokenType.STRING,
+      value: val,
+      line: startLine,
+      column: startCol,
+    });
+  }
+
+  private readNumber() {
+    const startLine = this.line;
+    const startCol = this.column;
     let numStr = '';
 
-    while (!this.isAtEnd() && this.isDigit(this.peek())) {
-      numStr += this.peek();
-      this.advance();
+    while (
+      this.position < this.source.length &&
+      (this.isDigit(this.source[this.position]) || this.source[this.position] === '.')
+    ) {
+      numStr += this.source[this.position];
+      this.position++;
+      this.column++;
     }
 
-    // Optional fractional part
-    if (this.peek() === '.' && this.isDigit(this.peekNext())) {
-      numStr += '.';
-      this.advance();
-      while (!this.isAtEnd() && this.isDigit(this.peek())) {
-        numStr += this.peek();
-        this.advance();
-      }
-    }
-
-    return {
+    this.tokens.push({
       type: TokenType.NUMBER,
       value: numStr,
-      line: this.line,
-      column: startColumn,
-      length: numStr.length,
-    };
+      line: startLine,
+      column: startCol,
+    });
   }
 
-  private readIdentifier(): Token {
-    const startColumn = this.column;
+  private readIdentifier() {
+    const startLine = this.line;
+    const startCol = this.column;
     let ident = '';
 
-    while (!this.isAtEnd() && (this.isAlphaNumeric(this.peek()) || this.peek() === '_')) {
-      ident += this.peek();
-      this.advance();
+    while (
+      this.position < this.source.length &&
+      (this.isAlphaNumeric(this.source[this.position]) || this.source[this.position] === '_')
+    ) {
+      ident += this.source[this.position];
+      this.position++;
+      this.column++;
     }
 
     const upper = ident.toUpperCase();
-    const keywordType = KEYWORDS[upper];
-
-    if (keywordType !== undefined) {
-      return {
-        type: keywordType,
+    if (upper in Lexer.KEYWORDS) {
+      this.tokens.push({
+        type: Lexer.KEYWORDS[upper],
         value: ident,
-        line: this.line,
-        column: startColumn,
-        length: ident.length,
-      };
+        line: startLine,
+        column: startCol,
+      });
+    } else {
+      this.tokens.push({
+        type: TokenType.IDENTIFIER,
+        value: ident,
+        line: startLine,
+        column: startCol,
+      });
     }
-
-    return {
-      type: TokenType.IDENTIFIER,
-      value: ident,
-      line: this.line,
-      column: startColumn,
-      length: ident.length,
-    };
-  }
-
-  private isAlpha(char: string): boolean {
-    return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || char === '_';
   }
 
   private isDigit(char: string): boolean {
     return char >= '0' && char <= '9';
   }
 
+  private isAlpha(char: string): boolean {
+    return (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z');
+  }
+
   private isAlphaNumeric(char: string): boolean {
     return this.isAlpha(char) || this.isDigit(char);
   }
 
-  private getCurrentLineText(): string {
-    return this.lines[this.line - 1] ?? '';
+  private isHexDigit(char?: string): boolean {
+    if (!char) return false;
+    return (
+      (char >= '0' && char <= '9') ||
+      (char >= 'a' && char <= 'f') ||
+      (char >= 'A' && char <= 'F')
+    );
+  }
+
+  private readHexColor() {
+    const startLine = this.line;
+    const startCol = this.column;
+    let hex = '#';
+    this.position++;
+    this.column++;
+
+    while (this.position < this.source.length && this.isHexDigit(this.source[this.position])) {
+      hex += this.source[this.position];
+      this.position++;
+      this.column++;
+    }
+
+    this.tokens.push({
+      type: TokenType.IDENTIFIER,
+      value: hex,
+      line: startLine,
+      column: startCol,
+    });
   }
 }

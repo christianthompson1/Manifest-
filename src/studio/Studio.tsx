@@ -521,6 +521,26 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             <span className="hidden md:inline">Projects</span>
           </button>
 
+          {/* Verification & Test Runner */}
+          <button
+            onClick={() => setIsTestRunnerOpen(true)}
+            title="Run Manifest & Solana LiteSVM Tests"
+            className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#89d185] hover:text-[#a6e3a1] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer"
+          >
+            <ShieldCheck className="w-3.5 h-3.5 text-[#89d185]" />
+            <span className="hidden xl:inline">Tests</span>
+          </button>
+
+          {/* Solana Deploy & Transaction */}
+          <button
+            onClick={() => setIsSolanaDeployOpen(true)}
+            title="Solana Deploy & Transactions"
+            className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cca700] hover:text-[#ffd700] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer"
+          >
+            <Coins className="w-3.5 h-3.5 text-[#cca700]" />
+            <span className="hidden xl:inline">Solana</span>
+          </button>
+
           {/* Collapsible Preview Toggle Button */}
           <button
             onClick={() => {
@@ -540,6 +560,16 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           >
             {isPreviewOpen ? <Eye className="w-3 h-3 text-[#ffffff]" /> : <EyeOff className="w-3 h-3" />}
             <span className="hidden md:inline">Preview</span>
+          </button>
+
+          {/* Settings Button */}
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            title="Project & Studio Settings"
+            className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] hover:text-[#ffffff] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer"
+          >
+            <Settings className="w-3.5 h-3.5 text-[#9cdcfe]" />
+            <span className="hidden xl:inline">Settings</span>
           </button>
 
           {/* Developer Tools / Testbench Toggle */}
@@ -577,6 +607,12 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             onDeleteFile={handleDeleteFile}
             onSelectTemplate={handleSelectTemplate}
             onOpenDevTools={() => setIsTestbenchOpen(true)}
+            onOpenProjectMenu={() => setIsProjectMenuOpen(true)}
+            onOpenGitHubImport={() => setIsGitHubImportOpen(true)}
+            onOpenSolanaDeploy={() => setIsSolanaDeployOpen(true)}
+            onOpenMainnetWarning={() => setIsMainnetWarningOpen(true)}
+            onOpenSettings={() => setIsSettingsOpen(true)}
+            onShowToast={showToast}
             settings={settings}
             onUpdateSettings={setSettings}
             isCollapsed={isSidebarCollapsed}
@@ -997,6 +1033,79 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           }, 50);
         }}
         onOpenTestbench={onSwitchToTestbench || (() => setIsTestbenchOpen(true))}
+      />
+
+      {/* 8. Project Menu Modal */}
+      <ProjectMenuModal
+        isOpen={isProjectMenuOpen}
+        onClose={() => setIsProjectMenuOpen(false)}
+        project={project}
+        onUpdateProject={(newProj) => {
+          setProject(newProj);
+          setActiveFilePath(newProj.activeFilePath || newProj.files[0]?.path || 'src/main.manifest');
+          setOpenFilePaths(newProj.files.slice(0, 3).map((f) => f.path));
+        }}
+        onShowToast={showToast}
+        onSelectTemplate={(tplId) => {
+          const newProj = createDefaultProject(tplId);
+          setProject(newProj);
+          setActiveFilePath('src/main.manifest');
+          setOpenFilePaths(['src/main.manifest', 'manifest.toml']);
+          showToast(`Loaded ${newProj.name}`);
+        }}
+      />
+
+      {/* 9. GitHub Import Modal */}
+      <GitHubImportModal
+        isOpen={isGitHubImportOpen}
+        onClose={() => setIsGitHubImportOpen(false)}
+        onImportProject={(importedProj) => {
+          setProject(importedProj);
+          setActiveFilePath(importedProj.activeFilePath || importedProj.files[0]?.path || 'src/main.manifest');
+          setOpenFilePaths(importedProj.files.slice(0, 3).map((f) => f.path));
+        }}
+        onShowToast={showToast}
+      />
+
+      {/* 10. Studio Settings Modal */}
+      <ProjectSettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        project={project}
+        settings={settings}
+        onUpdateProject={setProject}
+        onUpdateSettings={setSettings}
+        onShowToast={showToast}
+        onOpenMainnetWarning={() => {
+          setMainnetActionType('switch_network');
+          setIsMainnetWarningOpen(true);
+        }}
+      />
+
+      {/* 11. Mainnet Warning Modal */}
+      <MainnetWarningModal
+        isOpen={isMainnetWarningOpen}
+        onClose={() => setIsMainnetWarningOpen(false)}
+        onConfirm={() => {
+          walletService.setNetwork('mainnet');
+          showToast('Switched to Solana Mainnet-Beta');
+        }}
+      />
+
+      {/* 12. Test Runner Modal */}
+      <TestRunnerModal
+        isOpen={isTestRunnerOpen}
+        onClose={() => setIsTestRunnerOpen(false)}
+        currentSource={mainManifestFile.content}
+        onShowToast={showToast}
+      />
+
+      {/* 13. Solana Deploy & Transaction Modal */}
+      <SolanaDeployModal
+        isOpen={isSolanaDeployOpen}
+        onClose={() => setIsSolanaDeployOpen(false)}
+        programSource={mainManifestFile.content}
+        onShowToast={showToast}
       />
     </div>
   );

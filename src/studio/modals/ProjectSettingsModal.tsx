@@ -4,7 +4,7 @@
  * Sections: General, Manifest, Web, Solana, GitHub, Libraries, Build, Environment
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   X,
@@ -21,40 +21,64 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { ManifestProject } from '../types.ts';
+import { StudioSettings } from '../project-store.ts';
 import { SolanaWalletService, SolanaNetwork } from '../services/solana-wallet.ts';
 import { PriorityFeeLevel } from '../services/priority-fees.ts';
 import { LibraryRegistry } from '../../../manifest-core/src/libraries/library-registry.ts';
 
-interface ProjectSettingsModalProps {
+export interface ProjectSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  project: ManifestProject;
-  onUpdateProject: (proj: ManifestProject) => void;
+  project?: ManifestProject;
+  settings?: StudioSettings;
+  onUpdateProject?: (proj: ManifestProject) => void;
+  onUpdateSettings?: (settings: StudioSettings) => void;
   onShowToast: (msg: string) => void;
-  onOpenMainnetWarning: () => void;
+  onOpenMainnetWarning?: () => void;
 }
 
 export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
   isOpen,
   onClose,
   project,
+  settings,
   onUpdateProject,
+  onUpdateSettings,
   onShowToast,
   onOpenMainnetWarning,
 }) => {
   const [activeTab, setActiveTab] = useState<
-    'general' | 'manifest' | 'solana' | 'github' | 'libraries' | 'build' | 'environment'
+    'general' | 'editor' | 'manifest' | 'solana' | 'github' | 'libraries' | 'build' | 'environment'
   >('general');
 
   const walletService = SolanaWalletService.getInstance();
-  const [projectName, setProjectName] = useState(project.name);
-  const [projectDesc, setProjectDesc] = useState(project.description || '');
-  const [activeNetwork, setActiveNetwork] = useState<SolanaNetwork>(walletService.getNetwork());
+  const [projectName, setProjectName] = useState(project?.name || 'Manifest Project');
+  const [projectDesc, setProjectDesc] = useState(project?.description || '');
+  const [fontSize, setFontSize] = useState<number>(settings?.fontSize ?? 13);
+  const [wordWrap, setWordWrap] = useState<boolean>(settings?.wordWrap ?? false);
+  const [activeNetwork, setActiveNetwork] = useState<SolanaNetwork>(() => {
+    try {
+      return walletService.getNetwork();
+    } catch {
+      return 'devnet';
+    }
+  });
   const [customRpcUrl, setCustomRpcUrl] = useState('');
   const [priorityFeeMode, setPriorityFeeMode] = useState<PriorityFeeLevel>('medium');
   const [programId, setProgramId] = useState('Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS');
   const [githubRepo, setGithubRepo] = useState('');
   const [githubBranch, setGithubBranch] = useState('main');
+
+  useEffect(() => {
+    if (project) {
+      setProjectName(project.name || 'Manifest Project');
+      setProjectDesc(project.description || '');
+    }
+    if (settings) {
+      setFontSize(settings.fontSize ?? 13);
+      setWordWrap(settings.wordWrap ?? false);
+    }
+  }, [project, settings, isOpen]);
 
   const registry = LibraryRegistry.getInstance();
   const libraries = registry.listLibraries();
@@ -62,12 +86,21 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
   if (!isOpen) return null;
 
   const handleSave = () => {
-    onUpdateProject({
-      ...project,
-      name: projectName,
-      description: projectDesc,
-      updatedAt: Date.now(),
-    });
+    if (project && onUpdateProject) {
+      onUpdateProject({
+        ...project,
+        name: projectName,
+        description: projectDesc,
+        updatedAt: Date.now(),
+      });
+    }
+    if (settings && onUpdateSettings) {
+      onUpdateSettings({
+        ...settings,
+        fontSize,
+        wordWrap,
+      });
+    }
     if (customRpcUrl) {
       walletService.setCustomRpcUrl(customRpcUrl);
     }
@@ -77,7 +110,12 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
 
   const handleNetworkChange = (newNet: SolanaNetwork) => {
     if (newNet === 'mainnet') {
-      onOpenMainnetWarning();
+      if (onOpenMainnetWarning) {
+        onOpenMainnetWarning();
+      } else {
+        walletService.setNetwork('mainnet');
+        setActiveNetwork('mainnet');
+      }
     } else {
       walletService.setNetwork('devnet');
       setActiveNetwork('devnet');
@@ -97,12 +135,12 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
             </div>
             <div>
               <h2 className="text-sm font-semibold text-[#ffffff]">Project Settings</h2>
-              <p className="text-[11px] text-[#858585]">{project.name}</p>
+              <p className="text-[11px] text-[#858585]">{project?.name || projectName}</p>
             </div>
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded text-[#858585] hover:text-[#ffffff] hover:bg-[#2d2d2d] transition"
+            className="p-1 rounded text-[#858585] hover:text-[#ffffff] hover:bg-[#2d2d2d] transition cursor-pointer"
           >
             <X className="w-4 h-4" />
           </button>
@@ -114,12 +152,22 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
           <div className="w-44 border-r border-[#2d2d2d] bg-[#181818] p-2 space-y-0.5 text-xs">
             <button
               onClick={() => setActiveTab('general')}
-              className={`w-full text-left px-2.5 py-1.5 rounded flex items-center gap-2 transition ${
+              className={`w-full text-left px-2.5 py-1.5 rounded flex items-center gap-2 transition cursor-pointer ${
                 activeTab === 'general' ? 'bg-[#252526] text-[#ffffff] font-medium' : 'text-[#858585] hover:text-[#cccccc]'
               }`}
             >
               <Sliders className="w-3.5 h-3.5" />
               <span>General</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('editor')}
+              className={`w-full text-left px-2.5 py-1.5 rounded flex items-center gap-2 transition cursor-pointer ${
+                activeTab === 'editor' ? 'bg-[#252526] text-[#9cdcfe] font-medium' : 'text-[#858585] hover:text-[#cccccc]'
+              }`}
+            >
+              <Sliders className="w-3.5 h-3.5" />
+              <span>Editor & Display</span>
             </button>
 
             <button
@@ -206,9 +254,46 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                   />
                 </div>
                 <div className="p-3 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] text-[11px] text-[#858585] space-y-1">
-                  <div>Project Kind: <span className="font-mono text-[#ffffff]">{project.kind || 'manifest'}</span></div>
-                  <div>Files Count: <span className="font-mono text-[#ffffff]">{project.files.length}</span></div>
+                  <div>Project Kind: <span className="font-mono text-[#ffffff]">{project?.kind || 'manifest'}</span></div>
+                  <div>Files Count: <span className="font-mono text-[#ffffff]">{project?.files?.length ?? 0}</span></div>
                   <div>Storage Engine: <span className="font-mono text-[#89d185]">IndexedDB (v1)</span></div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'editor' && (
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[#cccccc] font-medium">Editor Font Size</label>
+                    <span className="font-mono text-[#569cd6] text-xs font-semibold">{fontSize}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="11"
+                    max="18"
+                    value={fontSize}
+                    onChange={(e) => setFontSize(Number(e.target.value))}
+                    className="w-full accent-[#569cd6] cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[10px] text-[#858585]">
+                    <span>11px (Compact)</span>
+                    <span>13px (Default)</span>
+                    <span>18px (Large)</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between p-3 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d]">
+                  <div>
+                    <div className="text-xs text-[#ffffff] font-medium">Word Wrap</div>
+                    <div className="text-[11px] text-[#858585]">Wrap long lines inside the Manifest code editor</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={wordWrap}
+                    onChange={(e) => setWordWrap(e.target.checked)}
+                    className="accent-[#569cd6] w-4 h-4 cursor-pointer"
+                  />
                 </div>
               </div>
             )}
@@ -337,7 +422,7 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                 <p className="text-[11px] text-[#858585]">
                   Manifest libraries and declared permission capabilities:
                 </p>
-                {libraries.map((lib) => (
+                {libraries.map((lib: any) => (
                   <div
                     key={lib.name}
                     className="p-2.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] flex items-center justify-between"
@@ -350,7 +435,7 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                       <div className="text-[10px] text-[#858585]">{lib.description}</div>
                     </div>
                     <div className="flex items-center gap-1">
-                      {lib.requiredPermissions.map((perm) => (
+                      {lib.requiredPermissions.map((perm: any) => (
                         <span
                           key={perm}
                           className="px-1.5 py-0.5 rounded text-[9px] bg-[#252526] text-[#9cdcfe] font-mono border border-[#2d2d2d]"

@@ -37,7 +37,7 @@ export const TEMPLATES: ProjectTemplate[] = [
         path: 'manifest.toml',
         language: 'toml',
         content: `[app]
-name = "BlankApp"
+name = "my-project"
 version = "0.4.0"
 entry = "src/main.manifest"
 target = "js"
@@ -48,10 +48,10 @@ target = "js"
         name: 'main.manifest',
         path: 'src/main.manifest',
         language: 'manifest',
-        content: `APP "BlankApp"
+        content: `APP "App"
 
 PAGE Home
-    TEXT "Welcome to your new Manifest App"
+    TEXT "Hello World"
 END
 `,
       },
@@ -587,8 +587,8 @@ END
 export function createBlankProject(): ManifestProject {
   return {
     id: `project-${Date.now()}`,
-    name: 'My Application',
-    description: 'Clean blank Manifest project',
+    name: 'my-project',
+    description: 'Clean minimal starter Manifest project',
     kind: 'manifest',
     files: [
       {
@@ -597,13 +597,10 @@ export function createBlankProject(): ManifestProject {
         path: 'manifest.toml',
         language: 'toml',
         content: `[app]
-name = "My Application"
-version = "0.3.0"
+name = "my-project"
+version = "0.4.0"
 entry = "src/main.manifest"
 target = "js"
-
-[capabilities]
-web = true
 `,
       },
       {
@@ -611,10 +608,10 @@ web = true
         name: 'main.manifest',
         path: 'src/main.manifest',
         language: 'manifest',
-        content: `APP "My Application"
+        content: `APP "App"
 
 PAGE Home
-    TEXT "Welcome to your new Manifest Application"
+    TEXT "Hello World"
 END
 `,
       },

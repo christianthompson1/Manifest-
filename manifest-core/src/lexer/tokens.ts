@@ -1,140 +1,93 @@
-/**
- * Manifest Core v0.1 - Token Definitions
- */
-
 export enum TokenType {
-  // Declarations & Core Keywords
+  // Literals & Identifiers
+  IDENTIFIER = 'IDENTIFIER',
+  STRING = 'STRING',
+  NUMBER = 'NUMBER',
+  BOOLEAN = 'BOOLEAN',
+
+  // Core Keywords
   APP = 'APP',
-  USE = 'USE',
+  WHEN = 'WHEN',
   SET = 'SET',
   TO = 'TO',
   SHOW = 'SHOW',
+  CALL = 'CALL',
+  WITH = 'WITH',
+  ACTION = 'ACTION',
+  RETURNS = 'RETURNS',
+  RETURN = 'RETURN',
   IF = 'IF',
   ELSE = 'ELSE',
-  END = 'END',
-  WHEN = 'WHEN',
   REPEAT = 'REPEAT',
   TIMES = 'TIMES',
   FOR = 'FOR',
   EACH = 'EACH',
   IN = 'IN',
-  AS = 'AS',
-  ACTION = 'ACTION',
-  CALL = 'CALL',
-  RETURN = 'RETURN',
   TRY = 'TRY',
   FAILED = 'FAILED',
+  USE = 'USE',
+  END = 'END',
 
-  // Manifest v0.2 Application Primitives
+  // v0.2 App Primitives
   PAGE = 'PAGE',
   TEXT = 'TEXT',
   BUTTON = 'BUTTON',
-  INPUT = 'INPUT',
-  IMAGE = 'IMAGE',
-  FORM = 'FORM',
+  CLICK = 'CLICK',
   STATE = 'STATE',
+  INPUT = 'INPUT',
+  FORM = 'FORM',
+  SUBMIT = 'SUBMIT',
   ROUTE = 'ROUTE',
 
-  // Manifest v0.3 UI Primitives, Layout & Design System
+  // v0.3 UI Primitives
   CONTAINER = 'CONTAINER',
   CARD = 'CARD',
   LIST = 'LIST',
   LINK = 'LINK',
   SELECT = 'SELECT',
+  OPTION = 'OPTION',
   CHECKBOX = 'CHECKBOX',
   TEXTAREA = 'TEXTAREA',
   HEADER = 'HEADER',
-  FOOTER = 'FOOTER',
   NAV = 'NAV',
-  MODAL = 'MODAL',
+  FOOTER = 'FOOTER',
+  STYLE = 'STYLE',
   COMPONENT = 'COMPONENT',
 
-  // Manifest v0.4 UI Primitives
-  TABLE = 'TABLE',
-  DIALOG = 'DIALOG',
-  TABS = 'TABS',
-  MENU = 'MENU',
-  SIDEBAR = 'SIDEBAR',
-  AVATAR = 'AVATAR',
-  BADGE = 'BADGE',
-  PROGRESS = 'PROGRESS',
-  ICON = 'ICON',
-  VIDEO = 'VIDEO',
-  AUDIO = 'AUDIO',
-
-  // Escape Hatches
-  CSS = 'CSS',
-  JS = 'JS',
-  RUST = 'RUST',
-
-  // Library & Animation
-  LIBRARY = 'LIBRARY',
-  ANIMATE = 'ANIMATE',
-
-  // Solana First-Class Primitives
+  // v0.4 Solana & Escape Hatches
+  SOLANA = 'SOLANA',
   PROGRAM = 'PROGRAM',
   ACCOUNT = 'ACCOUNT',
   INSTRUCTION = 'INSTRUCTION',
-  REQUIRE = 'REQUIRE',
+  ACCOUNTS = 'ACCOUNTS',
   SIGNER = 'SIGNER',
+  MUT = 'MUT',
+  REQUIRE = 'REQUIRE',
+  CSS_ESCAPE = 'CSS_ESCAPE',
+  JS_ESCAPE = 'JS_ESCAPE',
 
-  // Styling & Layout keywords
-  STYLE = 'STYLE',
-  LAYOUT = 'LAYOUT',
-  DIRECTION = 'DIRECTION',
-  MOBILE = 'MOBILE',
-  TABLET = 'TABLET',
-  DESKTOP = 'DESKTOP',
-
-  // UI Event & Binding Keywords
-  CLICK = 'CLICK',
-  SUBMIT = 'SUBMIT',
-  CHANGE = 'CHANGE',
-  INTO = 'INTO',
-  BIND = 'BIND',
-  ALT = 'ALT',
-
-  // Logical Keywords
-  AND = 'AND',
-  OR = 'OR',
-  NOT = 'NOT',
-
-  // Literal values
-  IDENTIFIER = 'IDENTIFIER',
-  NUMBER = 'NUMBER',
-  STRING = 'STRING',
-  BOOLEAN = 'BOOLEAN',
-  NULL = 'NULL',
-
-  // Operators
-  PLUS = 'PLUS',         // +
-  MINUS = 'MINUS',       // -
-  MULTIPLY = 'MULTIPLY', // *
-  DIVIDE = 'DIVIDE',     // /
-  MODULO = 'MODULO',     // %
-
-  // Comparisons
-  EQUALS = 'EQUALS',                 // ==
-  NOT_EQUALS = 'NOT_EQUALS',         // !=, <>, «»
-  LESS_THAN = 'LESS_THAN',           // <
-  GREATER_THAN = 'GREATER_THAN',     // >
-  LESS_OR_EQUAL = 'LESS_OR_EQUAL',   // <=, «=»
-  GREATER_OR_EQUAL = 'GREATER_OR_EQUAL', // >=, «>=»
-
-  // Punctuation
-  DOT = 'DOT',           // .
-  COMMA = 'COMMA',       // ,
-  COLON = 'COLON',       // :
-  SEMICOLON = 'SEMICOLON', // ;
-  ASSIGN = 'ASSIGN',     // =
-  LPAREN = 'LPAREN',     // (
-  RPAREN = 'RPAREN',     // )
-  LBRACKET = 'LBRACKET', // [
-  RBRACKET = 'RBRACKET', // ]
-  LBRACE = 'LBRACE',     // {
-  RBRACE = 'RBRACE',     // }
-
-  // Delimiters
+  // Operators & Delimiters
+  EQUALS = 'EQUALS',
+  EQ_EQ = 'EQ_EQ',
+  NOT_EQUALS = 'NOT_EQUALS',
+  GREATER = 'GREATER',
+  GREATER_EQ = 'GREATER_EQ',
+  LESS = 'LESS',
+  LESS_EQ = 'LESS_EQ',
+  PLUS = 'PLUS',
+  MINUS = 'MINUS',
+  STAR = 'STAR',
+  SLASH = 'SLASH',
+  PERCENT = 'PERCENT',
+  DOT = 'DOT',
+  COMMA = 'COMMA',
+  COLON = 'COLON',
+  LPAREN = 'LPAREN',
+  RPAREN = 'RPAREN',
+  LBRACKET = 'LBRACKET',
+  RBRACKET = 'RBRACKET',
+  LBRACE = 'LBRACE',
+  RBRACE = 'RBRACE',
   NEWLINE = 'NEWLINE',
   EOF = 'EOF',
 }
@@ -144,5 +97,4 @@ export interface Token {
   value: string;
   line: number;
   column: number;
-  length: number;
 }
