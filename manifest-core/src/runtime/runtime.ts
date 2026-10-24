@@ -15,6 +15,7 @@ import {
 import { Scope } from './scope.ts';
 import { EventBus } from '../events/event-bus.ts';
 import { CapabilityRegistry } from '../modules/capabilities.ts';
+import { ManifestError } from '../errors/manifest-error.ts';
 
 export class Runtime {
   public globalScope: Scope = new Scope();
@@ -63,7 +64,7 @@ export class Runtime {
   public async executeStatements(statements: StatementNode[], scope: Scope): Promise<any> {
     for (const stmt of statements) {
       const result = await this.executeStatement(stmt, scope);
-      if (result !== undefined && (stmt as any).type === 'ReturnStatement') {
+      if (result && typeof result === 'object' && result.__isReturn) {
         return result;
       }
     }
@@ -86,17 +87,23 @@ export class Runtime {
         this.outputLogs.push(String(val));
         return;
       }
+      case 'ReturnStatement': {
+        const val = this.evaluateExpression(stmt.expression || (stmt as any).value, scope);
+        return { __isReturn: true, value: val };
+      }
       case 'CallStatement': {
         const action = this.actions.get(stmt.actionName);
         if (!action) {
-          throw new Error(`Undefined action: ${stmt.actionName}`);
+          throw new ManifestError(`Undefined action: ${stmt.actionName}`, stmt.line, stmt.column);
         }
         const actionScope = new Scope(this.globalScope);
         action.params.forEach((param, idx) => {
-          const argVal = stmt.args[idx] ? this.evaluateExpression(stmt.args[idx], scope) : undefined;
+          const arg = stmt.args[idx];
+          const argVal = arg !== undefined ? this.evaluateExpression(arg, scope) : undefined;
           actionScope.set(param, argVal);
         });
-        return await this.executeStatements(action.body, actionScope);
+        const res = await this.executeStatements(action.body, actionScope);
+        return res?.__isReturn ? res.value : res;
       }
       case 'IfStatement': {
         const cond = this.evaluateExpression(stmt.condition, scope);
@@ -153,6 +160,34 @@ export class Runtime {
       }
       case 'ArrayLiteral':
         return expr.elements.map((e) => this.evaluateExpression(e, scope));
+      case 'CallExpression': {
+        const action = this.actions.get(expr.actionName);
+        if (!action) {
+          throw new ManifestError(`Undefined action: ${expr.actionName}`, expr.line, expr.column);
+        }
+        const actionScope = new Scope(this.globalScope);
+        const args = expr.args || [];
+        action.params.forEach((param, idx) => {
+          const arg = args[idx];
+          const argVal = arg !== undefined ? this.evaluateExpression(arg, scope) : undefined;
+          actionScope.set(param, argVal);
+        });
+
+        let retVal: any = undefined;
+        for (const s of action.body) {
+          if (s.type === 'SetStatement') {
+            const v = this.evaluateExpression(s.value, actionScope);
+            actionScope.set(s.variable, v);
+          } else if (s.type === 'ShowStatement') {
+            const v = this.evaluateExpression(s.expression, actionScope);
+            this.outputLogs.push(String(v));
+          } else if (s.type === 'ReturnStatement') {
+            retVal = this.evaluateExpression((s as any).expression || (s as any).value, actionScope);
+            break;
+          }
+        }
+        return retVal;
+      }
       case 'BinaryExpression': {
         const left = this.evaluateExpression(expr.left, scope);
         const right = this.evaluateExpression(expr.right, scope);
@@ -164,25 +199,34 @@ export class Runtime {
           case '*':
             return left * right;
           case '/':
+            if (right === 0) {
+              throw new ManifestError('Division by zero: cannot divide by zero', expr.line, expr.column);
+            }
             return left / right;
           case '%':
+            if (right === 0) {
+              throw new ManifestError('Division by zero: modulo by zero', expr.line, expr.column);
+            }
             return left % right;
           case '==':
           case '=':
             return left === right;
           case '!=':
+          case '«»':
             return left !== right;
           case '<':
           case '«':
             return left < right;
           case '<=':
           case '«=':
+          case '«=»':
             return left <= right;
           case '>':
           case '»':
             return left > right;
           case '>=':
           case '»=':
+          case '»=»':
             return left >= right;
           case 'AND':
           case '&&':

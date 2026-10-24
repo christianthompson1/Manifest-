@@ -38,6 +38,8 @@ import {
   GitBranch,
   Wifi,
   Sparkles,
+  MoreHorizontal,
+  Info,
 } from 'lucide-react';
 import {
   ManifestProject,
@@ -58,6 +60,8 @@ import {
   TEMPLATES,
 } from './project-store.ts';
 import { runManifestPipeline } from './compiler-service.ts';
+import { ExecutionOrchestrator } from './execution/execution-orchestrator.ts';
+import { UnifiedExecutionResult } from './execution/execution-types.ts';
 import { Sidebar, ActivityTab } from './sidebar/Sidebar.tsx';
 import { CodeMirrorEditor } from './editor/CodeMirrorEditor.tsx';
 import { PreviewPanel } from './preview/PreviewPanel.tsx';
@@ -75,6 +79,7 @@ import { SolanaDeployModal } from './modals/SolanaDeployModal.tsx';
 import { SolanaWalletService, WalletState, SolanaNetwork } from './services/solana-wallet.ts';
 import { detectLanguage } from './editor/language-support.ts';
 import { Coins, ShieldCheck } from 'lucide-react';
+import { LanguageRegistry } from './languages/language-registry.ts';
 
 interface StudioProps {
   onSwitchToTestbench?: () => void;
@@ -85,6 +90,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
   const [activeFilePath, setActiveFilePath] = useState<string>(project.activeFilePath || 'src/main.manifest');
   const [openFilePaths, setOpenFilePaths] = useState<string[]>(['src/main.manifest', 'manifest.toml']);
   const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
+  const [executionResult, setExecutionResult] = useState<UnifiedExecutionResult | null>(null);
   const [isCompiling, setIsCompiling] = useState<boolean>(false);
   const [consoleEntries, setConsoleEntries] = useState<ConsoleEntry[]>([]);
   const [activeBottomTab, setActiveBottomTab] = useState<BottomPanelTab>('console');
@@ -126,14 +132,17 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
   // Mobile specific state
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
   const [mobileActiveView, setMobileActiveView] = useState<'editor' | 'preview' | 'terminal' | 'problems'>('editor');
+  const [isMobileActionsOpen, setIsMobileActionsOpen] = useState<boolean>(false);
+  const [isLanguageModalOpen, setIsLanguageModalOpen] = useState<boolean>(false);
 
   // Load project asynchronously from IndexedDB on initial mount
   useEffect(() => {
     loadProjectAsync().then((loadedProject) => {
       setProject(loadedProject);
-      if (loadedProject.activeFilePath) {
-        setActiveFilePath(loadedProject.activeFilePath);
-      }
+      const activeP = loadedProject.activeFilePath || loadedProject.files[0]?.path || 'src/main.manifest';
+      setActiveFilePath(activeP);
+      const activeF = loadedProject.files.find((f) => f.path === activeP) || loadedProject.files[0];
+      handleRun(loadedProject, activeF);
     });
   }, []);
 
@@ -241,56 +250,111 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     }
   };
 
-  // Run pipeline: Source -> Lexer -> Parser -> Validator -> IR -> JS Target -> Preview
-  const handleRun = useCallback(async () => {
-    setIsCompiling(true);
-    addConsoleEntry(`Running compiler pipeline for "${project.name}"...`, 'info');
+  // Unified Run pipeline: uses ExecutionOrchestrator to detect and execute project
+  const handleRun = useCallback(
+    async (projOverride?: ManifestProject | React.MouseEvent | any, fileOverride?: ProjectFile) => {
+      const isActualProject = projOverride && typeof projOverride === 'object' && 'files' in projOverride;
+      const currentProj = isActualProject ? (projOverride as ManifestProject) : project;
+      const currentFile =
+        fileOverride ||
+        (activeFilePath ? currentProj.files.find((f) => f.path === activeFilePath) : undefined) ||
+        activeFile;
 
-    try {
-      const source = mainManifestFile.content;
-      const res = await runManifestPipeline(source, 'js');
-      setBuildResult(res);
+      setIsCompiling(true);
+      const orchestrator = ExecutionOrchestrator.getInstance();
+      const provider = orchestrator.selectProvider(currentProj, currentFile);
 
-      if (res.success) {
-        addConsoleEntry(`Program compiled in ${res.durationMs}ms (Target: JavaScript)`, 'build');
+      addConsoleEntry(`Running project "${currentProj.name}" via ${provider.name}...`, 'info');
 
-        // Update build/ artifact in file explorer
-        if (res.outputCode) {
-          const appSlug = (res.ir?.appName || 'app').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-          const artifactPath = `build/${appSlug}.js`;
-          setProject((prev) => {
-            const hasBuild = prev.files.some((f) => f.path === artifactPath);
-            const updated = hasBuild
-              ? prev.files.map((f) => (f.path === artifactPath ? { ...f, content: res.outputCode! } : f))
-              : [
-                  ...prev.files,
-                  {
-                    id: `artifact-${Date.now()}`,
-                    name: `${appSlug}.js`,
-                    path: artifactPath,
-                    language: 'javascript' as const,
-                    content: res.outputCode!,
-                    isReadOnly: true,
-                  },
-                ];
-            return { ...prev, files: updated };
-          });
+      try {
+        const res = await orchestrator.executeProject(currentProj, {
+          activeFilePath: currentFile.path,
+          target: 'js',
+        });
+
+        setExecutionResult(res);
+
+        // Create/update BuildResult for backward compatibility with existing inspector & components
+        const bRes: BuildResult = {
+          success: res.success,
+          timestamp: res.timestamp,
+          target: res.projectKind === 'manifest' ? 'js' : res.projectKind,
+          artifacts: res.outputCode
+            ? [
+                {
+                  fileName:
+                    res.projectKind === 'manifest'
+                      ? `${(res.ir?.appName || 'app').toLowerCase()}.js`
+                      : currentFile.name,
+                  fileType: res.projectKind === 'manifest' ? 'javascript' : currentFile.language,
+                  content: res.outputCode,
+                  sizeBytes: new Blob([res.outputCode]).size,
+                },
+              ]
+            : [],
+          diagnostics: res.diagnostics,
+          outputCode: res.outputCode,
+          ir: res.ir,
+          durationMs: res.durationMs,
+        };
+        setBuildResult(bRes);
+
+        if (res.success) {
+          addConsoleEntry(`[${provider.name}] Execution ready in ${res.durationMs}ms`, 'build');
+          setIsPreviewOpen(true);
+          setMobileActiveView('preview');
+          showToast(`Running "${currentFile.name}" in Preview`);
+
+          // If manifest code produced an output artifact, update build/ folder
+          if (res.projectKind === 'manifest' && res.outputCode) {
+            const appSlug = (res.ir?.appName || 'app').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+            const artifactPath = `build/${appSlug}.js`;
+            setProject((prev) => {
+              const hasBuild = prev.files.some((f) => f.path === artifactPath);
+              const updated = hasBuild
+                ? prev.files.map((f) => (f.path === artifactPath ? { ...f, content: res.outputCode! } : f))
+                : [
+                    ...prev.files,
+                    {
+                      id: `artifact-${Date.now()}`,
+                      name: `${appSlug}.js`,
+                      path: artifactPath,
+                      language: 'javascript' as const,
+                      content: res.outputCode!,
+                      isReadOnly: true,
+                    },
+                  ];
+              return { ...prev, files: updated };
+            });
+          }
+        } else {
+          const errorCount = res.diagnostics.filter((d) => d.severity === 'error').length;
+          addConsoleEntry(`Execution halted with ${errorCount} error(s). Check Problems panel.`, 'error');
+          setActiveBottomTab('problems');
+          setIsBottomOpen(true);
         }
-      } else {
-        const errorCount = res.diagnostics.filter((d) => d.severity === 'error').length;
-        addConsoleEntry(`Compilation halted with ${errorCount} error(s). Check Problems panel.`, 'error');
-        setActiveBottomTab('problems');
-        setIsBottomOpen(true);
+      } catch (err: any) {
+        addConsoleEntry(`Execution failure: ${err.message || String(err)}`, 'error');
+      } finally {
+        setIsCompiling(false);
       }
-    } catch (err: any) {
-      addConsoleEntry(`Unexpected compiler failure: ${err.message || String(err)}`, 'error');
-    } finally {
-      setIsCompiling(false);
-    }
-  }, [mainManifestFile.content, project.name, addConsoleEntry]);
+    },
+    [project, activeFile, activeFilePath, addConsoleEntry]
+  );
 
   // Build command: generates and registers build artifacts
   const handleBuild = async () => {
+    if (activeFile.language !== 'manifest') {
+      const provider = LanguageRegistry.getInstance().detectProvider(activeFile.path);
+      const status = provider.getCapabilityStatus ? provider.getCapabilityStatus('localBuild') : 'Unsupported';
+      addConsoleEntry(
+        `[Language Registry] Cannot build "${activeFile.name}" locally. Language "${provider.name}" local build is ${status}.`,
+        'error'
+      );
+      showToast(`${provider.name}: Local build is ${status}`);
+      return;
+    }
+
     setIsCompiling(true);
     addConsoleEntry(`Building project artifacts for "${project.name}" (Target: JS)...`, 'build');
 
@@ -331,22 +395,19 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     }
   };
 
-  // Auto-run once on load
-  useEffect(() => {
-    handleRun();
-  }, []);
-
-  // Handle template selection
+  // Handle template selection with immediate preview refresh
   const handleSelectTemplate = (templateId: string) => {
     const newProj = createDefaultProject(templateId);
     setProject(newProj);
-    setActiveFilePath('src/main.manifest');
-    setOpenFilePaths(['src/main.manifest', 'manifest.toml']);
+    const entryPath = newProj.activeFilePath || newProj.files[0]?.path || 'src/main.manifest';
+    setActiveFilePath(entryPath);
+    const activeF = newProj.files.find((f) => f.path === entryPath) || newProj.files[0];
+    setOpenFilePaths(newProj.files.slice(0, 3).map((f) => f.path));
     setConsoleEntries([]);
+    setExecutionResult(null);
+    setBuildResult(null);
     showToast(`Loaded template: ${newProj.name}`);
-    setTimeout(() => {
-      handleRun();
-    }, 50);
+    handleRun(newProj, activeF);
   };
 
   // Create new file in project
@@ -447,7 +508,8 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           {/* Mobile Drawer Toggle */}
           <button
             onClick={() => setMobileDrawerOpen(!mobileDrawerOpen)}
-            className="md:hidden p-1 rounded text-[#858585] hover:text-[#cccccc] hover:bg-[#242424] transition"
+            aria-label="Open mobile navigation drawer"
+            className="md:hidden min-h-[36px] min-w-[36px] p-1.5 rounded text-[#858585] hover:text-[#cccccc] hover:bg-[#242424] flex items-center justify-center transition cursor-pointer"
           >
             <Menu className="w-4 h-4" />
           </button>
@@ -466,7 +528,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
 
           {/* Breadcrumb path */}
           <div className="flex items-center gap-1 text-[11px] text-[#858585]">
-            <span className="font-medium text-[#cccccc] truncate max-w-[120px] sm:max-w-xs">{project.name}</span>
+            <span className="font-medium text-[#cccccc] truncate max-w-[100px] xs:max-w-[120px] sm:max-w-xs">{project.name}</span>
             <ChevronRight className="w-3 h-3 text-[#555555]" />
             <span className="text-[#858585] font-mono text-[10px] hidden sm:inline">{activeFile.path}</span>
           </div>
@@ -494,10 +556,20 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             onClick={handleRun}
             disabled={isCompiling}
             title="Compile & Run in Preview (Mod+Enter)"
-            className="py-1 px-3 rounded-md bg-[#238636] hover:bg-[#2ea043] active:scale-[0.98] text-white font-medium text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+            className="py-1 px-3 min-h-[32px] rounded-md bg-[#238636] hover:bg-[#2ea043] active:scale-[0.98] text-white font-medium text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
             <span>Run</span>
+          </button>
+
+          {/* Mobile Actions Overflow Button (sm:hidden) */}
+          <button
+            onClick={() => setIsMobileActionsOpen(true)}
+            aria-label="More Studio Actions"
+            title="More Studio Actions (Build, Projects, Tests, Solana, Settings, Terminal, Problems)"
+            className="sm:hidden min-h-[32px] min-w-[36px] px-2 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] hover:text-[#ffffff] text-xs font-medium flex items-center justify-center gap-1 border border-[#2d2d2d] transition cursor-pointer"
+          >
+            <MoreHorizontal className="w-4 h-4" />
           </button>
 
           {/* Build Button */}
@@ -684,6 +756,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             {/* Primary Left Editor Pane */}
             <div className="flex-1 h-full overflow-hidden flex flex-col bg-[#1f1f1f]">
               <CodeMirrorEditor
+                key={activeFile.path}
                 value={activeFile.content}
                 onChange={handleFileChange}
                 language={activeFile.language}
@@ -725,6 +798,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                 </div>
                 <div className="flex-1 overflow-hidden bg-[#1f1f1f]">
                   <CodeMirrorEditor
+                    key={splitFile.path}
                     value={splitFile.content}
                     onChange={handleSplitFileChange}
                     language={splitFile.language}
@@ -833,6 +907,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           <div className="w-[420px] lg:w-[460px] flex-shrink-0 flex flex-col h-full bg-[#181818] z-10 border-l border-[#2d2d2d]">
             <PreviewPanel
               buildResult={buildResult}
+              executionResult={executionResult}
               isCompiling={isCompiling}
               onRun={handleRun}
               onClose={() => setIsPreviewOpen(false)}
@@ -889,9 +964,14 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           </span>
           <span className="hidden md:inline">Spaces: 4</span>
           <span className="hidden md:inline">UTF-8</span>
-          <span className="text-[#cccccc] font-medium">
-            {activeFile.language === 'manifest' ? 'Manifest' : activeFile.language.toUpperCase()}
-          </span>
+          <button
+            onClick={() => setIsLanguageModalOpen(true)}
+            title="Inspect Language Capabilities & Limits"
+            className="text-[#cccccc] font-medium hover:text-[#ffffff] hover:underline flex items-center gap-1 cursor-pointer"
+          >
+            <span>{activeFile.language === 'manifest' ? 'Manifest' : activeFile.language.toUpperCase()}</span>
+            <Info className="w-3 h-3 text-[#569cd6]" />
+          </button>
           <div className="flex items-center gap-1 text-[#858585]">
             <Wifi className="w-3 h-3 text-[#89d185]" />
             <span className="hidden lg:inline text-[10px]">Offline Ready</span>
@@ -906,11 +986,66 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             <span className="font-bold text-xs text-[#ffffff]">Project Files</span>
             <button
               onClick={() => setMobileDrawerOpen(false)}
-              className="p-1 text-[#858585] hover:text-[#ffffff]"
+              className="p-1 text-[#858585] hover:text-[#ffffff] min-h-[44px] min-w-[44px] flex items-center justify-center"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
+
+          {/* Quick Actions Toolbar in Mobile Drawer */}
+          <div className="p-2 border-b border-[#2d2d2d] bg-[#1f1f1f] grid grid-cols-5 gap-1">
+            <button
+              onClick={() => {
+                setMobileDrawerOpen(false);
+                handleBuild();
+              }}
+              className="py-1.5 px-1 rounded bg-[#252526] hover:bg-[#2d2d2d] text-[#dcdcaa] text-[10px] font-medium flex flex-col items-center justify-center gap-0.5 min-h-[44px]"
+            >
+              <Hammer className="w-3.5 h-3.5" />
+              <span>Build</span>
+            </button>
+            <button
+              onClick={() => {
+                setMobileDrawerOpen(false);
+                setIsWelcomeOpen(true);
+              }}
+              className="py-1.5 px-1 rounded bg-[#252526] hover:bg-[#2d2d2d] text-[#569cd6] text-[10px] font-medium flex flex-col items-center justify-center gap-0.5 min-h-[44px]"
+            >
+              <FolderOpen className="w-3.5 h-3.5" />
+              <span>Projects</span>
+            </button>
+            <button
+              onClick={() => {
+                setMobileDrawerOpen(false);
+                setIsTestRunnerOpen(true);
+              }}
+              className="py-1.5 px-1 rounded bg-[#252526] hover:bg-[#2d2d2d] text-[#89d185] text-[10px] font-medium flex flex-col items-center justify-center gap-0.5 min-h-[44px]"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Tests</span>
+            </button>
+            <button
+              onClick={() => {
+                setMobileDrawerOpen(false);
+                setIsSolanaDeployOpen(true);
+              }}
+              className="py-1.5 px-1 rounded bg-[#252526] hover:bg-[#2d2d2d] text-[#cca700] text-[10px] font-medium flex flex-col items-center justify-center gap-0.5 min-h-[44px]"
+            >
+              <Coins className="w-3.5 h-3.5" />
+              <span>Solana</span>
+            </button>
+            <button
+              onClick={() => {
+                setMobileDrawerOpen(false);
+                setIsSettingsOpen(true);
+              }}
+              className="py-1.5 px-1 rounded bg-[#252526] hover:bg-[#2d2d2d] text-[#9cdcfe] text-[10px] font-medium flex flex-col items-center justify-center gap-0.5 min-h-[44px]"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              <span>Settings</span>
+            </button>
+          </div>
+
           <div className="flex-1 overflow-hidden bg-[#181818]">
             <Sidebar
               project={project}
@@ -935,14 +1070,14 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
         </div>
       )}
 
-      {/* 5. Mobile Bottom View Switcher (Kodezi-style #181818) */}
-      <div className="md:hidden h-12 border-t border-[#2d2d2d] bg-[#181818] grid grid-cols-4 text-center text-[10px] z-20">
+      {/* 5. Mobile Bottom View Switcher with Actions Sheet Access (Kodezi-style #181818) */}
+      <div className="md:hidden h-12 border-t border-[#2d2d2d] bg-[#181818] grid grid-cols-5 text-center text-[10px] z-20">
         <button
           onClick={() => {
             setMobileActiveView('editor');
             setIsPreviewOpen(false);
           }}
-          className={`flex flex-col items-center justify-center gap-1 ${
+          className={`flex flex-col items-center justify-center gap-1 min-h-[44px] ${
             mobileActiveView === 'editor' && !isPreviewOpen ? 'text-[#ffffff] font-bold' : 'text-[#858585]'
           }`}
         >
@@ -955,7 +1090,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             setIsPreviewOpen(true);
             setMobileActiveView('preview');
           }}
-          className={`flex flex-col items-center justify-center gap-1 ${
+          className={`flex flex-col items-center justify-center gap-1 min-h-[44px] ${
             isPreviewOpen ? 'text-[#ffffff] font-bold' : 'text-[#858585]'
           }`}
         >
@@ -969,7 +1104,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             setIsBottomOpen(true);
             setMobileActiveView('terminal');
           }}
-          className={`flex flex-col items-center justify-center gap-1 ${
+          className={`flex flex-col items-center justify-center gap-1 min-h-[44px] ${
             mobileActiveView === 'terminal' ? 'text-[#c586c0] font-bold' : 'text-[#858585]'
           }`}
         >
@@ -983,14 +1118,264 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             setIsBottomOpen(true);
             setMobileActiveView('problems');
           }}
-          className={`flex flex-col items-center justify-center gap-1 ${
+          className={`flex flex-col items-center justify-center gap-1 min-h-[44px] ${
             mobileActiveView === 'problems' ? 'text-[#f14c4c] font-bold' : 'text-[#858585]'
           }`}
         >
           <AlertCircle className="w-4 h-4" />
           <span>Problems {errorCount > 0 ? `(${errorCount})` : ''}</span>
         </button>
+
+        <button
+          onClick={() => setIsMobileActionsOpen(true)}
+          className="flex flex-col items-center justify-center gap-1 min-h-[44px] text-[#858585] hover:text-[#cca700]"
+        >
+          <MoreHorizontal className="w-4 h-4 text-[#cca700]" />
+          <span>Actions</span>
+        </button>
       </div>
+
+      {/* Mobile Actions Drawer Bottom Sheet */}
+      {isMobileActionsOpen && (
+        <div className="md:hidden fixed inset-0 z-50 bg-black/80 flex flex-col justify-end">
+          <div className="bg-[#181818] border-t border-[#2d2d2d] rounded-t-xl p-4 space-y-3 max-h-[85vh] overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between pb-2 border-b border-[#2d2d2d]">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-sm text-[#ffffff]">Studio Actions</span>
+                <span className="text-[10px] text-[#858585] font-mono">{project.name}</span>
+              </div>
+              <button
+                onClick={() => setIsMobileActionsOpen(false)}
+                className="p-1.5 rounded-md text-[#858585] hover:text-[#ffffff] hover:bg-[#252526] min-h-[44px] min-w-[44px] flex items-center justify-center"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              {/* Build */}
+              <button
+                onClick={() => {
+                  setIsMobileActionsOpen(false);
+                  handleBuild();
+                }}
+                disabled={isCompiling}
+                className="min-h-[44px] p-2.5 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] hover:text-[#ffffff] text-xs font-medium flex items-center gap-2 border border-[#2d2d2d] transition"
+              >
+                <Hammer className="w-4 h-4 text-[#dcdcaa]" />
+                <div className="text-left">
+                  <div>Build</div>
+                  <div className="text-[10px] text-[#858585]">Compile target</div>
+                </div>
+              </button>
+
+              {/* Projects */}
+              <button
+                onClick={() => {
+                  setIsMobileActionsOpen(false);
+                  setIsWelcomeOpen(true);
+                }}
+                className="min-h-[44px] p-2.5 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] hover:text-[#ffffff] text-xs font-medium flex items-center gap-2 border border-[#2d2d2d] transition"
+              >
+                <FolderOpen className="w-4 h-4 text-[#569cd6]" />
+                <div className="text-left">
+                  <div>Projects</div>
+                  <div className="text-[10px] text-[#858585]">Templates & files</div>
+                </div>
+              </button>
+
+              {/* Tests */}
+              <button
+                onClick={() => {
+                  setIsMobileActionsOpen(false);
+                  setIsTestRunnerOpen(true);
+                }}
+                className="min-h-[44px] p-2.5 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] text-[#89d185] hover:text-[#a6e3a1] text-xs font-medium flex items-center gap-2 border border-[#2d2d2d] transition"
+              >
+                <ShieldCheck className="w-4 h-4 text-[#89d185]" />
+                <div className="text-left">
+                  <div>Tests</div>
+                  <div className="text-[10px] text-[#858585]">Core & LiteSVM</div>
+                </div>
+              </button>
+
+              {/* Solana */}
+              <button
+                onClick={() => {
+                  setIsMobileActionsOpen(false);
+                  setIsSolanaDeployOpen(true);
+                }}
+                className="min-h-[44px] p-2.5 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] text-[#cca700] hover:text-[#ffd700] text-xs font-medium flex items-center gap-2 border border-[#2d2d2d] transition"
+              >
+                <Coins className="w-4 h-4 text-[#cca700]" />
+                <div className="text-left">
+                  <div>Solana</div>
+                  <div className="text-[10px] text-[#858585]">Deploy & wallet</div>
+                </div>
+              </button>
+
+              {/* Settings */}
+              <button
+                onClick={() => {
+                  setIsMobileActionsOpen(false);
+                  setIsSettingsOpen(true);
+                }}
+                className="min-h-[44px] p-2.5 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] hover:text-[#ffffff] text-xs font-medium flex items-center gap-2 border border-[#2d2d2d] transition"
+              >
+                <Settings className="w-4 h-4 text-[#9cdcfe]" />
+                <div className="text-left">
+                  <div>Settings</div>
+                  <div className="text-[10px] text-[#858585]">RPC & IDE</div>
+                </div>
+              </button>
+
+              {/* Preview */}
+              <button
+                onClick={() => {
+                  setIsMobileActionsOpen(false);
+                  setIsPreviewOpen(true);
+                  setMobileActiveView('preview');
+                }}
+                className="min-h-[44px] p-2.5 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] text-[#569cd6] hover:text-[#9cdcfe] text-xs font-medium flex items-center gap-2 border border-[#2d2d2d] transition"
+              >
+                <Sparkles className="w-4 h-4 text-[#569cd6]" />
+                <div className="text-left">
+                  <div>Preview</div>
+                  <div className="text-[10px] text-[#858585]">App canvas</div>
+                </div>
+              </button>
+
+              {/* Terminal */}
+              <button
+                onClick={() => {
+                  setIsMobileActionsOpen(false);
+                  setActiveBottomTab('build-output');
+                  setIsBottomOpen(true);
+                  setMobileActiveView('terminal');
+                }}
+                className="min-h-[44px] p-2.5 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] text-[#c586c0] hover:text-[#dcdcaa] text-xs font-medium flex items-center gap-2 border border-[#2d2d2d] transition"
+              >
+                <Terminal className="w-4 h-4 text-[#c586c0]" />
+                <div className="text-left">
+                  <div>Terminal</div>
+                  <div className="text-[10px] text-[#858585]">Output & logs</div>
+                </div>
+              </button>
+
+              {/* Problems */}
+              <button
+                onClick={() => {
+                  setIsMobileActionsOpen(false);
+                  setActiveBottomTab('problems');
+                  setIsBottomOpen(true);
+                  setMobileActiveView('problems');
+                }}
+                className="min-h-[44px] p-2.5 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] text-[#f14c4c] hover:text-[#f88080] text-xs font-medium flex items-center gap-2 border border-[#2d2d2d] transition"
+              >
+                <AlertCircle className="w-4 h-4 text-[#f14c4c]" />
+                <div className="text-left">
+                  <div>Problems {errorCount > 0 ? `(${errorCount})` : ''}</div>
+                  <div className="text-[10px] text-[#858585]">Diagnostics</div>
+                </div>
+              </button>
+
+              {/* Developer Mode */}
+              <button
+                onClick={() => {
+                  setIsMobileActionsOpen(false);
+                  setIsTestbenchOpen(true);
+                }}
+                className="min-h-[44px] p-2.5 rounded-lg bg-[#252526] hover:bg-[#2d2d2d] text-[#858585] hover:text-[#cccccc] text-xs font-medium flex items-center gap-2 border border-[#2d2d2d] transition"
+              >
+                <Cpu className="w-4 h-4 text-[#cca700]" />
+                <div className="text-left">
+                  <div>Dev Mode</div>
+                  <div className="text-[10px] text-[#858585]">AST inspector</div>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Language Truthful Capabilities Modal */}
+      {isLanguageModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-[#181818] border border-[#2d2d2d] rounded-xl max-w-md w-full p-4 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between pb-2 border-b border-[#2d2d2d]">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-sm text-[#ffffff]">
+                  Language Capabilities & Limits
+                </span>
+                <span className="text-xs px-2 py-0.5 rounded bg-[#252526] text-[#569cd6] font-mono border border-[#2d2d2d]">
+                  {LanguageRegistry.getInstance().detectProvider(activeFile.path).name}
+                </span>
+              </div>
+              <button
+                onClick={() => setIsLanguageModalOpen(false)}
+                className="p-1 rounded text-[#858585] hover:text-[#ffffff] min-h-[36px] min-w-[36px] flex items-center justify-center"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-[11px] text-[#858585]">
+              Manifest Studio reports honest capability status for each language. A capability is only marked available when the corresponding compiler or runtime genuinely executes in this environment.
+            </p>
+
+            <div className="space-y-1.5 text-xs">
+              {(() => {
+                const prov = LanguageRegistry.getInstance().detectProvider(activeFile.path);
+                const caps = prov.honestCapabilities || LanguageRegistry.computeHonestCapabilities(prov);
+                const items: Array<{ label: string; key: keyof typeof caps; desc: string }> = [
+                  { label: 'Editing', key: 'editing', desc: 'CodeMirror buffer & multi-file tabs' },
+                  { label: 'Syntax Highlighting', key: 'syntaxHighlighting', desc: 'Lezer / stream mode parser' },
+                  { label: 'Autocompletion', key: 'completion', desc: 'Context-aware keywords & snippet tokens' },
+                  { label: 'Diagnostics / Linter', key: 'diagnostics', desc: 'Syntax error markers & linting' },
+                  { label: 'Code Formatting', key: 'formatting', desc: 'Indentation & bracket structure' },
+                  { label: 'Local Execution', key: 'localExecution', desc: 'In-browser reactive engine / live preview' },
+                  { label: 'Local Build', key: 'localBuild', desc: 'JS Target code generator' },
+                  { label: 'Remote Build', key: 'remoteBuild', desc: 'Cloud CI / Anchor build pipeline' },
+                  { label: 'Debugging', key: 'debugging', desc: 'Step-through breakpoint debugger' },
+                ];
+
+                return items.map((it) => {
+                  const status = caps[it.key];
+                  const color =
+                    status === 'Available'
+                      ? 'text-[#89d185] bg-[#1e3422] border-[#2ea043]/30'
+                      : status === 'Partial'
+                      ? 'text-[#cca700] bg-[#332b00] border-[#cca700]/30'
+                      : status === 'Requires remote build'
+                      ? 'text-[#c586c0] bg-[#301c36] border-[#c586c0]/30'
+                      : status === 'Not configured'
+                      ? 'text-[#858585] bg-[#252526] border-[#3c3c3c]'
+                      : 'text-[#858585] bg-[#1f1f1f] border-[#2d2d2d]';
+
+                  return (
+                    <div
+                      key={it.key}
+                      className="flex items-center justify-between p-2 rounded bg-[#1f1f1f] border border-[#2d2d2d]"
+                    >
+                      <div>
+                        <div className="font-medium text-[#cccccc]">{it.label}</div>
+                        <div className="text-[10px] text-[#6e7681]">{it.desc}</div>
+                      </div>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-medium border ${color}`}>
+                        {status}
+                      </span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+
+            <div className="text-[11px] text-[#858585] pt-2 border-t border-[#2d2d2d]">
+              Clicking Run on non-Manifest files will not compile them as Manifest. Web files (HTML/CSS) are rendered in Preview; systems languages require native toolchains or remote build CI.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 6. Developer Tools & Compiler Testbench Modal */}
       <TestbenchModal
@@ -1010,8 +1395,9 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           const newProj = createDefaultProject(tplId);
           if (customName) newProj.name = customName;
           setProject(newProj);
-          setActiveFilePath('src/main.manifest');
-          setOpenFilePaths(['src/main.manifest', 'manifest.toml']);
+          const entryPath = newProj.activeFilePath || newProj.files[0]?.path || 'src/main.manifest';
+          setActiveFilePath(entryPath);
+          setOpenFilePaths(newProj.files.slice(0, 3).map((f) => f.path));
           setConsoleEntries([]);
           showToast(`Loaded ${newProj.name}`);
           setIsWelcomeOpen(false);
@@ -1049,8 +1435,9 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
         onSelectTemplate={(tplId) => {
           const newProj = createDefaultProject(tplId);
           setProject(newProj);
-          setActiveFilePath('src/main.manifest');
-          setOpenFilePaths(['src/main.manifest', 'manifest.toml']);
+          const entryPath = newProj.activeFilePath || newProj.files[0]?.path || 'src/main.manifest';
+          setActiveFilePath(entryPath);
+          setOpenFilePaths(newProj.files.slice(0, 3).map((f) => f.path));
           showToast(`Loaded ${newProj.name}`);
         }}
       />

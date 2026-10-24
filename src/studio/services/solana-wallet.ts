@@ -75,11 +75,25 @@ export interface SimulationResult {
 export class SolanaClientProvider {
   private network: SolanaNetwork;
   private customRpcUrl: string;
+  private isHeliusConfigured = false;
   private connection: Connection | null = null;
 
   constructor(network: SolanaNetwork = 'devnet', customRpcUrl: string = '') {
     this.network = network;
     this.customRpcUrl = customRpcUrl;
+    this.fetchHeliusStatus();
+  }
+
+  private async fetchHeliusStatus() {
+    try {
+      if (typeof window !== 'undefined' && typeof fetch === 'function') {
+        const res = await fetch('/api/solana/status');
+        if (res.ok) {
+          const data = await res.json();
+          this.isHeliusConfigured = Boolean(data.heliusConfigured);
+        }
+      }
+    } catch (_) {}
   }
 
   public getNetwork(): SolanaNetwork {
@@ -99,23 +113,21 @@ export class SolanaClientProvider {
   }
 
   public isHeliusActive(): boolean {
-    const key = import.meta.env.VITE_HELIUS_API_KEY;
-    return Boolean(key && key.trim().length > 0);
+    return this.isHeliusConfigured;
   }
 
   public getRpcEndpoint(): string {
     if (this.customRpcUrl) return this.customRpcUrl;
-    const apiKey = import.meta.env.VITE_HELIUS_API_KEY || '';
 
-    if (this.network === 'mainnet') {
-      return apiKey
-        ? `https://mainnet.helius-rpc.com/?api-key=${apiKey}`
-        : 'https://api.mainnet-beta.solana.com';
-    } else {
-      return apiKey
-        ? `https://devnet.helius-rpc.com/?api-key=${apiKey}`
-        : 'https://api.devnet.solana.com';
+    // Route through secure backend proxy without exposing any secret API keys
+    if (typeof window !== 'undefined' && window.location?.origin) {
+      return `${window.location.origin}/api/solana/rpc?network=${this.network}`;
     }
+
+    // Direct public cluster fallback
+    return this.network === 'mainnet'
+      ? 'https://api.mainnet-beta.solana.com'
+      : 'https://api.devnet.solana.com';
   }
 
   public getConnection(): Connection {

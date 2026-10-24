@@ -10,8 +10,11 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "manifest:test": "tsx manifest-core/tests/run_tests.ts && tsx manifest-core/tests/run_solana_counter_test.ts",
-    "manifest:run": "tsx manifest-core/src/cli.ts"
+    "manifest:test": "tsx manifest-core/tests/run_tests.ts && tsx manifest-core/tests/run_solana_counter_test.ts && tsx manifest-core/tests/run_orchestrator_tests.ts && tsx manifest-core/tests/run_editor_tests.ts",
+    "manifest:bench": "tsx manifest-core/tests/run_benchmark.ts",
+    "manifest:run": "tsx manifest-core/src/cli.ts",
+    "manifest:anchor:synthesize": "tsx manifest-core/scripts/synthesize-anchor-workspace.ts",
+    "context:refresh": "tsx scripts/generate-ai-context.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.3",

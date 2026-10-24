@@ -59,6 +59,7 @@ export class Compiler {
 export interface ExecuteOptions {
   onOutput?: (line: string) => void;
   validate?: boolean;
+  throwOnError?: boolean;
 }
 
 export async function executeManifest(
@@ -78,12 +79,12 @@ export async function executeManifest(
   try {
     const lexer = new Lexer(source);
     const tokens = lexer.tokenize();
-    const parser = new Parser(tokens);
+    const parser = new Parser(tokens, source);
     const ast = parser.parse();
 
     if (options.validate !== false) {
-      const validator = new Validator();
-      const valRes = validator.validate(ast);
+      const validator = new Validator(ast, source);
+      const valRes = validator.validate();
       if (!valRes.isValid) {
         validationIssues.push(...valRes.issues);
       }
@@ -103,6 +104,9 @@ export async function executeManifest(
       runtime,
     };
   } catch (err: any) {
+    if (options.throwOnError !== false) {
+      throw err;
+    }
     return {
       output,
       validationIssues,

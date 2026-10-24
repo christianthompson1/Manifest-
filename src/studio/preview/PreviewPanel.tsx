@@ -29,11 +29,13 @@ import {
   Layout,
 } from 'lucide-react';
 import { BuildResult } from '../types.ts';
+import { UnifiedExecutionResult } from '../execution/execution-types.ts';
 import { AnchorGenerator } from '../../../manifest-core/src/solana/anchor-generator.ts';
 import { SolanaSimulator } from '../../../manifest-core/src/solana/solana-simulator.ts';
 
-interface PreviewPanelProps {
-  buildResult: BuildResult | null;
+export interface PreviewPanelProps {
+  buildResult?: BuildResult | null;
+  executionResult?: UnifiedExecutionResult | null;
   isCompiling: boolean;
   onRun: () => void;
   onClose?: () => void;
@@ -43,6 +45,7 @@ interface PreviewPanelProps {
 
 export const PreviewPanel: React.FC<PreviewPanelProps> = ({
   buildResult,
+  executionResult,
   isCompiling,
   onRun,
   onClose,
@@ -67,7 +70,11 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
       const data = event.data;
       if (!data || typeof data !== 'object') return;
 
-      if (data.type === 'manifest-output') {
+      if (data.type === 'preview-console') {
+        const line = `[${String(data.level || 'log').toUpperCase()}] ${String(data.payload || '')}`;
+        setPreviewLogs((prev) => [...prev, line]);
+        onOutputMessage?.(line);
+      } else if (data.type === 'manifest-output') {
         const line = String(data.payload);
         setPreviewLogs((prev) => [...prev, line]);
         onOutputMessage?.(line);
@@ -92,7 +99,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
     setPreviewLogs([]);
     setLiveState({});
     setFiredEvents([]);
-  }, [reloadKey, buildResult?.timestamp]);
+  }, [reloadKey, buildResult?.timestamp, executionResult?.timestamp]);
 
   const handleReload = () => {
     setReloadKey((prev) => prev + 1);
@@ -103,9 +110,57 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
     onClearConsole?.();
   };
 
+  const generateErrorHtml = (diagnostics: any[] = [], fallbackError?: string) => {
+    const errorItems = diagnostics
+      .map(
+        (d) => `
+      <div style="background:#261619;border-left:4px solid #ef4444;padding:12px;margin-bottom:8px;border-radius:4px;">
+        <div style="color:#f87171;font-weight:600;font-size:13px;">Line ${d.line || 1}, Column ${d.column || 1}: ${d.message}</div>
+        ${d.hint ? `<div style="color:#9ca3af;font-size:11px;margin-top:4px;">💡 Hint: ${d.hint}</div>` : ''}
+        ${d.example ? `<div style="color:#60a5fa;font-size:11px;margin-top:4px;font-family:monospace;">Example: ${d.example}</div>` : ''}
+      </div>`
+      )
+      .join('');
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Preview Diagnostics</title>
+  <style>
+    body { background: #181818; color: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 24px; margin: 0; }
+    h2 { color: #f87171; font-size: 15px; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <h2>Build / Execution Issues</h2>
+  ${errorItems || `<div style="color:#f87171;padding:12px;background:#261619;border-radius:4px;">${fallbackError || 'Execution failed.'}</div>`}
+</body>
+</html>`;
+  };
+
   // Generate self-contained HTML for FULL APPLICATION preview
   const generatePreviewSrcDoc = () => {
-    if (!buildResult || !buildResult.success || !buildResult.outputCode) {
+    // 1. Unified execution result has precedence
+    if (executionResult) {
+      if (executionResult.previewHtml) {
+        return executionResult.previewHtml;
+      }
+      if (!executionResult.success) {
+        return generateErrorHtml(executionResult.diagnostics, executionResult.error);
+      }
+    }
+
+    // 2. BuildResult fallback
+    if (!buildResult) {
+      return '';
+    }
+
+    if (!buildResult.success) {
+      return generateErrorHtml(buildResult.diagnostics);
+    }
+
+    if (!buildResult.outputCode) {
       return '';
     }
 
@@ -233,8 +288,14 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
     return sim.exportAccounts();
   };
 
-  const hasErrors = buildResult && !buildResult.success;
-  const errorDiagnostics = buildResult?.diagnostics.filter((d) => d.severity === 'error') || [];
+  const hasErrors =
+    (executionResult && !executionResult.success) ||
+    (buildResult && !buildResult.success);
+  const errorDiagnostics =
+    (executionResult && executionResult.diagnostics.length > 0)
+      ? executionResult.diagnostics
+      : (buildResult?.diagnostics.filter((d) => d.severity === 'error') || []);
+  const activeDurationMs = executionResult?.durationMs ?? buildResult?.durationMs ?? 0;
 
   return (
     <div className="h-full flex flex-col bg-[#181818] text-[#cccccc] overflow-hidden border-l border-[#2d2d2d]">
@@ -255,10 +316,10 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
               <AlertTriangle className="w-3 h-3 text-[#f14c4c]" />
               Build Error
             </span>
-          ) : buildResult ? (
+          ) : (executionResult || buildResult) ? (
             <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#252526] text-[#89d185] border border-[#2d2d2d] flex items-center gap-1">
               <CheckCircle2 className="w-3 h-3 text-[#89d185]" />
-              Ready ({buildResult.durationMs}ms)
+              Ready ({activeDurationMs}ms)
             </span>
           ) : null}
         </div>
@@ -345,9 +406,9 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
           </div>
         ) : (
           <div className="flex-1 w-full h-full relative bg-[#1f1f1f]">
-            {buildResult?.outputCode ? (
+            {generatePreviewSrcDoc() ? (
               <iframe
-                key={reloadKey}
+                key={`${reloadKey}-${executionResult?.timestamp || buildResult?.timestamp || 0}`}
                 ref={iframeRef}
                 srcDoc={generatePreviewSrcDoc()}
                 sandbox="allow-scripts"

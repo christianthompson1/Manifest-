@@ -171,6 +171,8 @@ export const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
   const onCursorChangeRef = useRef(onCursorChange);
   onCursorChangeRef.current = onCursorChange;
 
+  const lastEmittedValueRef = useRef<string>(value);
+
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -221,6 +223,7 @@ export const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
       EditorView.updateListener.of((update) => {
         if (update.docChanged) {
           const docStr = update.state.doc.toString();
+          lastEmittedValueRef.current = docStr;
           onChangeRef.current(docStr);
         }
         if (update.selectionSet || update.docChanged) {
@@ -246,6 +249,7 @@ export const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
     });
 
     viewRef.current = view;
+    lastEmittedValueRef.current = value;
 
     return () => {
       view.destroy();
@@ -253,16 +257,32 @@ export const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
     };
   }, [language, readOnly]);
 
-  // Synchronize document value when changed externally (e.g. file switched or reset)
+  // Synchronize document value when changed externally (e.g. file switched, template loaded, or format)
   useEffect(() => {
     const view = viewRef.current;
-    if (view) {
-      const currentDoc = view.state.doc.toString();
-      if (value !== currentDoc) {
-        view.dispatch({
-          changes: { from: 0, to: currentDoc.length, insert: value },
-        });
-      }
+    if (!view) return;
+
+    // Normalize potential CRLF to LF to match CodeMirror text model
+    const normalizedValue = (value || '').replace(/\r\n/g, '\n');
+
+    // If this update was emitted by the editor view itself during typing, skip dispatch
+    if (normalizedValue === lastEmittedValueRef.current) {
+      return;
+    }
+
+    const currentDoc = view.state.doc.toString();
+    if (normalizedValue !== currentDoc) {
+      // Preserve current selection / cursor position instead of collapsing to position 0 (Line 1)
+      const currentSelection = view.state.selection;
+      const safeAnchor = Math.min(currentSelection.main.anchor, normalizedValue.length);
+      const safeHead = Math.min(currentSelection.main.head, normalizedValue.length);
+
+      lastEmittedValueRef.current = normalizedValue;
+      view.dispatch({
+        changes: { from: 0, to: currentDoc.length, insert: normalizedValue },
+        selection: { anchor: safeAnchor, head: safeHead },
+        scrollIntoView: false,
+      });
     }
   }, [value]);
 

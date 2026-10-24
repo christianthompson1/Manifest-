@@ -8,6 +8,10 @@ import { runCompilerTests } from './run_compiler_tests.ts';
 import { runAppTests } from './run_app_tests.ts';
 import { runV03Tests } from './run_v03_tests.ts';
 import { runV04Tests } from './run_v04_tests.ts';
+import { runGitHubImportTests } from './run_github_import_tests.ts';
+import { runMobileControlsTests } from './run_mobile_controls_tests.ts';
+import { runStyledDashboardTests } from './run_styled_dashboard_tests.ts';
+import { runOrchestratorTests } from './run_orchestrator_tests.ts';
 
 interface TestCase {
   name: string;
@@ -349,39 +353,118 @@ export async function runAllTests(): Promise<{ passed: number; failed: number; t
   }
 
   // Run Compiler and IR tests
-  const compilerTestSummary = await runCompilerTests();
+  let compilerTestSummary = { passed: 0, failed: 0, total: 0 };
+  try {
+    const cRes = await runCompilerTests();
+    compilerTestSummary = { passed: cRes.passed, failed: cRes.failed, total: cRes.passed + cRes.failed };
+  } catch (err: any) {
+    console.error('Compiler suite fatal error:', err);
+    compilerTestSummary = { passed: 0, failed: 1, total: 1 };
+  }
   const oldPassed = passed + compilerTestSummary.passed;
   const oldFailed = failed + compilerTestSummary.failed;
   const oldTotal = tests.length + compilerTestSummary.passed + compilerTestSummary.failed;
 
   // Run Manifest v0.2 Application Primitive Tests
-  const appTestSummary = await runAppTests();
+  let appTestSummary = { passed: 0, failed: 0, total: 0, results: [] as any[] };
+  try {
+    appTestSummary = await runAppTests();
+  } catch (err: any) {
+    console.error('v0.2 application suite fatal error:', err);
+    appTestSummary = { passed: 0, failed: 1, total: 1, results: [] };
+  }
   const v02Passed = appTestSummary.passed;
   const v02Failed = appTestSummary.failed;
   const v02Total = appTestSummary.total;
 
   // Run Manifest v0.3 UI Primitives & Design System Tests
-  const v03Summary = runV03Tests();
+  let v03Summary = { passed: 0, failed: 0, total: 0 };
+  try {
+    v03Summary = runV03Tests();
+  } catch (err: any) {
+    console.error('v0.3 UI primitives suite fatal error:', err);
+    v03Summary = { passed: 0, failed: 1, total: 1 };
+  }
   const v03Passed = v03Summary.passed;
+  const v03Failed = v03Summary.failed || 0;
   const v03Total = v03Summary.total;
 
   // Run Manifest v0.4 Solana, IDE & Architecture Tests
-  const v04Summary = await runV04Tests();
+  let v04Summary = { passed: 0, failed: 0, total: 0 };
+  try {
+    v04Summary = await runV04Tests();
+  } catch (err: any) {
+    console.error('v0.4 Solana/IDE suite fatal error:', err);
+    v04Summary = { passed: 0, failed: 1, total: 1 };
+  }
   const v04Passed = v04Summary.passed;
+  const v04Failed = v04Summary.failed;
   const v04Total = v04Summary.total;
 
-  const totalPassed = oldPassed + v02Passed + v03Passed + v04Passed;
-  const totalFailed = oldFailed + v02Failed + v04Summary.failed;
-  const grandTotal = oldTotal + v02Total + v03Total + v04Total;
+  // Run GitHub Import Provider Tests
+  let ghSummary = { passed: 0, failed: 0, total: 0 };
+  try {
+    ghSummary = await runGitHubImportTests();
+  } catch (err: any) {
+    console.error('GitHub import suite fatal error:', err);
+    ghSummary = { passed: 0, failed: 1, total: 1 };
+  }
+  const ghPassed = ghSummary.passed;
+  const ghFailed = ghSummary.failed;
+  const ghTotal = ghSummary.total;
+
+  // Run Mobile IDE Controls Tests (Requirement 12)
+  let mobileSummary = { passed: 0, failed: 0, total: 0 };
+  try {
+    mobileSummary = await runMobileControlsTests();
+  } catch (err: any) {
+    console.error('Mobile controls suite fatal error:', err);
+    mobileSummary = { passed: 0, failed: 1, total: 1 };
+  }
+  const mobilePassed = mobileSummary.passed;
+  const mobileFailed = mobileSummary.failed;
+  const mobileTotal = mobileSummary.total;
+
+  // Run Styled Dashboard Verification Tests (Phase 5)
+  let styledSummary = { passed: 0, failed: 0, total: 0 };
+  try {
+    styledSummary = await runStyledDashboardTests();
+  } catch (err: any) {
+    console.error('Styled dashboard suite fatal error:', err);
+    styledSummary = { passed: 0, failed: 1, total: 1 };
+  }
+  const styledPassed = styledSummary.passed;
+  const styledFailed = styledSummary.failed;
+  const styledTotal = styledSummary.total;
+
+  // Run Unified Execution Orchestrator & Static Web Provider Tests
+  let orchSummary = { passed: 0, failed: 0, total: 0 };
+  try {
+    orchSummary = await runOrchestratorTests();
+  } catch (err: any) {
+    console.error('Orchestrator suite fatal error:', err);
+    orchSummary = { passed: 0, failed: 1, total: 1 };
+  }
+  const orchPassed = orchSummary.passed;
+  const orchFailed = orchSummary.failed;
+  const orchTotal = orchSummary.total;
+
+  const totalPassed = oldPassed + v02Passed + v03Passed + v04Passed + ghPassed + mobilePassed + styledPassed + orchPassed;
+  const totalFailed = oldFailed + v02Failed + v03Failed + v04Failed + ghFailed + mobileFailed + styledFailed + orchFailed;
+  const grandTotal = oldTotal + v02Total + v03Total + v04Total + ghTotal + mobileTotal + styledTotal + orchTotal;
 
   console.log('\n====================================================');
   console.log('MANIFEST APPLICATION LANGUAGE TEST REPORT');
   console.log('====================================================');
-  console.log(`v0.1 core tests:\n${oldPassed}/${oldTotal}\n`);
-  console.log(`v0.2 application tests:\n${v02Passed}/${v02Total}\n`);
-  console.log(`v0.3 UI primitives & style tests:\n${v03Passed}/${v03Total}\n`);
-  console.log(`v0.4 Solana, IDE & architecture tests:\n${v04Passed}/${v04Total}\n`);
-  console.log(`Grand Total:\n${totalPassed}/${grandTotal}`);
+  console.log(`v0.1 core tests:\n${oldPassed}/${oldTotal} (passed: ${oldPassed}, failed: ${oldFailed})\n`);
+  console.log(`v0.2 application tests:\n${v02Passed}/${v02Total} (passed: ${v02Passed}, failed: ${v02Failed})\n`);
+  console.log(`v0.3 UI primitives & style tests:\n${v03Passed}/${v03Total} (passed: ${v03Passed}, failed: ${v03Failed})\n`);
+  console.log(`v0.4 Solana, IDE & architecture tests:\n${v04Passed}/${v04Total} (passed: ${v04Passed}, failed: ${v04Failed})\n`);
+  console.log(`GitHub import tests:\n${ghPassed}/${ghTotal} (passed: ${ghPassed}, failed: ${ghFailed})\n`);
+  console.log(`Mobile IDE controls tests:\n${mobilePassed}/${mobileTotal} (passed: ${mobilePassed}, failed: ${mobileFailed})\n`);
+  console.log(`Styled Dashboard verification tests:\n${styledPassed}/${styledTotal} (passed: ${styledPassed}, failed: ${styledFailed})\n`);
+  console.log(`Execution Orchestrator tests:\n${orchPassed}/${orchTotal} (passed: ${orchPassed}, failed: ${orchFailed})\n`);
+  console.log(`Grand Total:\n${totalPassed}/${grandTotal} (passed: ${totalPassed}, failed: ${totalFailed})`);
   console.log('====================================================\n');
 
   return { passed: totalPassed, failed: totalFailed, total: grandTotal, results: [...results, ...appTestSummary.results] };

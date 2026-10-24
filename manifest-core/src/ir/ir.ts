@@ -516,6 +516,7 @@ export interface IRPageNode extends IRBaseNode {
   kind: 'IRPage';
   name: string;
   route?: string;
+  styles?: Record<string, string | number>;
   state: IRStateNode[];
   children: IRUINode[];
   instructions: IRInstructionNode[];
@@ -607,6 +608,7 @@ export interface IRProgramNode extends IRBaseNode {
   pages?: IRPageNode[];
   routes?: IRRouteNode[];
   uiNodes?: IRUINode[];
+  components?: IRComponentDeclNode[];
   solanaProgram?: any;
   sourceFile?: string;
   version: string;

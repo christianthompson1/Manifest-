@@ -45,6 +45,8 @@ export interface ProjectFile {
   content: string;
   isEntry?: boolean;
   isReadOnly?: boolean;
+  isBinary?: boolean;
+  mimeType?: string;
 }
 
 export type ProjectKind =

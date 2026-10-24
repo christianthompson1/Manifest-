@@ -7,7 +7,9 @@ import {
   SetStatementNode,
   ShowStatementNode,
   CallStatementNode,
+  CallExpressionNode,
   ActionDefinitionNode,
+  ReturnStatementNode,
   IfStatementNode,
   RepeatLoopNode,
   ForEachLoopNode,
@@ -45,6 +47,7 @@ export class Parser {
   private tokens: Token[];
   private current = 0;
   private source?: string;
+  private declaredComponents: Set<string> = new Set();
 
   constructor(tokens: Token[], source?: string) {
     this.tokens = tokens;
@@ -119,6 +122,9 @@ export class Parser {
     }
     if (this.match(TokenType.CALL)) {
       return this.parseCallStatement();
+    }
+    if (this.match(TokenType.RETURN)) {
+      return this.parseReturnStatement();
     }
     if (this.match(TokenType.ACTION)) {
       return this.parseActionDefinition();
@@ -260,6 +266,21 @@ export class Parser {
       return null;
     }
 
+    if (this.peek().type === TokenType.IDENTIFIER) {
+      const name = this.peek().value;
+      if (this.declaredComponents.has(name) || /^[A-Z]/.test(name)) {
+        const tok = this.advance();
+        return {
+          type: 'ComponentCall',
+          componentName: tok.value,
+          name: tok.value,
+          props: {},
+          line: tok.line,
+          column: tok.column,
+        };
+      }
+    }
+
     // Unrecognized token or end
     if (this.peek().type === TokenType.END) {
       return null;
@@ -322,10 +343,10 @@ export class Parser {
 
     if (this.check(TokenType.NEWLINE) || this.isAtEnd()) {
       throw new ManifestError(
-        'Missing value after SET TO',
+        'Missing value after SET TO: expected a value after TO',
         this.peek().line,
         this.peek().column,
-        'Provide a value or expression after SET TO'
+        'Example: SET balance TO 100'
       );
     }
 
@@ -364,6 +385,16 @@ export class Parser {
       do {
         args.push(this.parseExpression());
       } while (this.match(TokenType.COMMA));
+    } else {
+      while (
+        !this.check(TokenType.NEWLINE) &&
+        !this.check(TokenType.END) &&
+        !this.check(TokenType.ELSE) &&
+        !this.isAtEnd()
+      ) {
+        args.push(this.parseFactor());
+        this.match(TokenType.COMMA);
+      }
     }
 
     return {
@@ -380,7 +411,7 @@ export class Parser {
     const name = this.consume(
       TokenType.IDENTIFIER,
       'Expected action name after ACTION',
-      'Example: ACTION addNumbers WITH a, b'
+      'Example: ACTION addNumbers a, b'
     ).value;
 
     const params: string[] = [];
@@ -388,6 +419,20 @@ export class Parser {
       do {
         params.push(this.consume(TokenType.IDENTIFIER, 'Expected parameter name').value);
       } while (this.match(TokenType.COMMA));
+    } else {
+      while (
+        !this.check(TokenType.NEWLINE) &&
+        !this.check(TokenType.RETURNS) &&
+        !this.check(TokenType.END) &&
+        !this.isAtEnd()
+      ) {
+        if (this.check(TokenType.IDENTIFIER)) {
+          params.push(this.advance().value);
+          this.match(TokenType.COMMA);
+        } else {
+          break;
+        }
+      }
     }
 
     let returnType: string | undefined;
@@ -413,6 +458,18 @@ export class Parser {
       params,
       returnType,
       body,
+      line: tok.line,
+      column: tok.column,
+    };
+  }
+
+  private parseReturnStatement(): ReturnStatementNode {
+    const tok = this.previous();
+    const expression = this.parseExpression();
+    return {
+      type: 'ReturnStatement',
+      expression,
+      value: expression,
       line: tok.line,
       column: tok.column,
     };
@@ -444,7 +501,7 @@ export class Parser {
       }
     }
 
-    this.consume(TokenType.END, 'Expected END to close IF block', 'Add END after IF block');
+    this.consume(TokenType.END, 'Expected END to close IF block: block was never closed with END', 'Add END after IF block');
 
     return {
       type: 'IfStatement',
@@ -579,20 +636,27 @@ export class Parser {
     }
     this.skipNewlines();
     const body: StatementNode[] = [];
+    let styles: Record<string, string> | undefined;
 
     while (!this.check(TokenType.END) && !this.isAtEnd()) {
       if (this.match(TokenType.NEWLINE)) continue;
+      if (this.match(TokenType.STYLE)) {
+        styles = this.parseStyleBlock();
+        this.skipNewlines();
+        continue;
+      }
       const stmt = this.parseStatement();
       if (stmt) body.push(stmt);
       this.skipNewlines();
     }
 
-    this.consume(TokenType.END, 'Expected END to close PAGE block', 'Add END at the end of the page block');
+    this.consume(TokenType.END, 'Expected END to close PAGE block: page was never closed with END', 'Add END at the end of the page block');
 
     return {
       type: 'PageDeclaration',
       name,
       route,
+      styles,
       body,
       line: tok.line,
       column: tok.column,
@@ -624,27 +688,37 @@ export class Parser {
     const label = this.parseExpression();
     let styles: Record<string, string> | undefined;
     let onClick: StatementNode[] | undefined;
+    let hasBlock = false;
 
     this.skipNewlines();
 
-    if (this.match(TokenType.STYLE)) {
-      styles = this.parseStyleBlock();
-      this.skipNewlines();
-    }
+    while (!this.check(TokenType.END) && !this.isAtEnd()) {
+      if (this.match(TokenType.NEWLINE)) continue;
 
-    if (this.peek().value?.toUpperCase() === 'ANIMATE') {
-      this.advance();
-      this.skipNewlines();
-      while (!this.check(TokenType.END) && !this.isAtEnd()) {
+      if (this.match(TokenType.STYLE)) {
+        hasBlock = true;
+        styles = this.parseStyleBlock();
+        this.skipNewlines();
+        continue;
+      }
+
+      if (this.peek().value?.toUpperCase() === 'ANIMATE') {
+        hasBlock = true;
         this.advance();
         this.skipNewlines();
+        while (!this.check(TokenType.END) && !this.isAtEnd()) {
+          this.advance();
+          this.skipNewlines();
+        }
+        this.consume(TokenType.END, 'Expected END to close ANIMATE block');
+        this.skipNewlines();
+        continue;
       }
-      this.consume(TokenType.END, 'Expected END to close ANIMATE block');
-      this.skipNewlines();
-    }
 
-    if (this.match(TokenType.WHEN)) {
-      if (this.match(TokenType.CLICK)) {
+      if (this.check(TokenType.WHEN) && this.tokens[this.current + 1]?.type === TokenType.CLICK) {
+        hasBlock = true;
+        this.advance(); // consume WHEN
+        this.advance(); // consume CLICK
         this.skipNewlines();
         onClick = [];
         while (!this.check(TokenType.END) && !this.isAtEnd()) {
@@ -655,9 +729,16 @@ export class Parser {
         }
         this.consume(TokenType.END, 'Expected END to close WHEN CLICK block');
         this.skipNewlines();
-        if (this.match(TokenType.END)) {
-          // button closed
-        }
+        continue;
+      }
+
+      break;
+    }
+
+    if (hasBlock) {
+      this.skipNewlines();
+      if (this.match(TokenType.END)) {
+        // button closed
       }
     }
 
@@ -673,7 +754,13 @@ export class Parser {
 
   private parseStateDeclaration(): StateDeclarationNode {
     const tok = this.previous();
-    if (this.check(TokenType.NEWLINE) || this.isAtEnd()) {
+    if (
+      this.check(TokenType.NEWLINE) ||
+      this.isAtEnd() ||
+      this.check(TokenType.TO) ||
+      this.check(TokenType.EQUALS) ||
+      this.check(TokenType.COLON)
+    ) {
       throw new ManifestError(
         'Expected state variable name after STATE',
         tok.line,
@@ -715,12 +802,20 @@ export class Parser {
     let bindVariable: string | undefined;
     let styles: Record<string, string> | undefined;
 
+    // Check if directly followed by string placeholder: INPUT "Enter username" INTO username
+    if (this.check(TokenType.STRING)) {
+      placeholder = this.advance().value.replace(/['"]/g, '');
+      if (this.matchIdentifier('INTO') || this.matchIdentifier('BIND') || this.match(TokenType.TO)) {
+        bindVariable = this.consume(TokenType.IDENTIFIER, 'Expected variable name after INTO').value;
+      }
+    }
+
     while (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
       const word = this.peek().value.toUpperCase();
       if (word === 'PLACEHOLDER') {
         this.advance();
         placeholder = this.advance().value.replace(/['"]/g, '');
-      } else if (word === 'BIND') {
+      } else if (word === 'BIND' || word === 'INTO') {
         this.advance();
         bindVariable = this.advance().value;
       } else if (this.match(TokenType.STYLE)) {
@@ -742,25 +837,29 @@ export class Parser {
 
   private parseFormNode(): FormNode {
     const tok = this.previous();
+    let name = 'Form';
+    if (this.check(TokenType.IDENTIFIER)) {
+      name = this.advance().value;
+    }
     this.skipNewlines();
     const children: StatementNode[] = [];
     let onSubmit: StatementNode[] | undefined;
 
     while (!this.check(TokenType.END) && !this.isAtEnd()) {
       if (this.match(TokenType.NEWLINE)) continue;
-      if (this.match(TokenType.WHEN)) {
-        if (this.match(TokenType.SUBMIT)) {
+      if (this.check(TokenType.WHEN) && this.tokens[this.current + 1]?.type === TokenType.SUBMIT) {
+        this.advance(); // consume WHEN
+        this.advance(); // consume SUBMIT
+        this.skipNewlines();
+        onSubmit = [];
+        while (!this.check(TokenType.END) && !this.isAtEnd()) {
+          if (this.match(TokenType.NEWLINE)) continue;
+          const stmt = this.parseStatement();
+          if (stmt) onSubmit.push(stmt);
           this.skipNewlines();
-          onSubmit = [];
-          while (!this.check(TokenType.END) && !this.isAtEnd()) {
-            if (this.match(TokenType.NEWLINE)) continue;
-            const stmt = this.parseStatement();
-            if (stmt) onSubmit.push(stmt);
-            this.skipNewlines();
-          }
-          this.consume(TokenType.END, 'Expected END to close WHEN SUBMIT block');
-          continue;
         }
+        this.consume(TokenType.END, 'Expected END to close WHEN SUBMIT block');
+        continue;
       }
 
       const stmt = this.parseStatement();
@@ -772,6 +871,7 @@ export class Parser {
 
     return {
       type: 'Form',
+      name,
       children,
       onSubmit,
       line: tok.line,
@@ -796,17 +896,30 @@ export class Parser {
 
   private parseContainerNode(): ContainerNode {
     const tok = this.previous();
-    let styles: Record<string, string> | undefined;
+    const styles: Record<string, string> = {};
     this.skipNewlines();
 
     if (this.match(TokenType.STYLE)) {
-      styles = this.parseStyleBlock();
+      Object.assign(styles, this.parseStyleBlock());
       this.skipNewlines();
     }
 
     const children: StatementNode[] = [];
     while (!this.check(TokenType.END) && !this.isAtEnd()) {
       if (this.match(TokenType.NEWLINE)) continue;
+      const peekVal = this.peek().value?.toUpperCase();
+      if (['LAYOUT', 'DIRECTION', 'GAP', 'ALIGN', 'PADDING', 'JUSTIFY', 'WIDTH', 'HEIGHT', 'BACKGROUND', 'COLOR'].includes(peekVal)) {
+        const prop = this.advance().value;
+        this.match(TokenType.COLON);
+        let val = '';
+        while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.END) && !this.isAtEnd()) {
+          val += (val ? ' ' : '') + this.advance().value.replace(/['"]/g, '');
+        }
+        const norm = this.normalizeStyle(prop, val);
+        styles[norm.key] = norm.value;
+        this.skipNewlines();
+        continue;
+      }
       const stmt = this.parseStatement();
       if (stmt) children.push(stmt);
       this.skipNewlines();
@@ -817,7 +930,7 @@ export class Parser {
     return {
       type: 'Container',
       children,
-      styles,
+      styles: Object.keys(styles).length > 0 ? styles : undefined,
       line: tok.line,
       column: tok.column,
     };
@@ -901,21 +1014,34 @@ export class Parser {
     let bindVariable: string | undefined;
     const options: Array<{ value: string; label: string }> = [];
 
-    while (!this.check(TokenType.END) && !this.isAtEnd()) {
-      if (this.match(TokenType.NEWLINE)) continue;
-      if (this.peek().value.toUpperCase() === 'BIND') {
+    while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.END) && !this.isAtEnd()) {
+      const valUp = this.peek().value?.toUpperCase();
+      if (valUp === 'INTO' || valUp === 'BIND') {
         this.advance();
         bindVariable = this.advance().value;
-      } else if (this.match(TokenType.OPTION)) {
-        const val = this.advance().value.replace(/['"]/g, '');
-        const lbl = this.peek().type === TokenType.STRING ? this.advance().value.replace(/['"]/g, '') : val;
-        options.push({ value: val, label: lbl });
       } else {
         this.advance();
       }
     }
 
-    this.consume(TokenType.END, 'Expected END to close SELECT');
+    this.skipNewlines();
+
+    // Check if multi-line block with options follows
+    while (!this.check(TokenType.END) && !this.isAtEnd()) {
+      if (this.match(TokenType.NEWLINE)) continue;
+      if (this.match(TokenType.OPTION)) {
+        const val = this.advance().value.replace(/['"]/g, '');
+        const lbl = this.peek().type === TokenType.STRING ? this.advance().value.replace(/['"]/g, '') : val;
+        options.push({ value: val, label: lbl });
+        this.skipNewlines();
+        continue;
+      }
+      break;
+    }
+
+    if (this.match(TokenType.END)) {
+      // closed multi-line SELECT
+    }
 
     return {
       type: 'Select',
@@ -932,7 +1058,8 @@ export class Parser {
     let bindVariable: string | undefined;
 
     while (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
-      if (this.peek().value.toUpperCase() === 'BIND') {
+      const valUp = this.peek().value?.toUpperCase();
+      if (valUp === 'BIND' || valUp === 'INTO') {
         this.advance();
         bindVariable = this.advance().value;
       } else {
@@ -955,21 +1082,22 @@ export class Parser {
     let placeholder: string | undefined;
 
     while (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
-      if (this.peek().value.toUpperCase() === 'BIND') {
+      const valUp = this.peek().value?.toUpperCase();
+      if (valUp === 'BIND' || valUp === 'INTO') {
         this.advance();
         bindVariable = this.advance().value;
-      } else if (this.peek().value.toUpperCase() === 'PLACEHOLDER') {
+      } else if (valUp === 'PLACEHOLDER') {
         this.advance();
         placeholder = this.advance().value.replace(/['"]/g, '');
       } else {
-        this.advance();
+        placeholder = (placeholder ? placeholder + ' ' : '') + this.advance().value.replace(/['"]/g, '');
       }
     }
 
     return {
       type: 'Textarea',
+      placeholder: placeholder ? placeholder.trim() : undefined,
       bindVariable,
-      placeholder,
       line: tok.line,
       column: tok.column,
     };
@@ -1163,12 +1291,92 @@ export class Parser {
         }
         val += (val ? ' ' : '') + this.advance().value.replace(/['"]/g, '');
       }
-      styles[key] = val;
+      const norm = this.normalizeStyle(key, val);
+      styles[norm.key] = norm.value;
       this.skipNewlines();
     }
 
     this.consume(TokenType.END, 'Expected END to close STYLE block');
     return styles;
+  }
+
+  private normalizeStyle(key: string, val: string): { key: string; value: string } {
+    const cleanKey = key.replace(/[-_]/g, '').toUpperCase();
+    let prop = key.toLowerCase();
+    let v = val.trim();
+
+    if (cleanKey === 'LAYOUT' || cleanKey === 'DISPLAY') {
+      prop = 'display';
+      v = v.toLowerCase();
+    } else if (cleanKey === 'DIRECTION' || cleanKey === 'FLEXDIRECTION') {
+      prop = 'flexDirection';
+      v = v.toLowerCase();
+    } else if (cleanKey === 'ALIGN' || cleanKey === 'ALIGNITEMS') {
+      prop = 'alignItems';
+      v = v.toLowerCase();
+    } else if (cleanKey === 'JUSTIFY' || cleanKey === 'JUSTIFYCONTENT') {
+      prop = 'justifyContent';
+      v = v.toLowerCase();
+    } else if (cleanKey === 'RADIUS' || cleanKey === 'BORDERRADIUS') {
+      prop = 'borderRadius';
+    } else if (cleanKey === 'FONTSIZE') {
+      prop = 'fontSize';
+    } else if (cleanKey === 'FONTWEIGHT') {
+      prop = 'fontWeight';
+    } else if (cleanKey === 'BACKGROUNDCOLOR') {
+      prop = 'backgroundColor';
+    } else if (cleanKey === 'TEXTALIGN') {
+      prop = 'textAlign';
+    } else if (cleanKey === 'WIDTH') {
+      prop = 'width';
+    } else if (cleanKey === 'HEIGHT') {
+      prop = 'height';
+    } else if (cleanKey === 'MINHEIGHT') {
+      prop = 'minHeight';
+    } else if (cleanKey === 'MAXWIDTH') {
+      prop = 'maxWidth';
+    } else if (cleanKey === 'COLOR') {
+      prop = 'color';
+    } else if (cleanKey === 'BACKGROUND') {
+      prop = 'background';
+    } else if (cleanKey === 'GAP') {
+      prop = 'gap';
+    } else if (cleanKey === 'PADDING') {
+      prop = 'padding';
+    } else if (cleanKey === 'MARGIN') {
+      prop = 'margin';
+    } else if (cleanKey === 'BORDER') {
+      prop = 'border';
+    } else if (cleanKey === 'SHADOW' || cleanKey === 'BOXSHADOW') {
+      prop = 'boxShadow';
+    } else if (cleanKey === 'CURSOR') {
+      prop = 'cursor';
+    }
+
+    if (
+      prop !== 'fontWeight' &&
+      prop !== 'display' &&
+      prop !== 'flexDirection' &&
+      prop !== 'alignItems' &&
+      prop !== 'justifyContent' &&
+      prop !== 'cursor' &&
+      !v.startsWith('#') &&
+      !v.startsWith('rgb') &&
+      !v.startsWith('hsl') &&
+      !v.endsWith('px') &&
+      !v.endsWith('%') &&
+      !v.endsWith('rem') &&
+      !v.endsWith('em') &&
+      !v.endsWith('vh') &&
+      !v.endsWith('vw')
+    ) {
+      const parts = v.split(/\s+/);
+      if (parts.length > 0 && parts.every((p) => /^\d+(\.\d+)?$/.test(p))) {
+        v = parts.map((p) => `${p}px`).join(' ');
+      }
+    }
+
+    return { key: prop, value: v };
   }
 
   // --- Expression Parsing with Precedence ---
@@ -1281,6 +1489,39 @@ export class Parser {
         name += '.' + this.consume(TokenType.IDENTIFIER, 'Expected property name after .').value;
       }
       return { type: 'Identifier', name, line: t.line, column: t.column };
+    }
+    if (this.match(TokenType.CALL)) {
+      const tok = this.previous();
+      const actionName = this.consume(
+        TokenType.IDENTIFIER,
+        'Expected action name after CALL',
+        'Example: CALL add 5 10'
+      ).value;
+      const args: ExpressionNode[] = [];
+      if (this.match(TokenType.WITH)) {
+        do {
+          args.push(this.parseExpression());
+        } while (this.match(TokenType.COMMA));
+      } else {
+        while (
+          !this.check(TokenType.NEWLINE) &&
+          !this.check(TokenType.END) &&
+          !this.check(TokenType.ELSE) &&
+          !this.check(TokenType.RPAREN) &&
+          !this.check(TokenType.RBRACKET) &&
+          !this.isAtEnd()
+        ) {
+          args.push(this.parseFactor());
+          this.match(TokenType.COMMA);
+        }
+      }
+      return {
+        type: 'CallExpression',
+        actionName,
+        args,
+        line: tok.line,
+        column: tok.column,
+      } as any;
     }
 
     const t = this.peek();

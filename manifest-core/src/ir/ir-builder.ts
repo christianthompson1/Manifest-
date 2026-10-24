@@ -127,6 +127,7 @@ export class IRBuilder {
     const pages: IRPageNode[] = [];
     const routes: IRRouteNode[] = [];
     const uiNodes: IRUINode[] = [];
+    const components: IRComponentDeclNode[] = [];
     let solanaProgram: SolanaProgramIR | undefined;
 
     for (const stmt of rawStatements) {
@@ -218,6 +219,12 @@ export class IRBuilder {
           uiNodes.push(uIR);
           topLevelInstructions.push(uIR);
         }
+      } else if (stmt.type === 'ComponentDeclaration') {
+        const cIR = this.transformStatement(stmt) as IRComponentDeclNode;
+        if (cIR) {
+          components.push(cIR);
+          topLevelInstructions.push(cIR);
+        }
       } else {
         const instr = this.transformStatement(stmt);
         if (instr) {
@@ -238,6 +245,7 @@ export class IRBuilder {
       pages,
       routes,
       uiNodes,
+      components,
       solanaProgram: solanaProgram || (astCaps.includes('solana') || astCaps.includes('SOLANA') ? this.synthesizeSolanaProgram(ast, state, actions) : undefined),
       version: '0.2.0',
       sourceLine: ast.line || 1,
@@ -429,6 +437,7 @@ export class IRBuilder {
           kind: 'IRPage',
           name: s.name,
           route: s.route,
+          styles: s.styles,
           state: pageState,
           children: pageChildren,
           instructions: pageInstructions,
@@ -511,7 +520,11 @@ export class IRBuilder {
           kind: 'IRForm',
           name: s.name || 'Form',
           children: formChildren,
-          eventHandlers: s.eventHandlers ? s.eventHandlers.map((h: any) => this.transformWhenStatement(h)) : [],
+          eventHandlers: s.eventHandlers
+            ? s.eventHandlers.map((h: any) => this.transformWhenStatement(h))
+            : s.onSubmit
+            ? [{ kind: 'IREventHandler', eventName: 'submit', body: this.transformBlock(s.onSubmit) }]
+            : [],
           styles: s.styles,
           sourceLine: s.line,
           sourceColumn: s.column,

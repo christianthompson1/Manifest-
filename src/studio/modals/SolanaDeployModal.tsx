@@ -368,7 +368,7 @@ export const SolanaDeployModal: React.FC<SolanaDeployModalProps> = ({
                   <div className="flex items-center justify-between">
                     <span>Helius API Status:</span>
                     <span className={`font-mono font-medium ${walletState.isHeliusActive ? 'text-[#89d185]' : 'text-[#cca700]'}`}>
-                      {walletState.isHeliusActive ? 'Configured (VITE_HELIUS_API_KEY present)' : 'Not configured (using public cluster)'}
+                      {walletState.isHeliusActive ? 'Active (Server-side HELIUS_API_KEY proxy)' : 'Using Public Cluster Fallback'}
                     </span>
                   </div>
                 </div>

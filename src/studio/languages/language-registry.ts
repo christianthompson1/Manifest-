@@ -7,7 +7,7 @@
 
 import { Extension } from '@codemirror/state';
 import { StreamLanguage } from '@codemirror/language';
-import { LanguageProvider } from './language-provider.ts';
+import { LanguageProvider, HonestLanguageCapabilities, CapabilityStatus } from './language-provider.ts';
 
 // Lezer language packages
 import { javascript } from '@codemirror/lang-javascript';
@@ -59,7 +59,90 @@ export class LanguageRegistry {
     return LanguageRegistry.instance;
   }
 
+  public static computeHonestCapabilities(p: LanguageProvider): HonestLanguageCapabilities {
+    if (p.id === 'manifest') {
+      return {
+        editing: 'Available',
+        syntaxHighlighting: 'Available',
+        completion: 'Available',
+        diagnostics: 'Available',
+        formatting: 'Available',
+        localExecution: 'Available',
+        localBuild: 'Available',
+        remoteBuild: 'Not configured',
+        debugging: 'Unsupported',
+      };
+    }
+    if (p.id === 'html' || p.id === 'css') {
+      return {
+        editing: 'Available',
+        syntaxHighlighting: 'Available',
+        completion: 'Partial',
+        diagnostics: 'Unsupported',
+        formatting: 'Available',
+        localExecution: 'Available',
+        localBuild: 'Available',
+        remoteBuild: 'Not configured',
+        debugging: 'Unsupported',
+      };
+    }
+    if (p.id === 'javascript' || p.id === 'typescript') {
+      return {
+        editing: 'Available',
+        syntaxHighlighting: 'Available',
+        completion: 'Partial',
+        diagnostics: 'Partial',
+        formatting: 'Partial',
+        localExecution: 'Partial',
+        localBuild: 'Available',
+        remoteBuild: 'Not configured',
+        debugging: 'Unsupported',
+      };
+    }
+    if (p.id === 'json') {
+      return {
+        editing: 'Available',
+        syntaxHighlighting: 'Available',
+        completion: 'Partial',
+        diagnostics: 'Available',
+        formatting: 'Available',
+        localExecution: 'Unsupported',
+        localBuild: 'Unsupported',
+        remoteBuild: 'Not configured',
+        debugging: 'Unsupported',
+      };
+    }
+    if (p.id === 'rust') {
+      return {
+        editing: 'Available',
+        syntaxHighlighting: 'Available',
+        completion: 'Partial',
+        diagnostics: 'Unsupported',
+        formatting: 'Unsupported',
+        localExecution: 'Unsupported',
+        localBuild: 'Unsupported',
+        remoteBuild: 'Requires remote build',
+        debugging: 'Unsupported',
+      };
+    }
+    return {
+      editing: 'Available',
+      syntaxHighlighting: p.capabilities.highlighting ? 'Available' : 'Unsupported',
+      completion: p.capabilities.completion !== 'none' ? 'Partial' : 'Unsupported',
+      diagnostics: 'Unsupported',
+      formatting: 'Unsupported',
+      localExecution: 'Unsupported',
+      localBuild: 'Unsupported',
+      remoteBuild: 'Requires remote build',
+      debugging: 'Unsupported',
+    };
+  }
+
   private register(provider: LanguageProvider) {
+    provider.honestCapabilities = provider.honestCapabilities || LanguageRegistry.computeHonestCapabilities(provider);
+    provider.getCapabilityStatus = (dim) =>
+      provider.honestCapabilities ? provider.honestCapabilities[dim] : 'Unsupported';
+
     this.providers.set(provider.id, provider);
     for (const ext of provider.extensions) {
       this.extensionMap.set(ext.toLowerCase(), provider.id);
@@ -602,6 +685,18 @@ export class LanguageRegistry {
         cloudBuild: false,
         debugging: 'none',
       },
+      honestCapabilities: {
+        editing: 'Available',
+        syntaxHighlighting: 'Unsupported',
+        completion: 'Unsupported',
+        diagnostics: 'Unsupported',
+        formatting: 'Unsupported',
+        localExecution: 'Unsupported',
+        localBuild: 'Unsupported',
+        remoteBuild: 'Not configured',
+        debugging: 'Unsupported',
+      },
+      getCapabilityStatus: (dim) => (dim === 'editing' ? 'Available' : dim === 'remoteBuild' ? 'Not configured' : 'Unsupported'),
       getExtensions: () => [],
     };
   }

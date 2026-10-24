@@ -58,6 +58,186 @@ END
     ],
   },
   {
+    id: 'static-web',
+    name: 'Static Web App (HTML/CSS/JS)',
+    description: 'First-class web project with index.html, styles.css, app.js, and interactive counter.',
+    kind: 'web',
+    files: [
+      {
+        id: 'web-index-html',
+        name: 'index.html',
+        path: 'index.html',
+        language: 'html',
+        content: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interactive Web App</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="card">
+    <h1 id="title">Interactive Web App</h1>
+    <p class="subtitle">First-class static web project running directly in Manifest Studio.</p>
+
+    <div class="counter-box">
+      <span class="label">Count:</span>
+      <span id="counter" class="count-value">0</span>
+    </div>
+
+    <div class="actions">
+      <button id="btn-increment" class="btn primary">Increment</button>
+      <button id="btn-reset" class="btn secondary">Reset</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
+`,
+      },
+      {
+        id: 'web-styles-css',
+        name: 'styles.css',
+        path: 'styles.css',
+        language: 'css',
+        content: `* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #0f172a;
+  color: #f8fafc;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.card {
+  background-color: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 16px;
+  padding: 32px;
+  max-width: 480px;
+  width: 100%;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
+}
+
+h1 {
+  font-size: 24px;
+  color: #60a5fa;
+  margin-bottom: 8px;
+}
+
+.subtitle {
+  font-size: 13px;
+  color: #94a3b8;
+  margin-bottom: 24px;
+}
+
+.counter-box {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.label {
+  font-size: 14px;
+  color: #cbd5e1;
+}
+
+.count-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #38bdf8;
+  font-family: monospace;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+}
+
+.btn {
+  flex: 1;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+.btn.primary {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.btn.primary:hover {
+  background: #1d4ed8;
+}
+
+.btn.secondary {
+  background: #334155;
+  color: #e2e8f0;
+}
+
+.btn.secondary:hover {
+  background: #475569;
+}
+`,
+      },
+      {
+        id: 'web-app-js',
+        name: 'app.js',
+        path: 'app.js',
+        language: 'javascript',
+        content: `// Interactive Web App Script
+let count = 0;
+
+const counterEl = document.getElementById('counter');
+const incBtn = document.getElementById('btn-increment');
+const resetBtn = document.getElementById('btn-reset');
+
+function updateDisplay() {
+  if (counterEl) {
+    counterEl.textContent = String(count);
+  }
+  console.log('[Web App] Current count:', count);
+}
+
+if (incBtn) {
+  incBtn.addEventListener('click', () => {
+    count++;
+    updateDisplay();
+  });
+}
+
+if (resetBtn) {
+  resetBtn.addEventListener('click', () => {
+    count = 0;
+    updateDisplay();
+  });
+}
+
+console.log('[Web App] Initialized successfully in Manifest Studio Preview');
+`,
+      },
+    ],
+  },
+  {
     id: 'counter',
     name: 'Counter',
     description: 'Interactive counter with reactive state, text binding, and button click mutation.',

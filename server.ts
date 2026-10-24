@@ -30,6 +30,106 @@ app.get('/api/health', (_req: Request, res: Response) => {
   });
 });
 
+// Solana Status Endpoint (honest, server-side only status - never reveals credentials)
+app.get('/api/solana/status', (_req: Request, res: Response) => {
+  const hasKey = Boolean(process.env.HELIUS_API_KEY && process.env.HELIUS_API_KEY.trim().length > 0);
+  res.json({
+    heliusConfigured: hasKey,
+    defaultCluster: 'devnet',
+    network: 'devnet',
+  });
+});
+
+// Basic in-memory rate limiter for RPC proxy
+const rpcRateLimitMap = new Map<string, { count: number; resetAt: number }>();
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = rpcRateLimitMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    rpcRateLimitMap.set(ip, { count: 1, resetAt: now + 60000 });
+    return true;
+  }
+  if (entry.count >= 120) {
+    return false; // Limit exceeded
+  }
+  entry.count++;
+  return true;
+}
+
+// Secure Solana JSON-RPC Proxy (never exposes HELIUS_API_KEY to browser)
+app.post('/api/solana/rpc', async (req: Request, res: Response) => {
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
+  if (!checkRateLimit(clientIp)) {
+    return res.status(429).json({
+      jsonrpc: '2.0',
+      error: { code: -32005, message: 'Rate limit exceeded. Please slow down.' },
+      id: null,
+    });
+  }
+
+  const payload = req.body;
+  if (!payload || typeof payload !== 'object') {
+    return res.status(400).json({
+      jsonrpc: '2.0',
+      error: { code: -32600, message: 'Invalid Request: body must be a valid JSON-RPC object' },
+      id: null,
+    });
+  }
+
+  // Prevent giant payloads
+  const payloadStr = JSON.stringify(payload);
+  if (payloadStr.length > 256 * 1024) {
+    return res.status(413).json({
+      jsonrpc: '2.0',
+      error: { code: -32600, message: 'Payload too large' },
+      id: null,
+    });
+  }
+
+  const network = (req.query.network as string) === 'mainnet' ? 'mainnet' : 'devnet';
+  const heliusKey = process.env.HELIUS_API_KEY?.trim();
+
+  let targetUrl: string;
+  if (heliusKey) {
+    targetUrl = network === 'mainnet'
+      ? `https://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(heliusKey)}`
+      : `https://devnet.helius-rpc.com/?api-key=${encodeURIComponent(heliusKey)}`;
+  } else {
+    targetUrl = network === 'mainnet'
+      ? 'https://api.mainnet-beta.solana.com'
+      : 'https://api.devnet.solana.com';
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const upstreamRes = await fetch(targetUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: payloadStr,
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    const data = await upstreamRes.json();
+    res.status(upstreamRes.status).json(data);
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    const isTimeout = err.name === 'AbortError';
+    res.status(502).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32603,
+        message: isTimeout ? 'RPC request timed out' : 'Failed to reach upstream Solana RPC',
+      },
+      id: payload.id ?? null,
+    });
+  }
+});
+
 // Compile Endpoint
 app.post('/api/compile', async (req: Request, res: Response) => {
   try {

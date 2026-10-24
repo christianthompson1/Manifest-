@@ -30,23 +30,29 @@ function compileSource(src: string) {
   return { tokens, ast, valResult, ir, compilation };
 }
 
-export function runV03Tests() {
+export function runV03Tests(): { passed: number; failed: number; total: number } {
   console.log('\n--- Running Manifest v0.3 UI Primitives & Design System Tests ---');
   let passed = 0;
+  let failed = 0;
   let total = 0;
 
-  function assert(cond: boolean, desc: string) {
+  function assert(cond: boolean, desc: string, expected?: string, actual?: string) {
     total++;
     if (!cond) {
       console.error(`  ✗ FAIL: ${desc}`);
-      throw new Error(`Test failed: ${desc}`);
+      if (expected !== undefined || actual !== undefined) {
+        console.error(`    Expected: ${expected}`);
+        console.error(`    Actual:   ${actual}`);
+      }
+      failed++;
+      return;
     }
     console.log(`  ✓ ${desc}`);
     passed++;
   }
 
   // Test 1: Style block on BUTTON
-  {
+  try {
     const code = `
 APP "StyledButtonApp"
 PAGE Home
@@ -65,20 +71,24 @@ PAGE Home
 END
 `;
     const { ast, ir, compilation } = compileSource(code);
-    assert(ast.statements.length === 2, '1. AST captures APP and PAGE with styled button');
+    const statements = ast.body || ast.statements || [];
+    const hasPage = statements.some((s) => s.type === 'PageDeclaration' && (s as any).name === 'Home');
+    assert(ast.type === 'AppDeclaration' && ast.name === 'StyledButtonApp' && hasPage, '1. AST captures APP and PAGE with styled button');
     const pageIR = ir.pages?.[0];
     assert(pageIR?.children.length === 1, '1. Page IR contains 1 child');
     const btn = pageIR?.children[0] as any;
-    assert(btn.kind === 'IRButton', '1. Child is IRButton');
-    assert(btn.styles?.width === '160px', '1. Button style width is 160px');
-    assert(btn.styles?.background === '#2563EB', '1. Button style background is #2563EB');
-    assert(btn.styles?.borderRadius === '12px', '1. Button style borderRadius is 12px');
+    assert(btn?.kind === 'IRButton', '1. Child is IRButton');
+    assert(btn?.styles?.width === '160px', '1. Button style width is 160px');
+    assert(btn?.styles?.background === '#2563EB', '1. Button style background is #2563EB');
+    assert(btn?.styles?.borderRadius === '12px', '1. Button style borderRadius is 12px');
     const out = compilation.outputCode || '';
     assert(out.includes('.style["width"] = "160px"'), '1. Generated JS applies width style');
+  } catch (err: any) {
+    assert(false, `1. StyledButtonApp error: ${err.message}`);
   }
 
   // Test 2: CONTAINER with LAYOUT, DIRECTION, GAP, ALIGN
-  {
+  try {
     const code = `
 APP "ContainerApp"
 PAGE Home
@@ -97,18 +107,20 @@ END
     const { ir, compilation } = compileSource(code);
     const pageIR = ir.pages?.[0];
     const container = pageIR?.children[0] as any;
-    assert(container.kind === 'IRContainer', '2. IR captures IRContainer node');
-    assert(container.children.length === 2, '2. Container contains 2 children');
-    assert(container.styles?.display === 'flex', '2. Container display is flex');
-    assert(container.styles?.flexDirection === 'column', '2. Container flexDirection is column');
-    assert(container.styles?.gap === '16px', '2. Container gap is 16px');
-    assert(container.styles?.alignItems === 'center', '2. Container alignItems is center');
+    assert(container?.kind === 'IRContainer', '2. IR captures IRContainer node');
+    assert(container?.children?.length === 2, '2. Container contains 2 children');
+    assert(container?.styles?.display === 'flex', '2. Container display is flex');
+    assert(container?.styles?.flexDirection === 'column', '2. Container flexDirection is column');
+    assert(container?.styles?.gap === '16px', '2. Container gap is 16px');
+    assert(container?.styles?.alignItems === 'center', '2. Container alignItems is center');
     const out2 = compilation.outputCode || '';
     assert(out2.includes('.className = "manifest-container"'), '2. Generated JS creates manifest-container DOM element');
+  } catch (err: any) {
+    assert(false, `2. ContainerApp error: ${err.message}`);
   }
 
   // Test 3: Nested CONTAINER structure
-  {
+  try {
     const code = `
 APP "NestedApp"
 PAGE Home
@@ -121,17 +133,19 @@ PAGE Home
     END
 END
 `;
-    const { ir, compilation } = compileSource(code);
+    const { ir } = compileSource(code);
     const outer = ir.pages?.[0]?.children[0] as any;
-    assert(outer.kind === 'IRContainer', '3. Outer node is IRContainer');
-    assert(outer.children.length === 2, '3. Outer container has 2 children');
-    const inner = outer.children[1];
-    assert(inner.kind === 'IRContainer', '3. Inner node is nested IRContainer');
-    assert(inner.children.length === 2, '3. Inner container has 2 children');
+    assert(outer?.kind === 'IRContainer', '3. Outer node is IRContainer');
+    assert(outer?.children?.length === 2, '3. Outer container has 2 children');
+    const inner = outer?.children?.[1];
+    assert(inner?.kind === 'IRContainer', '3. Inner node is nested IRContainer');
+    assert(inner?.children?.length === 2, '3. Inner container has 2 children');
+  } catch (err: any) {
+    assert(false, `3. NestedApp error: ${err.message}`);
   }
 
   // Test 4: CARD, LIST, LINK primitives
-  {
+  try {
     const code = `
 APP "PrimitivesApp"
 PAGE Home
@@ -153,10 +167,12 @@ END
     assert(out4.includes('.className = "manifest-card"'), '4. JS generates manifest-card element');
     assert(out4.includes('.className = "manifest-list"'), '4. JS generates manifest-list element');
     assert(out4.includes('.className = "manifest-link"'), '4. JS generates manifest-link element');
+  } catch (err: any) {
+    assert(false, `4. PrimitivesApp error: ${err.message}`);
   }
 
   // Test 5: Interactive Inputs (SELECT, CHECKBOX, TEXTAREA)
-  {
+  try {
     const code = `
 APP "InteractiveApp"
 PAGE Home
@@ -178,10 +194,12 @@ END
     assert(out5.includes('.className = "manifest-select"'), '5. JS generates manifest-select element');
     assert(out5.includes('__input.type = "checkbox"'), '5. JS generates checkbox input');
     assert(out5.includes('.className = "manifest-textarea"'), '5. JS generates manifest-textarea element');
+  } catch (err: any) {
+    assert(false, `5. InteractiveApp error: ${err.message}`);
   }
 
   // Test 6: Semantic Containers (HEADER, FOOTER, NAV, MODAL)
-  {
+  try {
     const code = `
 APP "SemanticApp"
 PAGE Home
@@ -206,10 +224,12 @@ END
     assert(out6.includes('createElement("header")'), '6. JS creates header DOM element');
     assert(out6.includes('createElement("nav")'), '6. JS creates nav DOM element');
     assert(out6.includes('createElement("footer")'), '6. JS creates footer DOM element');
+  } catch (err: any) {
+    assert(false, `6. SemanticApp error: ${err.message}`);
   }
 
   // Test 7: COMPONENT declaration & invocation
-  {
+  try {
     const code = `
 APP "ComponentApp"
 
@@ -228,10 +248,12 @@ END
     const out7 = compilation.outputCode || '';
     assert(out7.includes('__manifest.registerComponent("UserBadge"'), '7. JS registers UserBadge component');
     assert(out7.includes('__manifest.components["UserBadge"]'), '7. JS calls UserBadge component');
+  } catch (err: any) {
+    assert(false, `7. ComponentApp error: ${err.message}`);
   }
 
   // Test 8: End-to-end sandbox DOM mount & reactive execution with styled container
-  {
+  try {
     const code = `
 APP "LiveApp"
 PAGE Home
@@ -257,8 +279,21 @@ END
     assert(compilation.success, '8. Compilation succeeds without errors');
     const out8 = compilation.outputCode || '';
     assert(out8.includes('startApp'), '8. Generates startApp bootstrap');
+  } catch (err: any) {
+    assert(false, `8. LiveApp error: ${err.message}`);
   }
 
-  console.log(`\nManifest v0.3 tests completed: ${passed}/${total} passed.`);
-  return { passed, total };
+  console.log(`\nManifest v0.3 tests completed: ${passed}/${total} passed (failed: ${failed}).`);
+  return { passed, failed, total };
+}
+
+const isNodeCLI =
+  typeof process !== 'undefined' &&
+  Boolean(process.argv && process.argv[1] && process.argv[1].endsWith('run_v03_tests.ts'));
+
+if (isNodeCLI) {
+  const summary = runV03Tests();
+  if (summary.failed > 0 && typeof process.exit === 'function') {
+    process.exit(1);
+  }
 }

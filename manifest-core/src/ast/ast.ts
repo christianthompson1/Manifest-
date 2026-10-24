@@ -19,6 +19,7 @@ export type StatementNode =
   | ShowStatementNode
   | CallStatementNode
   | ActionDefinitionNode
+  | ReturnStatementNode
   | IfStatementNode
   | RepeatLoopNode
   | ForEachLoopNode
@@ -86,6 +87,7 @@ export interface ActionDefinitionNode extends ASTNode {
 export interface ReturnStatementNode extends ASTNode {
   type: 'ReturnStatement';
   expression: ExpressionNode;
+  value?: ExpressionNode;
 }
 
 export interface IfStatementNode extends ASTNode {
@@ -124,6 +126,7 @@ export interface PageDeclarationNode extends ASTNode {
   type: 'PageDeclaration';
   name: string;
   route?: string;
+  styles?: Record<string, string>;
   body: StatementNode[];
 }
 
@@ -191,6 +194,7 @@ export interface InputNode extends ASTNode {
 
 export interface FormNode extends ASTNode {
   type: 'Form';
+  name?: string;
   onSubmit?: StatementNode[];
   children: StatementNode[];
   styles?: Record<string, string>;
@@ -301,13 +305,20 @@ export interface JsEscapeNode extends ASTNode {
   code: string;
 }
 
+export interface CallExpressionNode extends ASTNode {
+  type: 'CallExpression';
+  actionName: string;
+  args: ExpressionNode[];
+}
+
 // Expressions
 export type ExpressionNode =
   | LiteralNode
   | IdentifierNode
   | BinaryExpressionNode
   | UnaryExpressionNode
-  | ArrayLiteralNode;
+  | ArrayLiteralNode
+  | CallExpressionNode;
 
 export interface LiteralNode extends ASTNode {
   type: 'Literal';
@@ -340,7 +351,6 @@ export interface ArrayLiteralNode extends ASTNode {
 
 export type ProgramNode = AppDeclarationNode;
 export type VariableReferenceNode = ASTNode & { name: string };
-export type CallExpressionNode = ASTNode & { actionName: string; args: ExpressionNode[] };
 export type IndexAccessNode = ASTNode & { target: ExpressionNode; index: ExpressionNode };
 export type WhenStatementNode = WhenBlockNode & { eventName: string };
 export type RepeatStatementNode = RepeatLoopNode;

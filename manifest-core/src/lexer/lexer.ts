@@ -152,6 +152,18 @@ export class Lexer {
       }
 
       // Multi-char operators
+      if (this.source.startsWith('«=»', this.position)) {
+        this.addToken(TokenType.LESS_EQ, '<=', 3);
+        continue;
+      }
+      if (this.source.startsWith('«»', this.position)) {
+        this.addToken(TokenType.NOT_EQUALS, '!=', 2);
+        continue;
+      }
+      if (this.source.startsWith('»=»', this.position)) {
+        this.addToken(TokenType.GREATER_EQ, '>=', 3);
+        continue;
+      }
       if (char === '=' && this.source[this.position + 1] === '=') {
         this.addToken(TokenType.EQ_EQ, '==', 2);
         continue;
@@ -344,7 +356,7 @@ export class Lexer {
     while (this.position < this.source.length && this.source[this.position] !== quote) {
       if (this.source[this.position] === '\n') {
         throw new ManifestError(
-          'Unclosed string literal across newline',
+          'Unclosed string literal: string was never closed before the line ended',
           startLine,
           startCol,
           'Make sure every string is closed on the same line with matching quotes.'
@@ -357,7 +369,7 @@ export class Lexer {
 
     if (this.position >= this.source.length) {
       throw new ManifestError(
-        'Unclosed string literal at end of file',
+        'Unclosed string literal: string was never closed before the line ended (end of file)',
         startLine,
         startCol,
         'Close string literal with matching quote.'

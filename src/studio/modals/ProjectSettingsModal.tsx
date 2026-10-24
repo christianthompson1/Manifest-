@@ -80,6 +80,14 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
     }
   }, [project, settings, isOpen]);
 
+  const [hasHeliusKey, setHasHeliusKey] = useState(false);
+  useEffect(() => {
+    fetch('/api/solana/status')
+      .then((r) => r.json())
+      .then((d) => setHasHeliusKey(Boolean(d.heliusConfigured)))
+      .catch(() => setHasHeliusKey(false));
+  }, []);
+
   const registry = LibraryRegistry.getInstance();
   const libraries = registry.listLibraries();
 
@@ -121,8 +129,6 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
       setActiveNetwork('devnet');
     }
   };
-
-  const hasHeliusKey = Boolean(import.meta.env.VITE_HELIUS_API_KEY);
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
@@ -339,8 +345,8 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                   />
                   <p className="text-[11px] text-[#858585]">
                     {hasHeliusKey
-                      ? '✓ Enhanced Helius RPC active via VITE_HELIUS_API_KEY.'
-                      : 'Using default public Solana cluster endpoint. Configure VITE_HELIUS_API_KEY for higher throughput.'}
+                      ? '✓ Enhanced Helius RPC active via server-side HELIUS_API_KEY proxy.'
+                      : 'Using default public Solana cluster endpoint. Configure HELIUS_API_KEY on server for higher throughput.'}
                   </p>
                 </div>
 
@@ -477,9 +483,9 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                   </p>
                   <div className="space-y-1 font-mono text-[11px]">
                     <div className="flex items-center justify-between p-2 rounded bg-[#181818] border border-[#2d2d2d]">
-                      <span className="text-[#9cdcfe]">VITE_HELIUS_API_KEY</span>
+                      <span className="text-[#9cdcfe]">HELIUS_API_KEY (Server-only)</span>
                       <span className={hasHeliusKey ? 'text-[#89d185]' : 'text-[#858585]'}>
-                        {hasHeliusKey ? 'Configured (Active)' : 'Not Set (Using Public RPC)'}
+                        {hasHeliusKey ? 'Configured (Active on backend)' : 'Not Set (Using Public RPC)'}
                       </span>
                     </div>
                   </div>
