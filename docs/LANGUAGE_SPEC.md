@@ -7,7 +7,8 @@
 
 ## 1. Design Philosophy
 
-Manifest is a human-readable, general-purpose declarative and imperative programming language. It is designed to be:
+Manifest is a human readable, general purpose declarative and imperative programming language. 
+It is designed to be:
 1. **Clear and expressive**: Reads like structured natural language without cryptic punctuation symbols.
 2. **Deterministic and safe**: Strong semantic validation preventing undefined variables, missing block terminations, and runtime unhandled exceptions.
 3. **Multi-Target**: Compiles cleanly to modern browser JavaScript (DOM-based reactive single-page applications) and Anchor Rust (Solana on-chain programs), while also supporting direct headless AST interpretation in CLI and test environments.
