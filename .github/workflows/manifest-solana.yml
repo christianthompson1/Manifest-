@@ -1,4 +1,4 @@
-name: Manifest Solana CI - Real Anchor & LiteSVM Build
+name: Manifest Solana CI - Anchor & LiteSVM Build
 
 on:
   push:
