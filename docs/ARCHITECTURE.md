@@ -1,98 +1,94 @@
 # Manifest Studio — System Architecture
 
-## 1. Overview & Vision
-Manifest Studio is a self-contained, offline-first development environment built for the Manifest programming language alongside first-class support for multi-file web development (HTML, CSS, JavaScript) and an extensible execution provider architecture accommodating future runtimes (WebAssembly, Python via Pyodide, Solana/Rust Anchor contracts, and native toolchains).
+## 1. Overview & Architectural Truth
+Manifest Studio is an integrated browser-based development environment built for the **Manifest** programming language alongside first-class execution support for **multi-file Static Web projects** (HTML, CSS, JavaScript, SVG/binary assets), **standalone JavaScript** files, **compiled WebAssembly (`.wasm`) binaries**, and **Solana / Anchor smart contract synthesis & LiteSVM simulation**.
+
+### Critical Capability Boundaries
+- **Manifest Execution**: Manifest compiles in a single pass (`Lexer -> Parser -> Two-Pass Validator -> Manifest IR -> JavaScript Target`) and runs inside a strict `<iframe sandbox="allow-scripts">` preview, with an AST interpreter (`manifest-core/src/runtime/runtime.ts`) verified for behavioral parity in headless CLI and test environments.
+- **WebAssembly Boundary**: Manifest Studio executes **compiled `.wasm` binary modules** locally via `WasmExecutionProvider` (supporting `env.*` logging and minimal `wasi_snapshot_preview1` `fd_write` stdout capture). **Manifest-to-WASM compilation is NOT implemented.**
+- **Non-Executable Source Languages**: Python (`.py`), Rust (`.rs`), TypeScript (`.ts`/`.tsx`), C/C++, Go, Java, SQL, PHP, Ruby, Swift, Kotlin, Dart, and Lua have CodeMirror 6 syntax highlighting and editing, **not** local execution. Pressing Run on any of these files reports an explicit `unsupported-language` diagnostic and never silently executes `src/main.manifest` or `index.html`.
+- **Offline Boundary**: Once loaded in the browser, all compilers, runtimes (`Manifest`, `Static Web`, `.wasm`, `LiteSVM`), and IndexedDB project persistence operate with zero network requests. However, a PWA Service Worker (`sw.js`) for cold offline URL reload is **not** currently registered.
 
 ---
 
-## 2. System Architecture & Flow
+## 2. System Architecture & Data Flow
 
 ```
-                      +---------------------------------------+
-                      |       User Interface (React 19)       |
-                      |  - CodeMirror 6 Editor                |
-                      |  - File Explorer & Virtual Project    |
-                      |  - Sandboxed Preview & Inspector      |
-                      |  - Problems, Console & Terminal Tabs  |
-                      +-------------------+-------------------+
-                                          |
-                                          v
-                      +---------------------------------------+
-                      |     Workspace & Project Manager       |
-                      |  - IndexedDB Persistence (idb-keyval) |
-                      |  - Local Storage Fallback             |
-                      |  - In-memory Virtual Filesystem       |
-                      +-------------------+-------------------+
-                                          |
-                                          v
-                      +---------------------------------------+
-                      |      Execution Orchestrator           |
-                      |  - Project & File Detection           |
-                      |  - Provider Selection & Capabilities  |
-                      |  - Asynchronous Race/Stale Guard      |
-                      +-------------------+-------------------+
-                                          |
-        +---------------------------------+---------------------------------+
-        |                                 |                                 |
-        v                                 v                                 v
-+-----------------------+     +-----------------------+     +-----------------------+
-|   Manifest Provider   |     |   Static Web Provider |     |   Solana / LiteSVM    |
-| - Lexer & Parser      |     | - Root HTML discovery |     | - Anchor Generator    |
-| - Semantic Validator  |     | - CSS/JS inlining     |     | - LiteSVM In-browser  |
-| - Manifest IR Builder |     | - Asset resolution    |     |   Execution & IDL     |
-| - JS Target Compiler  |     | - Preview Console     |     | - Pinned toolchain    |
-| - Runtime startApp    |     |   Bridge injection    |     |   specifications      |
-+-----------------------+     +-----------------------+     +-----------------------+
-        |                                 |                                 |
-        +---------------------------------+---------------------------------+
-                                          |
-                                          v
-                      +---------------------------------------+
-                      |       Sandboxed Preview Panel         |
-                      |  - <iframe> sandbox="allow-scripts"   |
-                      |  - postMessage bidirectional bridge   |
-                      |  - Clean teardown on each run/reload  |
-                      |  - Rich diagnostic error overlay      |
-                      +---------------------------------------+
+                      +---------------------------------------------------+
+                      |             User Interface (React 19)             |
+                      | - CodeMirror 6 Editor (Per-File EditorState LRU,  |
+                      |   Compartments, IME Guard, Binary Read-Only View) |
+                      | - Recursive ProjectTree Explorer & Multi-Project  |
+                      |   Workspace Switcher                              |
+                      | - Sandboxed Preview, Problems, Console & Terminal |
+                      +-------------------------+-------------------------+
+                                                |
+                                                v
+                      +---------------------------------------------------+
+                      |          Workspace & Persistence Layer            |
+                      | - Multi-Project IndexedDB Store (idb-keyval)      |
+                      | - Synchronous localStorage Mirror + Quota Checks  |
+                      | - Hydration Guard (Prevents Mount Race Overwrite) |
+                      | - Binary-Safe JSZip Import / Export (.wasm, .png) |
+                      +-------------------------+-------------------------+
+                                                |
+                                                v
+                      +---------------------------------------------------+
+                      |              Execution Orchestrator               |
+                      | - Deterministic Active-File / Entry Routing       |
+                      | - Explicit Refusal for Non-Executable Languages   |
+                      | - Monotonic Run IDs & Stale Async Superseding     |
+                      +-------------------------+-------------------------+
+                                                |
+      +--------------------+--------------------+--------------------+--------------------+
+      |                    |                    |                    |                    |
+      v                    v                    v                    v                    v
++--------------+   +---------------+   +----------------+   +----------------+   +----------------+
+|   Manifest   |   |  Static Web   |   |  WASM Binary   |   | Solana/LiteSVM |   |  Unsupported   |
+|   Provider   |   |   Provider    |   |    Provider    |   |   Simulation   |   | Language Guard |
+| - 1-Pass AST |   | - HTML/CSS/JS |   | - .wasm Magic  |   | - Anchor Rust  |   | - Honest Error |
+| - 2-Pass Val |   | - CSS url()   |   |   & Validate   |   |   Codegen/IDL  |   | - Zero Silent  |
+| - IR Builder |   | - Asset Data  |   | - Bounded Mem  |   | - In-Memory    |   |   Fallback to  |
+| - JS Target  |   |   URLs + Warn |   | - env.* & WASI |   |   LiteSVM CU   |   |   Manifest     |
+| - startApp() |   | - JS Harness  |   |   fd_write     |   |   Verification |   |                |
++--------------+   +---------------+   +----------------+   +----------------+   +----------------+
+                                                |
+                                                v
+                      +---------------------------------------------------+
+                      |              Sandboxed Preview Panel              |
+                      | - <iframe sandbox="allow-scripts"> (No Parent     |
+                      |   DOM/Cookie/Storage Access)                      |
+                      | - Displays Resolved Entry File Badge              |
+                      | - Clears Stale Output Immediately on Error        |
+                      | - Structured postMessage Console/State Bridge     |
+                      +---------------------------------------------------+
 ```
 
 ---
 
-## 3. Core Subsystems & Responsibilities
+## 3. Core Subsystems
 
-### 3.1 Manifest Core (`manifest-core/`)
-- **Lexer & Tokens** (`src/lexer/`): Tokenizes human-readable Manifest syntax (`APP`, `PAGE`, `CONTAINER`, `TEXT`, `BUTTON`, `STATE`, `WHEN CLICK`, `STYLE`, `END`).
-- **Parser & AST** (`src/parser/`, `src/ast/`): Constructs a strongly typed Abstract Syntax Tree with full source location tracking (lines and columns) and styling declarations (`styles?: Record<string, string>`).
-- **Semantic Validator** (`src/validator/`): Checks for duplicate variable declarations, unclosed blocks, type mismatches, and syntax violations before compilation.
-- **Intermediate Representation (IR)** (`src/ir/`): Produces target-agnostic IR (`IRProgram`, `IRPage`, `IRContainer`, `IRText`, `IRButton`, `IRState`, `IRInstruction`).
-- **Compiler Targets** (`src/compiler/targets/`):
-  - `js-target.ts`: Emits self-contained browser-compatible JavaScript containing CSS rules, active page routing, reactive state scopes (`__manifest.state`), and `export async function startApp(mountElement, options)`.
-  - `solana-target.ts`: Emits Anchor/Rust programs and IDL metadata.
-- **Manifest Language Runtime** (`src/runtime/`):
-  - `runtime.ts`: Provides discrete execution semantics for expressions, variables/scopes, action calls, conditionals, repeat/foreach loops, try/catch, event bus dispatching, and controlled host capabilities.
+### 3.1 Single-Pass Manifest Compiler & Runtime (`manifest-core/`)
+1. **Lexer** (`src/lexer/lexer.ts`): Tokenizes Manifest source with 1-indexed line/column tracking, comments (`--`, `//`, `#`, `NOTE:`), Unicode comparison operators, hex colors, and CSS/JS escape blocks.
+2. **Parser** (`src/parser/parser.ts`): Single-lookahead recursive descent parser supporting full operator precedence (`OR` -> `AND` -> equality/comparison -> additive -> multiplicative -> unary `NOT`/`!`/`-`/`+` -> postfix `arr[idx]` -> primary literals/identifiers/`CALL`).
+3. **Two-Pass Semantic Validator** (`src/validator/validator.ts`):
+   - **Pass 1**: Registers top-level `ACTION`, `PAGE`, `STATE`, and `SET` declarations so forward references to actions and pages succeed, while flagging duplicate `ACTION` and `PAGE` definitions.
+   - **Pass 2**: Validates `CALL` targets and arity warnings, `RETURN` placement inside `ACTION` blocks, `ROUTE` target existence against declared `PAGE`s, and literal division/modulo by zero warnings outside `TRY` blocks.
+4. **Manifest IR** (`src/ir/ir-builder.ts`): Lowers validated AST directly (`generateManifestIRFromAST`) without re-lexing or re-parsing, preserving UI primitives (`Page`, `Container`, `Card`, `List`, `Header`, `Nav`, `Footer`, `Modal`, `Form`, `Text`, `Button`, `Input`, `Select`, `Checkbox`, `Textarea`, `Link`, `Image`, `Badge`, `Progress`, `Icon`, `CssEscape`, `JsEscape`).
+5. **Target Compilers & Interpreter**:
+   - **JS Target (`src/compiler/targets/js-target.ts`)**: Generates ES module code exporting `__manifest` and `startApp()`, supporting lexical local scopes (`__locals`), recursive `ACTION` calls (guarded at depth 200), loop iteration guards (100,000), division-by-zero runtime traps catchable by `TRY / IF FAILED`, and reactive DOM bindings.
+   - **AST Interpreter (`src/runtime/runtime.ts`)**: Headless tree-walking interpreter verified via differential tests to match `JSTargetCompiler` output across arithmetic, unary/index expressions, control flow, recursion, lexical parameter shadowing, and `TRY / IF FAILED`.
+   - **Solana Target (`src/compiler/targets/solana-target.ts`)**: Synthesizes Anchor Rust (`lib.rs`), IDL JSON, and TypeScript client bindings.
 
-### 3.2 Studio Execution Architecture (`src/studio/execution/`)
-- **ExecutionProvider Contract** (`execution-types.ts`): Unified interface implemented by all language engines (`detect`, `validate`, `execute`, `build`, `cancel`, `getCapabilities`, `isOfflineReady`).
-- **ManifestExecutionProvider** (`manifest-execution-provider.ts`): Resolves Manifest entry points, runs the compiler pipeline, and packages output into a `UnifiedExecutionResult` with `previewKind: 'manifest-canvas'`.
-- **StaticWebExecutionProvider** (`static-web-execution-provider.ts`): Resolves multi-file HTML/CSS/JavaScript projects without routing through the Manifest compiler, inlining local stylesheets and scripts, resolving assets, and injecting a console bridge.
-- **ExecutionOrchestrator** (`execution-orchestrator.ts`): Singleton coordinator detecting project types, selecting providers, preventing stale asynchronous run results via unique run tokens, and canceling in-flight tasks.
+### 3.2 Editor Subsystem (`src/studio/editor/`)
+- **Single-Instance `EditorView`**: `CodeMirrorEditor.tsx` maintains one mounted `EditorView` across file switches and settings updates.
+- **Per-File `EditorState` Cache**: An LRU cache (`MAX_CACHED_FILE_STATES = 40`) keyed by `fileId` preserves cursor position, selection ranges, and full undo/redo history across tab switches.
+- **Dynamic Compartments**: `fontSize`, `wordWrap`, `language`, and `readOnly` reconfigure via CodeMirror 6 `Compartment`s without destroying editor state.
+- **IME Composition Safety**: Incoming external sync dispatches check `!view.composing` and document inequality before dispatching changes.
+- **Binary File Protection**: Binary files (`.wasm`, `.png`, `.jpg`, etc.) render a read-only binary inspection view rather than corrupting raw payloads in a text buffer.
 
-### 3.3 Sandboxed Preview Panel (`src/studio/preview/PreviewPanel.tsx`)
-- Renders an `<iframe>` configured with `sandbox="allow-scripts"` to strictly isolate user code from Studio cookies, storage, and secrets.
-- Generates a fresh `srcDoc` for each execution or reload key, completely preventing DOM duplication or state bleeding across runs.
-- Handles diagnostic errors gracefully by displaying formatted error cards with line numbers, hints, and code examples instead of rendering a blank view.
-- Bridges console outputs (`preview-console`, `manifest-output`) and reactive state changes (`manifest-state`) back to the Studio inspector.
-
----
-
-## 4. Platform Capabilities & Boundaries
-
-| Capability | Browser SPA (Current) | Future Desktop (Tauri/Electron) |
-|---|---|---|
-| Manifest Language Compilation | 100% Native in-memory | 100% Native in-memory |
-| Static Web (HTML/CSS/JS) Execution | 100% Native browser sandbox | Native Webview |
-| Solana Contract Simulation | In-browser LiteSVM WASM | Native LiteSVM / local validator |
-| Python Execution | Supported via Pyodide (WASM) | Native Python virtualenvs |
-| WebAssembly (WASI) | Supported via WASI shim | Native WASM runtime (Wasmtime) |
-| Rust / C / C++ / Go Compilation | Requires remote CI or downloaded WASM | Native local system toolchains |
-| Filesystem Access | IndexedDB / File System Access API | Direct OS filesystem access |
+### 3.3 Project Tree, Multi-Project Storage & Binary ZIP (`src/studio/`)
+- **Recursive File Explorer** (`explorer/ProjectTree.tsx` + `sidebar/Sidebar.tsx`): Supports nested directories, empty folders via hidden `.gitkeep` sentinels, inline file/folder creation, inline renaming, and two-step inline confirmation for deletion (zero `window.confirm`/`window.alert`/`window.prompt` calls).
+- **Reference Synchronization**: Renaming a project file updates `activeFilePath`, `openTabPaths`, `project.entryPath`, `manifest.toml` `entry`, and HTML `<link>`/`<script>`/`<img>` relative references.
+- **Workspace Persistence** (`project-store.ts`): Stores both the active project and a multi-project workspace dictionary in IndexedDB (`idb-keyval`) with `localStorage` fallback and explicit storage-error reporting.
+- **Binary-Safe Archiving** (`services/zip-service.ts`): Decodes base64 Data URLs back into raw binary bytes on ZIP export and re-encodes binary entries (`.wasm`, images, fonts) on ZIP import while keeping `.svg` files as editable XML text.

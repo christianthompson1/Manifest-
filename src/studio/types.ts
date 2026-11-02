@@ -34,6 +34,7 @@ export type FileLanguage =
   | 'shell'
   | 'dockerfile'
   | 'toml'
+  | 'wasm'
   | 'plaintext'
   | string;
 
@@ -56,6 +57,8 @@ export type ProjectKind =
   | 'rust'
   | 'python'
   | 'web'
+  | 'wasm'
+  | 'javascript'
   | 'mixed'
   | 'polyglot'
   | 'other'
@@ -74,6 +77,7 @@ export interface ManifestProject {
   name: string;
   description?: string;
   kind?: ProjectKind;
+  entryPath?: string;
   files: ProjectFile[];
   activeFilePath?: string;
   createdAt?: number;

@@ -43,10 +43,21 @@ export function inspectManifest(source: string): {
   try {
     const lexer = new Lexer(source);
     const tokens = lexer.tokenize();
-    const parser = new Parser(tokens);
+    const parser = new Parser(tokens, source);
     const ast = parser.parse();
-    const validator = new Validator();
+    const validator = new Validator(ast, source);
     const validation = validator.validate(ast);
+    for (const issue of validation.issues) {
+      diagnostics.push({
+        line: issue.line || 1,
+        column: issue.column || 1,
+        message: issue.message,
+        severity: issue.severity || 'error',
+        source: 'validator',
+        hint: issue.hint,
+        example: issue.example,
+      });
+    }
     return { tokens, ast, program: ast, validation, diagnostics };
   } catch (err: any) {
     diagnostics.push({
@@ -54,6 +65,7 @@ export function inspectManifest(source: string): {
       column: err.column || 1,
       message: err.message || String(err),
       severity: 'error',
+      source: err.phase || 'parser',
       hint: err.hint,
       example: err.example,
     });
@@ -64,10 +76,38 @@ export function inspectManifest(source: string): {
 export function generateManifestIR(source: string): IRProgramNode {
   const lexer = new Lexer(source);
   const tokens = lexer.tokenize();
-  const parser = new Parser(tokens);
+  const parser = new Parser(tokens, source);
   const ast = parser.parse();
   const builder = new IRBuilder();
   return builder.build(ast);
+}
+
+export function generateManifestIRFromAST(ast: any): IRProgramNode {
+  const builder = new IRBuilder();
+  return builder.build(ast);
+}
+
+export async function compileManifestIR(
+  ir: IRProgramNode,
+  targetName = 'js',
+  options: TargetCompilerOptions = {}
+): Promise<CompilationResult> {
+  const compiler = CompilerRegistry.get(targetName);
+  if (!compiler) {
+    return {
+      success: false,
+      target: targetName,
+      artifacts: [],
+      diagnostics: [
+        {
+          severity: 'error',
+          message: `Unsupported target '${targetName}'. Available targets: js, solana`,
+          hint: 'Register a target compiler using CompilerRegistry.register()',
+        },
+      ],
+    };
+  }
+  return await compiler.compile(ir, options);
 }
 
 export async function compileManifest(
@@ -92,8 +132,41 @@ export async function compileManifest(
   }
 
   try {
-    const ir = generateManifestIR(source);
-    return await compiler.compile(ir, options);
+    const lexer = new Lexer(source);
+    const tokens = lexer.tokenize();
+    const parser = new Parser(tokens, source);
+    const ast = parser.parse();
+    const validation = new Validator(ast, source).validate(ast);
+    if (!validation.isValid) {
+      return {
+        success: false,
+        target: targetName,
+        artifacts: [],
+        diagnostics: validation.issues.map((i) => ({
+          severity: i.severity,
+          message: i.message,
+          line: i.line || 1,
+          column: i.column || 1,
+          hint: i.hint,
+        })),
+      };
+    }
+
+    const ir = generateManifestIRFromAST(ast);
+    const compiled = await compiler.compile(ir, options);
+    const warnings = validation.issues
+      .filter((i) => i.severity !== 'error')
+      .map((i) => ({
+        severity: i.severity,
+        message: i.message,
+        line: i.line || 1,
+        column: i.column || 1,
+        hint: i.hint,
+      }));
+    return {
+      ...compiled,
+      diagnostics: [...warnings, ...(compiled.diagnostics || [])],
+    };
   } catch (err: any) {
     return {
       success: false,

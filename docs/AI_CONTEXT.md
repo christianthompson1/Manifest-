@@ -1,45 +1,34 @@
 # Manifest Studio — AI Context Grounding Document
 
-This document provides a single, grounded source of truth for future AI agents working on the Manifest Studio repository. All statements below reflect verified files, interfaces, and behaviors in the codebase.
+This document provides a verified source of truth for engineers and AI agents working on the Manifest Studio repository.
 
 ---
 
-## 1. Repository Layout & Major Components
+## 1. Repository Layout & Subsystems
 
-- `manifest-core/`: Pure TypeScript Manifest language core (zero external UI dependencies).
-  - `src/lexer/`: Lexer and token definitions (`tokens.ts`, `lexer.ts`).
-  - `src/parser/`: Recursive descent parser (`parser.ts`, `ast/ast.ts`).
-  - `src/validator/`: Semantic analysis and error diagnostics (`validator.ts`).
-  - `src/ir/`: Target-agnostic intermediate representation builder (`ir.ts`, `ir-builder.ts`).
-  - `src/compiler/targets/`: Code generators (`js-target.ts`, `solana-target.ts`).
-  - `src/runtime/`: Language runtime semantics (`runtime.ts`, `scope.ts`, `values.ts`).
-  - `tests/`: Automated test runner and suites (`run_tests.ts`, `run_orchestrator_tests.ts`, `run_styled_dashboard_tests.ts`).
-- `src/studio/`: React 19 web IDE interface.
-  - `Studio.tsx`: Primary IDE layout, file management, active tabs, and Run/Build handlers.
-  - `execution/`: Unified multi-language execution providers (`execution-orchestrator.ts`, `manifest-execution-provider.ts`, `static-web-execution-provider.ts`, `execution-types.ts`).
-  - `preview/PreviewPanel.tsx`: Sandboxed iframe preview, Developer Inspector (Console, State, Elements, Events, IR, Target Code).
-  - `editor/`: CodeMirror 6 editor wrapper with custom Lezer Manifest grammar, autocomplete, and linter.
-  - `project-store.ts`: Project management and IndexedDB offline persistence (`idb-keyval`).
-  - `types.ts`: Core data structures (`ManifestProject`, `ProjectFile`, `BuildResult`, `UnifiedExecutionResult`).
-- `docs/`: Master architectural documents (`ARCHITECTURE.md`, `IMPLEMENTATION_ROADMAP.md`, `LANGUAGE_SUPPORT.md`, `AI_CONTEXT.md`).
-- `server.ts`: Lightweight Express backend serving the applet and optional Solana proxy RPC endpoints.
-
----
-
-## 2. Key Entry Points & Interfaces
-
-- **Run Trigger**: `Studio.tsx` -> `handleRun()`. Uses `ExecutionOrchestrator.getInstance().executeProject(project, options)` to select the proper provider and execute code without race conditions.
-- **Manifest Pipeline**: `CompilerService.runManifestPipeline(source, target)`.
-- **Preview Mount**: `PreviewPanel.tsx` -> `srcDoc={generatePreviewSrcDoc()}` in sandboxed iframe with `sandbox="allow-scripts"`.
-- **Project Storage**: `project-store.ts` -> `saveProjectAsync(project)` writes to both `localStorage` and `IndexedDB`.
+- `manifest-core/`: Pure TypeScript Manifest compiler and runtime package.
+  - `src/lexer/`: Tokenizer (`tokens.ts`, `lexer.ts`).
+  - `src/parser/`: Recursive descent parser with unary, postfix indexing, UI primitives, and Solana grammar (`parser.ts`, `ast/ast.ts`).
+  - `src/validator/`: Two-pass semantic validator (`validator.ts`) supporting forward `ACTION`/`PAGE` references, arity warnings, `RETURN` scope checks, and `ROUTE` page checks.
+  - `src/ir/`: Target-agnostic Manifest IR builder (`ir.ts`, `ir-builder.ts`).
+  - `src/compiler/`: Single-pass pipeline (`compiler.ts`) and target generators (`targets/js-target.ts`, `targets/solana-target.ts`).
+  - `src/runtime/`: Headless AST interpreter (`runtime.ts`, `scope.ts`) verified for behavioral parity with `js-target.ts`.
+  - `tests/`: Automated test suites (`run_tests.ts`, `run_audit_verification_tests.ts`, `run_orchestrator_tests.ts`, `run_editor_tests.ts`, `run_solana_counter_test.ts`, `run_benchmark.ts`).
+- `src/studio/`: React 19 + CodeMirror 6 IDE application.
+  - `Studio.tsx`: Main workspace state, hydration guard, reference-aware file/folder operations, and Run/Build lifecycle.
+  - `execution/`: `execution-orchestrator.ts`, `manifest-execution-provider.ts`, `static-web-execution-provider.ts`, `wasm-execution-provider.ts`, `execution-types.ts`.
+  - `editor/`: `CodeMirrorEditor.tsx` (per-file LRU `EditorState` cache, `Compartment` reconfiguration, IME guard, binary read-only view), `manifest-language.ts`, `manifest-autocomplete.ts`, `manifest-linter.ts`.
+  - `explorer/ProjectTree.tsx` & `sidebar/Sidebar.tsx`: Recursive folder/file explorer with inline two-step delete confirmation.
+  - `languages/`: `language-registry.ts` & `language-provider.ts` (truthful capability metadata across 24 language/config/binary providers).
+  - `preview/PreviewPanel.tsx`: Strict `<iframe sandbox="allow-scripts">` preview with entry badge and diagnostic error states.
+  - `project-store.ts` & `services/zip-service.ts`: Multi-project IndexedDB storage (`idb-keyval`) and binary-safe ZIP import/export.
 
 ---
 
-## 3. Ground Rules & Strict Boundaries for AI Engineers
+## 2. Non-Negotiable Engineering Rules
 
-1. **Never Invent Files or APIs**: Always verify paths using `view_file` or `list_dir`.
-2. **Never Claim a Language Runs if it Only Parses**: A recognized file extension or syntax highlighter is NOT an execution provider.
-3. **No Unsafe Code Evaluation**: Do not use unrestricted `eval()` or `new Function()` in main window scopes.
-4. **Preserve the Matte Charcoal Theme**: Panels `#181818`, Editor `#1f1f1f`, Borders `#2d2d2d`. No neon colors.
-5. **Multi-File Web Projects**: Ordinary HTML/CSS/JS projects MUST run through `StaticWebExecutionProvider`, NOT the Manifest compiler.
-6. **Always Run Existing Tests Before Finishing**: Run `npm run lint` and `npm run manifest:test`. All 268 tests must pass.
+1. **Never Claim Unimplemented Execution**: Python, Rust, TypeScript, C/C++, Go, Java, SQL, etc. are editing-only in the browser SPA. Compiled `.wasm` binaries execute via `WasmExecutionProvider`, whereas **Manifest-to-WASM compilation is NOT implemented**.
+2. **Never Silently Switch Entry Files**: Running an unsupported file must fail with `unsupported-language`; running a secondary `.manifest` file must execute that file; missing configured entry files must fail explicitly.
+3. **Preserve Iframe & Browser Constraints**: Keep `<iframe sandbox="allow-scripts">` (never add `allow-same-origin`), and never use `window.alert`, `window.confirm`, `window.prompt`, or `window.open`.
+4. **Preserve Matte Charcoal Aesthetic**: Keep `#181818` / `#1f1f1f` / `#252526` / `#2d2d2d` surfaces without neon glows.
+5. **Run Full Verification**: Always verify `npm run lint`, `npm run manifest:test` (`299/299` + LiteSVM + `29/29` + `8/8`), and `npm run build`.

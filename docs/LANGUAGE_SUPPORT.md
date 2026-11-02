@@ -1,26 +1,42 @@
 # Manifest Studio — Language & Runtime Capability Matrix
 
-This matrix documents the actual, verified capabilities of each language and project type in the current Manifest Studio codebase.
+This document records the **actual, verified** capabilities of every language and binary format registered in `LanguageRegistry` (`src/studio/languages/language-registry.ts`) and `ExecutionOrchestrator` (`src/studio/execution/execution-orchestrator.ts`).
 
-| Language / Format | CodeMirror Editing | Syntax Highlighting | Semantic Validation | In-Browser Execution | Compilation Target | Sandboxed Preview | Offline Ready | Runtime / Toolchain Status | Current Verified Status |
-|---|---|---|---|---|---|---|---|---|---|
-| **Manifest** (`.manifest`) | ✅ Yes | ✅ Custom Lezer Grammar | ✅ AST Validator | ✅ Yes | JavaScript (`app.js`), Solana Anchor Rust | ✅ Interactive Canvas | ✅ 100% Offline | Bundled Manifest Core v0.4 | **[VERIFIED]** Full compiler & reactive preview |
-| **HTML / CSS** (`.html`, `.css`) | ✅ Yes | ✅ `@codemirror/lang-html`, `lang-css` | ✅ Basic | ✅ Yes (Native) | N/A | ✅ Live Webview | ✅ 100% Offline | Browser Web Platform | **[VERIFIED]** Bundled multi-file preview |
-| **JavaScript** (`.js`) | ✅ Yes | ✅ `@codemirror/lang-javascript` | ✅ Basic | ✅ Yes (Native) | ESBuild (dev/build) | ✅ Live Webview | ✅ 100% Offline | Browser V8 / WebKit | **[VERIFIED]** Integrated in Static Web Provider |
-| **TypeScript** (`.ts`) | ✅ Yes | ✅ `@codemirror/lang-javascript` (TS) | ⚠️ Typecheck CLI | ⚠️ Dev server only | TypeScript 5.8 | ⚠️ Via bundle | ⚠️ Partial | TypeScript compiler installed in node_modules | **[PARTIAL]** Supported in project sources; client execution requires build |
-| **Solana / Rust** (`.rs`) | ✅ Yes | ✅ `@codemirror/lang-rust` | ⚠️ In-memory AST | ✅ LiteSVM (Simulated instructions) | Anchor IDL Generator | ✅ Account State Inspector | ✅ 100% Offline | LiteSVM WASM runner | **[VERIFIED]** Counter instruction execution verified |
-| **Python** (`.py`) | ✅ Yes | ✅ `@codemirror/lang-python` | ❌ None | ❌ Planned (Pyodide) | ❌ None | ❌ None | ⚠️ Blocked | Requires Pyodide WASM runtime download | **[PLANNED]** Provider interface ready; download needed |
-| **WebAssembly** (`.wasm`, `.wat`) | ✅ Hex/Text | ⚠️ Text format | ❌ None | ❌ Planned | Clang/Emscripten (external) | ❌ None | ⚠️ Blocked | Requires WASI browser shim | **[PLANNED]** WasmProvider architected |
-| **C / C++** (`.c`, `.cpp`) | ✅ Yes | ✅ `@codemirror/lang-cpp` | ❌ None | ❌ Unsupported in browser | ❌ Needs native GCC/Clang | ❌ None | ❌ Blocked | Host OS toolchain required | **[BLOCKED]** Desktop host required for local compilation |
-| **Go** (`.go`) | ✅ Yes | ✅ `@codemirror/legacy-modes/mode/go` | ❌ None | ❌ Unsupported in browser | ❌ Needs Go toolchain | ❌ None | ❌ Blocked | Host OS toolchain required | **[BLOCKED]** Desktop host required for local compilation |
-| **SQL** (`.sql`) | ✅ Yes | ✅ `@codemirror/lang-sql` | ❌ None | ❌ Unsupported | ❌ None | ❌ None | ❌ N/A | Database server required | **[BLOCKED]** External database required |
-| **JSON / YAML / TOML** | ✅ Yes | ✅ Dedicated Lezer & Legacy Modes | ✅ Syntactic | N/A (Config) | N/A | N/A | ✅ 100% Offline | Native parsers | **[VERIFIED]** `manifest.toml` and configs parsed |
+Manifest Studio never claims that syntax highlighting implies execution, and never silently falls back to running `src/main.manifest` when an unsupported language file is active.
 
 ---
 
-## Capability Definitions
-- **Editing**: Full cursor navigation, bracket matching, indentation, code folding.
-- **Syntax Highlighting**: Tokenizer/highlighter active with dark matte color palette.
-- **Semantic Validation**: Detection of undefined variables, syntax errors, and missing declarations with line/column markers in the Problems panel.
-- **In-Browser Execution**: Code runs directly inside the client without transmitting code to external remote servers.
-- **Offline Ready**: Operates with no internet connection after initial page load.
+## 1. Verified Capability Matrix
+
+| Language / Format | Extensions / Files | Editing | Syntax Highlighting | Autocomplete | Diagnostics | Local Execution | Local Build / Artifacts | Sandboxed Preview | Offline (Post-Load) | Honest Status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **Manifest** | `.manifest` | Yes | Custom Stream/Token Mode | Context + Symbol + Snippet | Lexer + Parser + 2-Pass Semantic Validator | **Yes** (`ManifestExecutionProvider` + AST `Runtime`) | **Yes** (`dist/app.js`, `dist/ir.json`, or Solana Anchor files) | **Yes** (`manifest-canvas`) | Yes | **Verified** |
+| **HTML** | `.html`, `.htm` | Yes | `@codemirror/lang-html` | Tag/Attr (Lezer) | Missing local asset warnings on Run | **Yes** (`StaticWebExecutionProvider`) | **Yes** (`build/bundle.html`) | **Yes** (`web-document`) | Yes | **Verified** |
+| **CSS** | `.css`, `.scss`, `.less` | Yes | `@codemirror/lang-css` | CSS Property (Lezer) | Missing `url(...)` asset warnings on Run | **Yes** (Inlined into active Web preview) | **Yes** (Bundled into `build/bundle.html`) | **Yes** (via HTML preview) | Yes | **Verified** |
+| **JavaScript** | `.js`, `.mjs`, `.cjs` | Yes | `@codemirror/lang-javascript` | Basic Keyword/DOM | Runtime `window.onerror` bridge | **Yes** (Bundled in HTML or standalone JS console harness) | **Yes** (Bundled into `build/bundle.html`) | **Yes** (`web-document`) | Yes | **Verified** |
+| **WebAssembly Binary** | `.wasm` | Read-Only Binary View | N/A (Binary) | None | Binary Magic, `WebAssembly.validate`, & Import Check | **Yes** (`WasmExecutionProvider`: `env.*` + minimal WASI `fd_write`) | No (Executes precompiled `.wasm` binaries) | **Yes** (`terminal-output`) | Yes | **Verified** (Binary execution only; **Manifest-to-WASM compilation is NOT implemented**) |
+| **Solana Manifest** | `.manifest` (`PROGRAM`) | Yes | Manifest Mode | Manifest Keywords | Manifest Validator | **Yes** (LiteSVM in-memory instruction simulation) | **Yes** (Anchor `lib.rs`, `idl.json`, TS client) | **Yes** (Inspector / Terminal) | Yes | **Verified** |
+| **JSON** | `.json`, `.jsonc` | Yes | `@codemirror/lang-json` | Basic | **Syntax Linter** (`jsonParseLinter`) | No (Data/Config) | No | No | Yes | **Verified** (Editing + Syntax Diagnostics) |
+| **TOML** | `.toml`, `manifest.toml`, `Cargo.toml`, `Anchor.toml` | Yes | Highlighted Config Mode | None | None (Separated from Manifest linter) | No (Config; neutral fallback to project entry on Run) | No | No | Yes | **Verified** (Config Mode) |
+| **XML / SVG** | `.xml`, `.svg` | Yes (Editable Text) | `@codemirror/lang-xml` | Tag Completion | None | Rendered as base64 Data URL in HTML/CSS `url()` | Inlined in Web Bundle | Via HTML | Yes | **Verified** (Editable Asset/Markup) |
+| **Markdown** | `.md`, `.markdown` | Yes | `@codemirror/lang-markdown` | None | None | Neutral doc file (Runs project default entry if available) | No | No | Yes | **Verified** (Documentation) |
+| **TypeScript / JSX / TSX** | `.ts`, `.tsx`, `.jsx` | Yes | `@codemirror/lang-javascript` | Basic | None in browser editor | **No** (Explicit `unsupported-language` diagnostic on Run) | No in-browser bundler | No | Yes (Editing) | **Editing Only** |
+| **Python** | `.py`, `.pyw` | Yes | `@codemirror/lang-python` | Basic | None | **No** (No Pyodide/CPython bundled; explicit diagnostic on Run) | No | No | Yes (Editing) | **Editing Only** |
+| **Rust** | `.rs` | Yes | `@codemirror/lang-rust` | Basic | None | **No** (Requires native `cargo`/`rustc`; explicit diagnostic on Run) | Remote CI workflow template only | No | Yes (Editing) | **Editing Only** |
+| **C / C++** | `.c`, `.h`, `.cpp`, `.hpp` | Yes | `@codemirror/lang-cpp` | Basic | None | **No** (Requires native Clang/GCC; explicit diagnostic on Run) | No | No | Yes (Editing) | **Editing Only** |
+| **Go** | `.go` | Yes | Legacy Go Mode | None | None | **No** (Requires Go toolchain; explicit diagnostic on Run) | No | No | Yes (Editing) | **Editing Only** |
+| **Java / C# / Kotlin / Swift / Dart** | `.java`, `.cs`, `.kt`, `.swift`, `.dart` | Yes | Lezer / Legacy Modes | Basic / None | None | **No** (Explicit `unsupported-language` diagnostic on Run) | No | No | Yes (Editing) | **Editing Only** |
+| **PHP / Ruby / Lua / R / Julia / Haskell / SQL / Shell** | `.php`, `.rb`, `.lua`, `.r`, `.jl`, `.hs`, `.sql`, `.sh` | Yes | Lezer / Legacy Modes | Basic / None | None | **No** (Explicit `unsupported-language` diagnostic on Run) | No | No | Yes (Editing) | **Editing Only** |
+
+---
+
+## 2. Deterministic Execution Routing Rules
+1. **Active Executable File Wins**:
+   - Active `.manifest` file -> Executes that exact `.manifest` file (`ManifestExecutionProvider`).
+   - Active `.html`/`.htm` file -> Bundles and previews that exact HTML document (`StaticWebExecutionProvider`).
+   - Active `.js`/`.mjs` file -> Bundles with project HTML if present, or synthesizes a standalone JS console harness (`StaticWebExecutionProvider`).
+   - Active `.wasm` file -> Validates and instantiates that exact `.wasm` binary (`WasmExecutionProvider`).
+2. **Active Unsupported Source Language Refuses Honestly**:
+   - Active `.py`, `.rs`, `.ts`, `.tsx`, `.c`, `.cpp`, `.go`, `.java`, etc. -> Immediately returns `providerId: 'unsupported-language'` with `previewKind: 'diagnostic-error'`. Never runs an unrelated `.manifest` or `.html` file in the workspace.
+3. **Neutral Configuration / Documentation Files**:
+   - Active `README.md` or `manifest.toml` -> Resolves `project.entryPath` or `manifest.toml` `entry`. If the configured entry file is missing, fails explicitly with a diagnostic error rather than silently switching to another file.

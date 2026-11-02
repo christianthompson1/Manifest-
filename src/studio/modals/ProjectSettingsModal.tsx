@@ -54,6 +54,9 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
   const walletService = SolanaWalletService.getInstance();
   const [projectName, setProjectName] = useState(project?.name || 'Manifest Project');
   const [projectDesc, setProjectDesc] = useState(project?.description || '');
+  const [entryPath, setEntryPath] = useState(
+    project?.entryPath || project?.files?.find((f) => f.path.endsWith('.manifest') || f.path === 'index.html')?.path || 'src/main.manifest'
+  );
   const [fontSize, setFontSize] = useState<number>(settings?.fontSize ?? 13);
   const [wordWrap, setWordWrap] = useState<boolean>(settings?.wordWrap ?? false);
   const [activeNetwork, setActiveNetwork] = useState<SolanaNetwork>(() => {
@@ -73,6 +76,15 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
     if (project) {
       setProjectName(project.name || 'Manifest Project');
       setProjectDesc(project.description || '');
+      const toml = project.files.find((f) => f.path === 'manifest.toml');
+      const tomlEntry = toml?.content.match(/entry\s*=\s*["']([^"']+)["']/)?.[1];
+      setEntryPath(
+        project.entryPath ||
+          tomlEntry ||
+          project.files.find((f) => f.path.endsWith('.manifest') || f.path === 'index.html' || f.path.endsWith('.wasm'))?.path ||
+          project.files[0]?.path ||
+          'src/main.manifest'
+      );
     }
     if (settings) {
       setFontSize(settings.fontSize ?? 13);
@@ -95,10 +107,22 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
 
   const handleSave = () => {
     if (project && onUpdateProject) {
+      const cleanEntry = entryPath.trim();
+      const updatedFiles = project.files.map((f) => {
+        if (f.path === 'manifest.toml' && cleanEntry.endsWith('.manifest')) {
+          return {
+            ...f,
+            content: f.content.replace(/entry\s*=\s*["'][^"']+["']/, `entry = "${cleanEntry}"`),
+          };
+        }
+        return f;
+      });
       onUpdateProject({
         ...project,
         name: projectName,
         description: projectDesc,
+        entryPath: cleanEntry || project.entryPath,
+        files: updatedFiles,
         updatedAt: Date.now(),
       });
     }
@@ -388,13 +412,23 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                   </p>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[#cccccc]">Application Entry Point</label>
-                  <input
-                    type="text"
-                    disabled
-                    value="src/main.manifest"
-                    className="w-full bg-[#1f1f1f] border border-[#2d2d2d] rounded-md px-3 py-1.5 text-xs text-[#858585] font-mono"
-                  />
+                  <label className="text-[#cccccc] font-medium">Default Application Entry Point</label>
+                  <select
+                    value={entryPath}
+                    onChange={(e) => setEntryPath(e.target.value)}
+                    className="w-full bg-[#1f1f1f] border border-[#2d2d2d] rounded-md px-3 py-1.5 text-xs text-[#ffffff] font-mono outline-none focus:border-[#569cd6]"
+                  >
+                    {(project?.files || [])
+                      .filter((f) => !f.path.endsWith('/.gitkeep'))
+                      .map((f) => (
+                        <option key={f.path} value={f.path}>
+                          {f.path}
+                        </option>
+                      ))}
+                  </select>
+                  <p className="text-[10px] text-[#858585]">
+                    Used when running from neutral config/documentation files. Active executable files (.manifest, .html, .wasm) take direct precedence.
+                  </p>
                 </div>
               </div>
             )}

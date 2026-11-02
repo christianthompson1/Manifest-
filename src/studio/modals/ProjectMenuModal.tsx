@@ -3,7 +3,7 @@
  * Handles new projects, templates, ZIP file imports, folder picker fallback, and project export.
  */
 
-import React, { useRef } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import {
   FolderOpen,
   Download,
@@ -12,11 +12,22 @@ import {
   Sparkles,
   X,
   FileArchive,
-  Layers,
+  Trash2,
+  Clock,
 } from 'lucide-react';
-import { ManifestProject } from '../types.ts';
-import { TEMPLATES } from '../project-store.ts';
-import { importProjectFromZip, exportProjectToZip } from '../services/git-provider.ts';
+import { ManifestProject, ProjectFile } from '../types.ts';
+import {
+  TEMPLATES,
+  listWorkspaceProjectsAsync,
+  deleteWorkspaceProjectAsync,
+} from '../project-store.ts';
+import {
+  importProjectFromZip,
+  exportProjectToZip,
+  isBinaryFile,
+  getMimeType,
+} from '../services/git-provider.ts';
+import { detectLanguage } from '../editor/language-support.ts';
 
 interface ProjectMenuModalProps {
   isOpen: boolean;
@@ -25,6 +36,15 @@ interface ProjectMenuModalProps {
   onUpdateProject: (project: ManifestProject) => void;
   onShowToast: (msg: string) => void;
   onSelectTemplate: (templateId: string) => void;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return typeof btoa === 'function' ? btoa(binary) : Buffer.from(bytes).toString('base64');
 }
 
 export const ProjectMenuModal: React.FC<ProjectMenuModalProps> = ({
@@ -37,6 +57,15 @@ export const ProjectMenuModal: React.FC<ProjectMenuModalProps> = ({
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const [savedProjects, setSavedProjects] = useState<ManifestProject[]>([]);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      listWorkspaceProjectsAsync().then(setSavedProjects).catch(() => setSavedProjects([]));
+      setConfirmDeleteId(null);
+    }
+  }, [isOpen, project.id, project.updatedAt]);
 
   if (!isOpen) return null;
 
@@ -61,32 +90,57 @@ export const ProjectMenuModal: React.FC<ProjectMenuModalProps> = ({
     if (!files || files.length === 0) return;
 
     try {
-      const projectFiles = [];
+      const folderName = files[0]?.webkitRelativePath?.split('/')[0] || 'Imported Folder';
+      const hasSharedRootPrefix =
+        files.length > 0 &&
+        Boolean(files[0]?.webkitRelativePath?.includes('/')) &&
+        Array.from(files).every((f) => (f.webkitRelativePath || '').startsWith(folderName + '/'));
+
+      const projectFiles: ProjectFile[] = [];
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
-        const relativePath = f.webkitRelativePath || f.name;
-        if (relativePath.includes('/.') || relativePath.startsWith('.')) continue;
+        const rawRel = f.webkitRelativePath || f.name;
+        const cleanPath = hasSharedRootPrefix ? rawRel.slice(folderName.length + 1) : rawRel;
+        if (!cleanPath || cleanPath.includes('/.') || cleanPath.startsWith('.')) continue;
 
-        const content = await f.text();
+        let content: string;
+        let isBinary = false;
+        let mimeType: string | undefined;
+
+        if (isBinaryFile(cleanPath)) {
+          isBinary = true;
+          mimeType = getMimeType(cleanPath);
+          const buf = await f.arrayBuffer();
+          content = `data:${mimeType};base64,${arrayBufferToBase64(buf)}`;
+        } else {
+          content = await f.text();
+        }
+
         projectFiles.push({
           id: `file-${Date.now()}-${i}`,
-          name: f.name,
-          path: relativePath,
-          language: relativePath.endsWith('.manifest') ? 'manifest' : 'plaintext',
+          name: cleanPath.split('/').pop() || f.name,
+          path: cleanPath,
+          language: detectLanguage(cleanPath),
           content,
+          isBinary,
+          mimeType,
         });
       }
 
       if (projectFiles.length === 0) {
-        throw new Error('No files found in selected folder');
+        throw new Error('No readable files found in selected folder');
       }
 
-      const folderName = files[0]?.webkitRelativePath?.split('/')[0] || 'Imported Folder';
+      const preferredActive =
+        projectFiles.find((f) => f.path.endsWith('.manifest') || f.path === 'index.html' || f.path.endsWith('.wasm'))
+          ?.path || projectFiles[0].path;
+
       onUpdateProject({
-        id: `proj-${Date.now()}`,
+        id: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         name: folderName,
         files: projectFiles,
-        activeFilePath: projectFiles.find((f) => f.path.endsWith('.manifest'))?.path || projectFiles[0].path,
+        entryPath: preferredActive,
+        activeFilePath: preferredActive,
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });
@@ -115,6 +169,13 @@ export const ProjectMenuModal: React.FC<ProjectMenuModalProps> = ({
     } catch (err: any) {
       onShowToast(`Export failed: ${err.message || String(err)}`);
     }
+  };
+
+  const handleDeleteSavedProject = async (id: string) => {
+    await deleteWorkspaceProjectAsync(id);
+    setSavedProjects((prev) => prev.filter((p) => p.id !== id));
+    setConfirmDeleteId(null);
+    onShowToast('Removed project from saved workspace');
   };
 
   return (
@@ -150,7 +211,7 @@ export const ProjectMenuModal: React.FC<ProjectMenuModalProps> = ({
                 <Plus className="w-4 h-4 text-[#89d185]" />
                 <span>New Project</span>
               </div>
-              <span className="text-[10px] text-[#858585]">Start from clean minimal blank workspace</span>
+              <span className="text-[10px] text-[#858585]">Current project stays saved in Workspace</span>
             </button>
 
             {/* Import ZIP */}
@@ -174,19 +235,19 @@ export const ProjectMenuModal: React.FC<ProjectMenuModalProps> = ({
                 <Download className="w-4 h-4 text-[#cca700]" />
                 <span>Export ZIP</span>
               </div>
-              <span className="text-[10px] text-[#858585]">Download all project files</span>
+              <span className="text-[10px] text-[#858585]">Download all project files &amp; assets</span>
             </button>
           </div>
 
-          {/* Folder picker fallback button */}
+          {/* Folder picker button */}
           <div className="flex items-center justify-between p-2.5 rounded-lg bg-[#252526]/50 border border-[#2d2d2d]">
             <div className="flex items-center gap-2">
               <FileArchive className="w-4 h-4 text-[#858585]" />
-              <span className="text-[#cccccc]">Import Local Folder</span>
+              <span className="text-[#cccccc]">Import Local Folder (preserves subfolders &amp; binary assets)</span>
             </div>
             <button
               onClick={() => folderInputRef.current?.click()}
-              className="px-2.5 py-1 rounded bg-[#2d2d2d] hover:bg-[#383838] text-[#cccccc] text-[11px] transition"
+              className="px-2.5 py-1 rounded bg-[#2d2d2d] hover:bg-[#383838] text-[#cccccc] text-[11px] transition cursor-pointer"
             >
               Choose Folder...
             </button>
@@ -211,6 +272,81 @@ export const ProjectMenuModal: React.FC<ProjectMenuModalProps> = ({
             onChange={handleFolderImport}
           />
 
+          {/* Saved Workspace Projects */}
+          {savedProjects.length > 0 && (
+            <div>
+              <div className="text-[11px] font-semibold text-[#858585] uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-[#89d185]" />
+                <span>Saved Workspace Projects ({savedProjects.length})</span>
+              </div>
+              <div className="space-y-1.5 max-h-44 overflow-y-auto custom-scrollbar pr-1">
+                {savedProjects.map((sp) => {
+                  const isCurrent = sp.id === project.id;
+                  return (
+                    <div
+                      key={sp.id}
+                      onClick={() => {
+                        if (!isCurrent) {
+                          onUpdateProject(sp);
+                          onShowToast(`Switched to saved project: ${sp.name}`);
+                          onClose();
+                        }
+                      }}
+                      className={`p-2.5 rounded-lg border transition flex items-center justify-between ${
+                        isCurrent
+                          ? 'bg-[#252526] border-[#569cd6] cursor-default'
+                          : 'bg-[#252526]/70 hover:bg-[#2d2d2d] border-[#2d2d2d] cursor-pointer'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium text-[#ffffff] flex items-center gap-2">
+                          <span className="truncate">{sp.name}</span>
+                          {isCurrent && (
+                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#1f1f1f] text-[#569cd6] border border-[#569cd6]/40">
+                              Active
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-[#858585]">
+                          {sp.files.length} files &bull; {sp.kind || 'manifest'}
+                        </div>
+                      </div>
+
+                      {!isCurrent && (
+                        <div onClick={(e) => e.stopPropagation()} className="flex items-center gap-1">
+                          {confirmDeleteId === sp.id ? (
+                            <>
+                              <button
+                                onClick={() => handleDeleteSavedProject(sp.id)}
+                                className="px-2 py-0.5 rounded bg-[#4d1f24] text-[#f85149] text-[10px] font-medium"
+                              >
+                                Confirm
+                              </button>
+                              <button
+                                onClick={() => setConfirmDeleteId(null)}
+                                className="px-1.5 py-0.5 text-[#858585] hover:text-white text-[10px]"
+                              >
+                                Cancel
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              onClick={() => setConfirmDeleteId(sp.id)}
+                              title="Remove saved project"
+                              className="p-1 rounded text-[#858585] hover:text-[#f85149] hover:bg-[#333333]"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Built-in Templates */}
           <div>
             <div className="text-[11px] font-semibold text-[#858585] uppercase tracking-wider mb-2 flex items-center gap-1.5">
@@ -229,7 +365,7 @@ export const ProjectMenuModal: React.FC<ProjectMenuModalProps> = ({
                 >
                   <div className="flex items-center gap-2.5">
                     <div className="w-6 h-6 rounded bg-[#1f1f1f] border border-[#333333] flex items-center justify-center text-[10px] font-mono text-[#569cd6]">
-                      {tmpl.kind === 'solana' ? '◎' : 'M'}
+                      {tmpl.kind === 'solana' ? '◎' : tmpl.kind === 'web' ? 'W' : tmpl.kind === 'wasm' ? '⚡' : 'M'}
                     </div>
                     <div>
                       <div className="font-medium text-[#ffffff]">{tmpl.name}</div>

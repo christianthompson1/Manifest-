@@ -212,6 +212,11 @@ export class IRBuilder {
         stmt.type === 'Footer' ||
         stmt.type === 'Nav' ||
         stmt.type === 'Modal' ||
+        stmt.type === 'Progress' ||
+        stmt.type === 'Badge' ||
+        stmt.type === 'Icon' ||
+        stmt.type === 'CssEscape' ||
+        stmt.type === 'JsEscape' ||
         stmt.type === 'ComponentCall'
       ) {
         const uIR = this.transformStatement(stmt) as IRUINode;
@@ -420,6 +425,11 @@ export class IRBuilder {
             child.type === 'Footer' ||
             child.type === 'Nav' ||
             child.type === 'Modal' ||
+            child.type === 'Progress' ||
+            child.type === 'Badge' ||
+            child.type === 'Icon' ||
+            child.type === 'CssEscape' ||
+            child.type === 'JsEscape' ||
             child.type === 'ComponentCall'
           ) {
             const uiIR = this.transformStatement(child) as IRUINode;
@@ -735,6 +745,26 @@ export class IRBuilder {
           kind: 'IRProgress',
           value: this.transformExpression(s.value),
           styles: s.styles,
+          sourceLine: s.line,
+          sourceColumn: s.column,
+        };
+      }
+
+      case 'CssEscape': {
+        const s = stmt as any;
+        return {
+          kind: 'IRCssEscape',
+          cssContent: s.css || s.cssContent || '',
+          sourceLine: s.line,
+          sourceColumn: s.column,
+        };
+      }
+
+      case 'JsEscape': {
+        const s = stmt as any;
+        return {
+          kind: 'IRJsEscape',
+          jsContent: s.code || s.jsContent || '',
           sourceLine: s.line,
           sourceColumn: s.column,
         };

@@ -42,7 +42,7 @@ export interface GitProvider {
 }
 
 const BINARY_EXTENSIONS = new Set([
-  'png', 'jpg', 'jpeg', 'gif', 'ico', 'svg', 'webp', 'avif', 'bmp', 'tiff',
+  'png', 'jpg', 'jpeg', 'gif', 'ico', 'webp', 'avif', 'bmp', 'tiff',
   'woff', 'woff2', 'ttf', 'otf', 'eot',
   'mp3', 'wav', 'ogg', 'mp4', 'webm',
   'pdf', 'wasm', 'bin', 'so', 'dll', 'dylib', 'zip', 'tar', 'gz'

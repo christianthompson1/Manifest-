@@ -42,12 +42,15 @@ import {
   ShieldAlert,
   Loader2,
   Flame,
+  FolderPlus,
+  FilePlus,
 } from 'lucide-react';
 import { ManifestProject, ProjectFile } from '../types.ts';
 import { TEMPLATES, StudioSettings } from '../project-store.ts';
 import { SolanaWalletService, WalletState, SolanaNetwork } from '../services/solana-wallet.ts';
 import { HeliusPriorityFeeProvider, PriorityFeeEstimate, PriorityFeeLevel } from '../services/priority-fees.ts';
 import { LibraryRegistry } from '../../../manifest-core/src/libraries/library-registry.ts';
+import { ProjectTree } from '../explorer/ProjectTree.tsx';
 
 export type ActivityTab = 'explorer' | 'search' | 'solana' | 'git' | 'packages' | 'devtools' | 'settings';
 
@@ -99,14 +102,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
-  const [isOpenEditorsOpen, setIsOpenEditorsOpen] = useState(true);
-  const [isFolderStructureOpen, setIsFolderStructureOpen] = useState(true);
-  const [isSrcOpen, setIsSrcOpen] = useState(true);
-  const [isBuildOpen, setIsBuildOpen] = useState(true);
-  const [isCreatingFile, setIsCreatingFile] = useState(false);
-  const [newFileName, setNewFileName] = useState('');
-  const [renamingPath, setRenamingPath] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState('');
+  const [globalSearchQuery, setGlobalSearchQuery] = useState('');
+  const [createTrigger, setCreateTrigger] = useState<{ type: 'file' | 'folder'; nonce: number } | null>(null);
 
   // Solana live state
   const walletService = SolanaWalletService.getInstance();
@@ -124,66 +121,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     feeProvider.getEstimate(priorityFeeLevel).then(setFeeEstimate);
   }, [priorityFeeLevel, feeProvider]);
 
-  const srcFiles = project.files.filter((f) => f.path.startsWith('src/'));
-  const rootFiles = project.files.filter((f) => !f.path.includes('/'));
-  const buildFiles = project.files.filter((f) => f.path.startsWith('build/'));
-
-  const handleCreateSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newFileName.trim()) return;
-    let path = newFileName.trim();
-    if (!path.includes('/') && !path.endsWith('.toml')) {
-      path = `src/${path}`;
-    }
-    if (!path.includes('.')) {
-      path += '.manifest';
-    }
-    onCreateFile(path);
-    setNewFileName('');
-    setIsCreatingFile(false);
-  };
-
-  const handleRenameSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!renamingPath || !renameValue.trim()) return;
-    const oldPath = renamingPath;
-    let newPath = renameValue.trim();
-    if (oldPath.includes('/') && !newPath.includes('/')) {
-      const dir = oldPath.substring(0, oldPath.lastIndexOf('/'));
-      newPath = `${dir}/${newPath}`;
-    }
-    onRenameFile?.(oldPath, newPath);
-    setRenamingPath(null);
-    setRenameValue('');
-  };
-
-  const handleRequestAirdrop = async () => {
-    setIsAirdropping(true);
-    try {
-      const res = await walletService.requestAirdrop();
-      onShowToast?.(res.message);
-    } catch (err: any) {
-      onShowToast?.(err.message || 'Airdrop failed');
-    } finally {
-      setIsAirdropping(false);
-    }
-  };
-
-  const getFileIcon = (file: ProjectFile) => {
-    if (file.language === 'manifest') return <FileCode className="w-3.5 h-3.5 text-[#ce9178]" />;
-    if (file.language === 'toml') return <Settings className="w-3.5 h-3.5 text-[#9cdcfe]" />;
-    if (file.language === 'javascript' || file.language === 'typescript') {
-      return <FileJson className="w-3.5 h-3.5 text-[#dcdcaa]" />;
-    }
-    if (file.language === 'rust') return <Cpu className="w-3.5 h-3.5 text-[#cca700]" />;
-    if (file.language === 'python') return <FileCode className="w-3.5 h-3.5 text-[#4ec9b0]" />;
-    return <FileText className="w-3.5 h-3.5 text-[#858585]" />;
-  };
-
   const searchResults = project.files.filter(
     (f) =>
-      f.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      f.content.toLowerCase().includes(searchQuery.toLowerCase())
+      !f.path.endsWith('/.gitkeep') &&
+      (f.path.toLowerCase().includes(globalSearchQuery.toLowerCase()) ||
+        (!f.isBinary && f.content.toLowerCase().includes(globalSearchQuery.toLowerCase())))
   );
 
   return (
@@ -337,11 +279,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {activeActivity === 'explorer' && (
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => setIsCreatingFile(true)}
+                  onClick={() => setCreateTrigger((prev) => ({ type: 'file', nonce: (prev?.nonce || 0) + 1 }))}
                   title="New File"
                   className="p-1 rounded text-[#858585] hover:text-[#ffffff] hover:bg-[#242424] transition cursor-pointer"
                 >
-                  <Plus className="w-3.5 h-3.5" />
+                  <FilePlus className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => setCreateTrigger((prev) => ({ type: 'folder', nonce: (prev?.nonce || 0) + 1 }))}
+                  title="New Folder"
+                  className="p-1 rounded text-[#858585] hover:text-[#ffffff] hover:bg-[#242424] transition cursor-pointer"
+                >
+                  <FolderPlus className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={onOpenProjectMenu}
@@ -365,171 +314,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Filter files..."
+                    placeholder="Filter files & folders..."
                     className="w-full bg-[#1f1f1f] border border-[#2d2d2d] rounded pl-7 pr-2 py-0.5 text-xs text-[#cccccc] placeholder:text-[#767676] outline-none focus:border-[#569cd6]"
                   />
                 </div>
               </div>
 
-              {/* Inline File Creator */}
-              {isCreatingFile && (
-                <form onSubmit={handleCreateSubmit} className="p-2 border-b border-[#2d2d2d] bg-[#1f1f1f]">
-                  <div className="text-[10px] text-[#858585] mb-1">New file name (e.g. state.manifest or lib.rs):</div>
-                  <input
-                    type="text"
-                    value={newFileName}
-                    onChange={(e) => setNewFileName(e.target.value)}
-                    autoFocus
-                    placeholder="utils.manifest"
-                    className="w-full bg-[#181818] border border-[#2d2d2d] rounded px-2 py-1 text-xs text-[#ffffff] outline-none focus:border-[#569cd6]"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') setIsCreatingFile(false);
-                    }}
-                  />
-                  <div className="flex justify-end gap-1 mt-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setIsCreatingFile(false)}
-                      className="px-2 py-0.5 rounded text-[10px] text-[#858585] hover:text-[#cccccc]"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="px-2 py-0.5 rounded text-[10px] bg-[#569cd6] text-white font-medium hover:bg-[#4f8bc4]"
-                    >
-                      Create
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              {/* Rename File Inline Form */}
-              {renamingPath && (
-                <form onSubmit={handleRenameSubmit} className="p-2 border-b border-[#2d2d2d] bg-[#1f1f1f]">
-                  <div className="text-[10px] text-[#858585] mb-1">Rename {renamingPath}:</div>
-                  <input
-                    type="text"
-                    value={renameValue}
-                    onChange={(e) => setRenameValue(e.target.value)}
-                    autoFocus
-                    className="w-full bg-[#181818] border border-[#2d2d2d] rounded px-2 py-1 text-xs text-[#ffffff] outline-none focus:border-[#569cd6]"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') setRenamingPath(null);
-                    }}
-                  />
-                  <div className="flex justify-end gap-1 mt-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setRenamingPath(null)}
-                      className="px-2 py-0.5 rounded text-[10px] text-[#858585]"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="submit"
-                      className="px-2 py-0.5 rounded text-[10px] bg-[#569cd6] text-white font-medium"
-                    >
-                      Save
-                    </button>
-                  </div>
-                </form>
-              )}
-
-              {/* Tree View */}
-              <div className="flex-1 overflow-y-auto px-1.5 py-1 space-y-0.5 custom-scrollbar">
-                {/* src/ folder */}
-                <div>
-                  <button
-                    onClick={() => setIsSrcOpen(!isSrcOpen)}
-                    className="w-full flex items-center gap-1.5 px-2 py-1 text-[#cccccc] hover:text-[#ffffff] text-xs rounded hover:bg-[#202020] cursor-pointer"
-                  >
-                    {isSrcOpen ? <ChevronDown className="w-3 h-3 text-[#858585]" /> : <ChevronRight className="w-3 h-3 text-[#858585]" />}
-                    {isSrcOpen ? <FolderOpen className="w-3.5 h-3.5 text-[#dcb67a]" /> : <Folder className="w-3.5 h-3.5 text-[#dcb67a]" />}
-                    <span>src</span>
-                  </button>
-
-                  {isSrcOpen && (
-                    <div className="pl-4 space-y-0.5">
-                      {srcFiles.map((file) => {
-                        const isSelected = activeFilePath === file.path;
-                        return (
-                          <div
-                            key={file.id}
-                            onClick={() => onSelectFile(file.path)}
-                            className={`group flex items-center justify-between px-2 py-1 rounded text-xs transition cursor-pointer ${
-                              isSelected ? 'bg-[#252526] text-[#ffffff] font-medium' : 'text-[#cccccc] hover:bg-[#202020]'
-                            }`}
-                          >
-                            <div className="flex items-center gap-2 truncate">
-                              {getFileIcon(file)}
-                              <span className="truncate">{file.name}</span>
-                            </div>
-
-                            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setRenamingPath(file.path);
-                                  setRenameValue(file.name);
-                                }}
-                                title="Rename"
-                                className="p-0.5 text-[#858585] hover:text-[#ffffff]"
-                              >
-                                <Edit2 className="w-3 h-3" />
-                              </button>
-                              {file.path !== 'src/main.manifest' && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    onDeleteFile(file.path);
-                                  }}
-                                  title="Delete"
-                                  className="p-0.5 text-[#858585] hover:text-[#f14c4c]"
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-
-                {/* Root Files */}
-                {rootFiles.map((file) => {
-                  const isSelected = activeFilePath === file.path;
-                  return (
-                    <div
-                      key={file.id}
-                      onClick={() => onSelectFile(file.path)}
-                      className={`group flex items-center justify-between px-2 py-1 rounded text-xs transition cursor-pointer ${
-                        isSelected ? 'bg-[#252526] text-[#ffffff] font-medium' : 'text-[#cccccc] hover:bg-[#202020]'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 truncate">
-                        {getFileIcon(file)}
-                        <span className="truncate">{file.name}</span>
-                      </div>
-                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setRenamingPath(file.path);
-                            setRenameValue(file.name);
-                          }}
-                          title="Rename"
-                          className="p-0.5 text-[#858585] hover:text-[#ffffff]"
-                        >
-                          <Edit2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              {/* Recursive File & Folder Tree */}
+              <ProjectTree
+                project={project}
+                activeFilePath={activeFilePath}
+                filterQuery={searchQuery}
+                createTrigger={createTrigger}
+                onSelectFile={onSelectFile}
+                onCreateFile={onCreateFile}
+                onRenameFile={onRenameFile}
+                onDeleteFile={onDeleteFile}
+              />
 
               {/* Bottom Quick Import Actions */}
               <div className="p-2 border-t border-[#2d2d2d] bg-[#181818] grid grid-cols-2 gap-1.5">
@@ -547,6 +348,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <Boxes className="w-3 h-3" />
                   <span>Project</span>
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* Search Activity View */}
+          {activeActivity === 'search' && (
+            <div className="flex-1 flex flex-col overflow-hidden p-2.5 space-y-2">
+              <div className="relative flex items-center">
+                <Search className="w-3.5 h-3.5 absolute left-2 text-[#858585] pointer-events-none" />
+                <input
+                  type="text"
+                  value={globalSearchQuery}
+                  onChange={(e) => setGlobalSearchQuery(e.target.value)}
+                  placeholder="Search across workspace..."
+                  autoFocus
+                  className="w-full bg-[#1f1f1f] border border-[#2d2d2d] rounded pl-7 pr-2 py-1 text-xs text-[#cccccc] placeholder:text-[#767676] outline-none focus:border-[#569cd6]"
+                />
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-1 custom-scrollbar">
+                {searchResults.map((file) => (
+                  <button
+                    key={file.path}
+                    onClick={() => onSelectFile(file.path)}
+                    className="w-full text-left p-2 rounded bg-[#1f1f1f] hover:bg-[#252526] border border-[#2d2d2d] transition cursor-pointer"
+                  >
+                    <div className="font-mono text-[11px] text-[#9cdcfe] truncate">{file.path}</div>
+                    {!file.isBinary && globalSearchQuery.trim() && (
+                      <div className="text-[10px] text-[#858585] truncate mt-0.5">
+                        {file.content
+                          .split('\n')
+                          .find((line) => line.toLowerCase().includes(globalSearchQuery.toLowerCase())) || ''}
+                      </div>
+                    )}
+                  </button>
+                ))}
               </div>
             </div>
           )}
@@ -584,7 +420,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <div className="grid grid-cols-2 gap-1.5 pt-1">
                       {walletState.network === 'devnet' && (
                         <button
-                          onClick={handleRequestAirdrop}
+                          onClick={async () => {
+                            setIsAirdropping(true);
+                            try {
+                              const res = await walletService.requestAirdrop();
+                              onShowToast?.(res.message);
+                            } catch (err: any) {
+                              onShowToast?.(err.message || 'Airdrop failed');
+                            } finally {
+                              setIsAirdropping(false);
+                            }
+                          }}
                           disabled={isAirdropping}
                           className="py-1 px-2 rounded bg-[#252526] hover:bg-[#2d2d2d] border border-[#2d2d2d] text-[10px] text-[#a78bfa] font-medium flex items-center justify-center gap-1 cursor-pointer"
                         >
@@ -741,6 +587,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   className="w-full accent-[#569cd6]"
                 />
               </div>
+
+              <label className="flex items-center justify-between p-2 rounded bg-[#1f1f1f] border border-[#2d2d2d] cursor-pointer">
+                <span className="text-xs text-[#cccccc]">Word Wrap</span>
+                <input
+                  type="checkbox"
+                  checked={settings.wordWrap}
+                  onChange={(e) => onUpdateSettings({ ...settings, wordWrap: e.target.checked })}
+                  className="accent-[#569cd6] cursor-pointer"
+                />
+              </label>
 
               <div className="pt-2 border-t border-[#2d2d2d] space-y-2">
                 {onOpenSettings && (

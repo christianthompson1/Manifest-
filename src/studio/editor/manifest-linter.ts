@@ -38,8 +38,8 @@ export const manifestLinter = linter((view: EditorView): Diagnostic[] => {
   try {
     const inspection = inspectManifest(source);
 
-    // 1. Validator semantic issues
-    if (inspection.validation && !inspection.validation.isValid) {
+    // 1. Validator semantic issues (both errors and warnings)
+    if (inspection.validation && inspection.validation.issues.length > 0) {
       for (const issue of inspection.validation.issues) {
         const { from, to } = getLineOffsets(view, issue.line || 1, issue.column || 1);
         let msg = issue.message;

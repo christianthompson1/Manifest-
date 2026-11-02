@@ -95,7 +95,15 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
           ];
         } else if (action === 'check') {
           const inspection = inspectManifest(currentSource);
-          if (inspection.validation.isValid) {
+          if (!inspection.validation) {
+            isError = true;
+            output = [
+              `[CHECK FAIL] Syntax error(s) detected:`,
+              ...(inspection.diagnostics || []).map(
+                (d: any) => `  • Line ${d.line || '?'}: ${d.message}`
+              ),
+            ];
+          } else if (inspection.validation.isValid) {
             output = ['[CHECK PASS] Syntax is valid. No semantic errors detected.'];
           } else {
             isError = true;
@@ -139,13 +147,16 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
               output = [
                 `[BUILD OK] Compiled target: ${target}`,
                 `Artifacts: ${compileRes.artifacts.length} file(s)`,
-                ...compileRes.artifacts.map((a: any) => `  • ${a.filename} (${a.sizeBytes} bytes)`),
+                ...compileRes.artifacts.map(
+                  (a: any) =>
+                    `  • ${a.fileName || a.filename || 'output.js'} (${a.sizeBytes ?? a.content?.length ?? 0} bytes)`
+                ),
               ];
             } else {
               isError = true;
               output = [
                 `[BUILD ERROR] Compilation to target "${target}" failed:`,
-                ...compileRes.diagnostics.map((d: any) => `  • ${d.message}`),
+                ...compileRes.diagnostics.map((d: any) => `  • Line ${d.line || '?'}: ${d.message}`),
               ];
             }
           } catch (e: any) {

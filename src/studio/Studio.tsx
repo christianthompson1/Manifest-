@@ -9,7 +9,7 @@
  * - Split Panes, Bottom Status Bar, and Mobile Touch Layout
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Play,
   Hammer,
@@ -63,7 +63,7 @@ import { runManifestPipeline } from './compiler-service.ts';
 import { ExecutionOrchestrator } from './execution/execution-orchestrator.ts';
 import { UnifiedExecutionResult } from './execution/execution-types.ts';
 import { Sidebar, ActivityTab } from './sidebar/Sidebar.tsx';
-import { CodeMirrorEditor } from './editor/CodeMirrorEditor.tsx';
+import { CodeMirrorEditor, evictCachedEditorState } from './editor/CodeMirrorEditor.tsx';
 import { PreviewPanel } from './preview/PreviewPanel.tsx';
 import { ConsolePanel } from './console/ConsolePanel.tsx';
 import { ProblemsPanel } from './problems/ProblemsPanel.tsx';
@@ -87,8 +87,15 @@ interface StudioProps {
 
 export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
   const [project, setProject] = useState<ManifestProject>(() => loadProjectFromStorage());
-  const [activeFilePath, setActiveFilePath] = useState<string>(project.activeFilePath || 'src/main.manifest');
-  const [openFilePaths, setOpenFilePaths] = useState<string[]>(['src/main.manifest', 'manifest.toml']);
+  const [activeFilePath, setActiveFilePath] = useState<string>(
+    project.activeFilePath || project.files[0]?.path || 'src/main.manifest'
+  );
+  const [openFilePaths, setOpenFilePaths] = useState<string[]>(() =>
+    project.files
+      .filter((f) => !f.path.endsWith('/.gitkeep'))
+      .slice(0, 3)
+      .map((f) => f.path)
+  );
   const [buildResult, setBuildResult] = useState<BuildResult | null>(null);
   const [executionResult, setExecutionResult] = useState<UnifiedExecutionResult | null>(null);
   const [isCompiling, setIsCompiling] = useState<boolean>(false);
@@ -135,21 +142,42 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
   const [isMobileActionsOpen, setIsMobileActionsOpen] = useState<boolean>(false);
   const [isLanguageModalOpen, setIsLanguageModalOpen] = useState<boolean>(false);
 
-  // Load project asynchronously from IndexedDB on initial mount
+  const isHydratedRef = useRef<boolean>(false);
+
+  // Load project asynchronously from IndexedDB on initial mount BEFORE enabling auto-save
   useEffect(() => {
+    let cancelled = false;
     loadProjectAsync().then((loadedProject) => {
+      if (cancelled) return;
+      isHydratedRef.current = true;
       setProject(loadedProject);
-      const activeP = loadedProject.activeFilePath || loadedProject.files[0]?.path || 'src/main.manifest';
+      const visibleFiles = loadedProject.files.filter((f) => !f.path.endsWith('/.gitkeep'));
+      const activeP =
+        loadedProject.activeFilePath && visibleFiles.some((f) => f.path === loadedProject.activeFilePath)
+          ? loadedProject.activeFilePath
+          : visibleFiles[0]?.path || 'src/main.manifest';
       setActiveFilePath(activeP);
-      const activeF = loadedProject.files.find((f) => f.path === activeP) || loadedProject.files[0];
-      handleRun(loadedProject, activeF);
+      setOpenFilePaths(visibleFiles.slice(0, 3).map((f) => f.path));
+      const activeF = visibleFiles.find((f) => f.path === activeP) || visibleFiles[0];
+      if (activeF) {
+        handleRun(loadedProject, activeF);
+      }
     });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Save project asynchronously to IndexedDB upon updates
+  // Save project asynchronously to IndexedDB only after initial hydration completes
   useEffect(() => {
-    saveProjectAsync(project);
-  }, [project]);
+    if (!isHydratedRef.current) return;
+    saveProjectAsync({ ...project, activeFilePath }).then((res) => {
+      if (!res.saved && res.error) {
+        addConsoleEntry(`[Storage Warning] ${res.error}`, 'error');
+        showToast('Warning: Workspace storage quota exceeded');
+      }
+    });
+  }, [project, activeFilePath]);
 
   // Save settings upon updates
   useEffect(() => {
@@ -158,9 +186,10 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
 
   // Active file object
   const activeFile = useMemo(() => {
+    const visible = project.files.filter((f) => !f.path.endsWith('/.gitkeep'));
     return (
-      project.files.find((f) => f.path === activeFilePath) ||
-      project.files[0] || {
+      visible.find((f) => f.path === activeFilePath) ||
+      visible[0] || {
         id: 'fallback',
         name: 'main.manifest',
         path: 'src/main.manifest',
@@ -172,17 +201,29 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
 
   // Split secondary file object
   const splitFile = useMemo(() => {
+    const visible = project.files.filter((f) => !f.path.endsWith('/.gitkeep'));
     return (
-      project.files.find((f) => f.path === splitFilePath) ||
-      project.files.find((f) => f.path !== activeFilePath) ||
-      project.files[0]
+      visible.find((f) => f.path === splitFilePath) ||
+      visible.find((f) => f.path !== activeFilePath) ||
+      visible[0]
     );
   }, [project.files, splitFilePath, activeFilePath]);
 
-  // Main Manifest source file for compilation
+  // Primary Manifest source file for CLI Terminal / Testbench inspection
   const mainManifestFile = useMemo(() => {
-    return project.files.find((f) => f.path === 'src/main.manifest') || activeFile;
-  }, [project.files, activeFile]);
+    if (activeFile.language === 'manifest' || activeFile.path.endsWith('.manifest')) {
+      return activeFile;
+    }
+    if (project.entryPath) {
+      const configured = project.files.find((f) => f.path === project.entryPath && f.path.endsWith('.manifest'));
+      if (configured) return configured;
+    }
+    return (
+      project.files.find((f) => f.path === 'src/main.manifest') ||
+      project.files.find((f) => f.path.endsWith('.manifest')) ||
+      activeFile
+    );
+  }, [project.files, project.entryPath, activeFile]);
 
   // Toast notification helper
   const showToast = (msg: string) => {
@@ -250,7 +291,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     }
   };
 
-  // Unified Run pipeline: uses ExecutionOrchestrator to detect and execute project
+  // Unified Run pipeline: uses ExecutionOrchestrator to detect and execute project deterministically
   const handleRun = useCallback(
     async (projOverride?: ManifestProject | React.MouseEvent | any, fileOverride?: ProjectFile) => {
       const isActualProject = projOverride && typeof projOverride === 'object' && 'files' in projOverride;
@@ -262,9 +303,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
 
       setIsCompiling(true);
       const orchestrator = ExecutionOrchestrator.getInstance();
-      const provider = orchestrator.selectProvider(currentProj, currentFile);
-
-      addConsoleEntry(`Running project "${currentProj.name}" via ${provider.name}...`, 'info');
+      addConsoleEntry(`Running "${currentFile.path}" in workspace "${currentProj.name}"...`, 'info');
 
       try {
         const res = await orchestrator.executeProject(currentProj, {
@@ -272,9 +311,14 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           target: 'js',
         });
 
+        // Discard superseded asynchronous runs so stale output never overwrites newer preview state
+        if (res.superseded) {
+          return;
+        }
+
         setExecutionResult(res);
 
-        // Create/update BuildResult for backward compatibility with existing inspector & components
+        // Create/update BuildResult for inspector & Problems panel
         const bRes: BuildResult = {
           success: res.success,
           timestamp: res.timestamp,
@@ -285,7 +329,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                   fileName:
                     res.projectKind === 'manifest'
                       ? `${(res.ir?.appName || 'app').toLowerCase()}.js`
-                      : currentFile.name,
+                      : res.resolvedEntryPath || currentFile.name,
                   fileType: res.projectKind === 'manifest' ? 'javascript' : currentFile.language,
                   content: res.outputCode,
                   sizeBytes: new Blob([res.outputCode]).size,
@@ -299,17 +343,22 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
         };
         setBuildResult(bRes);
 
+        for (const line of res.logs) {
+          addConsoleEntry(line, res.success ? 'build' : 'error');
+        }
+
         if (res.success) {
-          addConsoleEntry(`[${provider.name}] Execution ready in ${res.durationMs}ms`, 'build');
+          const entryLabel = res.resolvedEntryPath || currentFile.path;
           setIsPreviewOpen(true);
           setMobileActiveView('preview');
-          showToast(`Running "${currentFile.name}" in Preview`);
+          showToast(`Running "${entryLabel}" in Preview`);
 
           // If manifest code produced an output artifact, update build/ folder
           if (res.projectKind === 'manifest' && res.outputCode) {
             const appSlug = (res.ir?.appName || 'app').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
             const artifactPath = `build/${appSlug}.js`;
             setProject((prev) => {
+              if (prev.id !== currentProj.id) return prev;
               const hasBuild = prev.files.some((f) => f.path === artifactPath);
               const updated = hasBuild
                 ? prev.files.map((f) => (f.path === artifactPath ? { ...f, content: res.outputCode! } : f))
@@ -328,10 +377,12 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             });
           }
         } else {
-          const errorCount = res.diagnostics.filter((d) => d.severity === 'error').length;
-          addConsoleEntry(`Execution halted with ${errorCount} error(s). Check Problems panel.`, 'error');
+          const errorCount = res.diagnostics.filter((d) => d.severity === 'error').length || 1;
+          addConsoleEntry(`Execution halted with ${errorCount} error(s). Inspect Preview or Problems panel.`, 'error');
+          setIsPreviewOpen(true);
           setActiveBottomTab('problems');
           setIsBottomOpen(true);
+          showToast(`Execution halted (${currentFile.name})`);
         }
       } catch (err: any) {
         addConsoleEntry(`Execution failure: ${err.message || String(err)}`, 'error');
@@ -342,25 +393,65 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     [project, activeFile, activeFilePath, addConsoleEntry]
   );
 
-  // Build command: generates and registers build artifacts
+  // Build command: compiles Manifest -> build/<app>.js OR Static Web -> build/bundle.html
   const handleBuild = async () => {
-    if (activeFile.language !== 'manifest') {
-      const provider = LanguageRegistry.getInstance().detectProvider(activeFile.path);
-      const status = provider.getCapabilityStatus ? provider.getCapabilityStatus('localBuild') : 'Unsupported';
+    const langProvider = LanguageRegistry.getInstance().detectProvider(activeFile.path);
+    const buildStatus = langProvider.getCapabilityStatus
+      ? langProvider.getCapabilityStatus('localBuild')
+      : 'Unsupported';
+
+    if (buildStatus !== 'Available') {
       addConsoleEntry(
-        `[Language Registry] Cannot build "${activeFile.name}" locally. Language "${provider.name}" local build is ${status}.`,
+        `[Build] Cannot build "${activeFile.path}" locally. ${langProvider.name} local build is ${buildStatus}.`,
         'error'
       );
-      showToast(`${provider.name}: Local build is ${status}`);
+      showToast(`${langProvider.name}: Local build is ${buildStatus}`);
       return;
     }
 
     setIsCompiling(true);
-    addConsoleEntry(`Building project artifacts for "${project.name}" (Target: JS)...`, 'build');
 
     try {
-      const source = mainManifestFile.content;
-      const res = await runManifestPipeline(source, 'js');
+      // Static Web / JS local bundle build
+      if (activeFile.language === 'html' || activeFile.language === 'css' || activeFile.language === 'javascript') {
+        const orchestrator = ExecutionOrchestrator.getInstance();
+        const webRes = await orchestrator.executeProject(project, { activeFilePath: activeFile.path });
+        if (webRes.success && webRes.previewHtml) {
+          const bundlePath = 'build/bundle.html';
+          setProject((prev) => {
+            const withoutOldBundle = prev.files.filter((f) => f.path !== bundlePath);
+            return {
+              ...prev,
+              files: [
+                ...withoutOldBundle,
+                {
+                  id: `web-bundle-${Date.now()}`,
+                  name: 'bundle.html',
+                  path: bundlePath,
+                  language: 'html',
+                  content: webRes.previewHtml!,
+                  isReadOnly: true,
+                },
+              ],
+            };
+          });
+          addConsoleEntry(`Web bundle generated: ${bundlePath} (${webRes.previewHtml.length} bytes)`, 'build');
+          showToast(`Built ${bundlePath}`);
+        } else {
+          setExecutionResult(webRes);
+          addConsoleEntry(`Web build failed: ${webRes.error || 'Missing HTML entry'}`, 'error');
+        }
+        return;
+      }
+
+      // Manifest -> JavaScript artifact build
+      const targetManifest =
+        activeFile.language === 'manifest' || activeFile.path.endsWith('.manifest')
+          ? activeFile
+          : mainManifestFile;
+      addConsoleEntry(`Building "${targetManifest.path}" (Target: JS)...`, 'build');
+
+      const res = await runManifestPipeline(targetManifest.content, 'js');
       setBuildResult(res);
 
       if (res.success && res.outputCode) {
@@ -368,7 +459,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
         const artifactPath = `build/${appSlug}.js`;
 
         setProject((prev) => {
-          const filtered = prev.files.filter((f) => !f.path.startsWith('build/'));
+          const filtered = prev.files.filter((f) => f.path !== artifactPath);
           const newFiles: ProjectFile[] = [
             ...filtered,
             {
@@ -386,7 +477,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
         addConsoleEntry(`Artifact generated: ${artifactPath} (${res.artifacts[0]?.sizeBytes || 0} bytes)`, 'build');
         showToast(`Artifact built: ${artifactPath}`);
       } else {
-        addConsoleEntry(`Build failed. Inspect problems tab.`, 'error');
+        addConsoleEntry(`Build failed for "${targetManifest.path}". Inspect Problems tab.`, 'error');
         setActiveBottomTab('problems');
         setIsBottomOpen(true);
       }
@@ -395,91 +486,210 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     }
   };
 
-  // Handle template selection with immediate preview refresh
-  const handleSelectTemplate = (templateId: string) => {
-    const newProj = createDefaultProject(templateId);
+  // Helper to activate a newly selected/imported project without losing previous projects
+  const activateWorkspaceProject = (newProj: ManifestProject, toastLabel: string) => {
     setProject(newProj);
-    const entryPath = newProj.activeFilePath || newProj.files[0]?.path || 'src/main.manifest';
+    const visible = newProj.files.filter((f) => !f.path.endsWith('/.gitkeep'));
+    const entryPath =
+      (newProj.activeFilePath && visible.some((f) => f.path === newProj.activeFilePath)
+        ? newProj.activeFilePath
+        : undefined) ||
+      visible[0]?.path ||
+      'src/main.manifest';
     setActiveFilePath(entryPath);
-    const activeF = newProj.files.find((f) => f.path === entryPath) || newProj.files[0];
-    setOpenFilePaths(newProj.files.slice(0, 3).map((f) => f.path));
+    const activeF = visible.find((f) => f.path === entryPath) || visible[0];
+    setOpenFilePaths(visible.slice(0, 3).map((f) => f.path));
     setConsoleEntries([]);
     setExecutionResult(null);
     setBuildResult(null);
-    showToast(`Loaded template: ${newProj.name}`);
-    handleRun(newProj, activeF);
+    showToast(toastLabel);
+    if (activeF) {
+      handleRun(newProj, activeF);
+    }
   };
 
-  // Create new file in project
+  // Handle template selection with immediate preview refresh
+  const handleSelectTemplate = (templateId: string) => {
+    const newProj = createDefaultProject(templateId);
+    activateWorkspaceProject(newProj, `Loaded template: ${newProj.name}`);
+  };
+
+  // Create new file or folder placeholder in project
   const handleCreateFile = (path: string) => {
-    if (project.files.some((f) => f.path === path)) {
-      showToast('File already exists');
+    const cleanPath = path.replace(/^\/+/, '');
+    if (project.files.some((f) => f.path === cleanPath)) {
+      showToast('File or folder already exists');
       return;
     }
-    const name = path.split('/').pop() || path;
-    const isManifest = path.endsWith('.manifest');
+    const isGitKeep = cleanPath.endsWith('/.gitkeep');
+    const name = cleanPath.split('/').pop() || cleanPath;
+    const isManifest = cleanPath.endsWith('.manifest');
 
     const newFile: ProjectFile = {
-      id: `file-${Date.now()}`,
+      id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name,
-      path,
-      language: detectLanguage(path),
+      path: cleanPath,
+      language: detectLanguage(cleanPath),
       content: isManifest ? `APP "Module"\n\nPAGE Home\n    TEXT "Module loaded"\nEND\n` : '',
     };
 
     setProject((prev) => ({
       ...prev,
       files: [...prev.files, newFile],
-    }));
-    setActiveFilePath(path);
-    if (!openFilePaths.includes(path)) {
-      setOpenFilePaths((prev) => [...prev, path]);
-    }
-    showToast(`Created ${path}`);
-  };
-
-  // Rename file in project
-  const handleRenameFile = (oldPath: string, newPath: string) => {
-    if (oldPath === 'src/main.manifest') {
-      showToast('Cannot rename main.manifest entry point');
-      return;
-    }
-    if (project.files.some((f) => f.path === newPath)) {
-      showToast('A file with that name already exists');
-      return;
-    }
-    const newName = newPath.split('/').pop() || newPath;
-    setProject((prev) => ({
-      ...prev,
-      files: prev.files.map((f) =>
-        f.path === oldPath
-          ? { ...f, name: newName, path: newPath, language: detectLanguage(newPath) }
-          : f
-      ),
       updatedAt: Date.now(),
     }));
-    setOpenFilePaths((prev) => prev.map((p) => (p === oldPath ? newPath : p)));
-    if (activeFilePath === oldPath) {
-      setActiveFilePath(newPath);
+
+    if (isGitKeep) {
+      showToast(`Created folder ${cleanPath.slice(0, -9)}`);
+    } else {
+      setActiveFilePath(cleanPath);
+      if (!openFilePaths.includes(cleanPath)) {
+        setOpenFilePaths((prev) => [...prev, cleanPath]);
+      }
+      showToast(`Created ${cleanPath}`);
     }
-    showToast(`Renamed to ${newPath}`);
   };
 
-  // Delete file in project
-  const handleDeleteFile = (path: string) => {
-    if (path === 'src/main.manifest') {
-      showToast('Cannot delete main.manifest');
+  // Rename file or folder in project and update entry/HTML/TOML references
+  const handleRenameFile = (oldPath: string, newPath: string) => {
+    const cleanNew = newPath.replace(/^\/+|\/+$/g, '');
+    if (!cleanNew || cleanNew === oldPath) return;
+
+    const isDirectFile = project.files.some((f) => f.path === oldPath);
+    const isFolder = project.files.some((f) => f.path.startsWith(oldPath + '/'));
+    if (!isDirectFile && !isFolder) return;
+
+    const conflict = project.files.some(
+      (f) =>
+        f.path === cleanNew ||
+        (isFolder && f.path.startsWith(cleanNew + '/') && !f.path.startsWith(oldPath + '/'))
+    );
+    if (conflict) {
+      showToast('A file or folder with that name already exists');
       return;
     }
+
+    evictCachedEditorState(`${project.id}:${oldPath}`);
+
+    const mapPath = (p: string) => {
+      if (p === oldPath) return cleanNew;
+      if (isFolder && p.startsWith(oldPath + '/')) {
+        return cleanNew + p.slice(oldPath.length);
+      }
+      return p;
+    };
+
+    const oldFileName = oldPath.split('/').pop() || oldPath;
+    const newFileName = cleanNew.split('/').pop() || cleanNew;
+
+    setProject((prev) => {
+      const nextEntry = prev.entryPath ? mapPath(prev.entryPath) : prev.entryPath;
+      const updatedFiles = prev.files.map((f) => {
+        const mappedPath = mapPath(f.path);
+        const renamed =
+          mappedPath !== f.path
+            ? {
+                ...f,
+                name: mappedPath.split('/').pop() || mappedPath,
+                path: mappedPath,
+                language: detectLanguage(mappedPath),
+              }
+            : f;
+
+        // Keep manifest.toml entry reference synchronized
+        if (renamed.path === 'manifest.toml' && !renamed.isBinary) {
+          return {
+            ...renamed,
+            content: renamed.content.replace(
+              /entry\s*=\s*(["'])([^"']+)\1/,
+              (full, quote, val) => {
+                const updatedRef = mapPath(val.trim());
+                return updatedRef !== val.trim() ? `entry = ${quote}${updatedRef}${quote}` : full;
+              }
+            ),
+          };
+        }
+
+        // Keep local HTML asset/script/style href & src synchronized on file rename
+        if ((renamed.language === 'html' || renamed.path.endsWith('.html')) && !renamed.isBinary && isDirectFile) {
+          let htmlContent = renamed.content;
+          htmlContent = htmlContent
+            .split(`"${oldPath}"`).join(`"${cleanNew}"`)
+            .split(`'${oldPath}'`).join(`'${cleanNew}'`);
+          if (!oldPath.includes('/') && !cleanNew.includes('/')) {
+            htmlContent = htmlContent
+              .split(`"${oldFileName}"`).join(`"${newFileName}"`)
+              .split(`'${oldFileName}'`).join(`'${newFileName}'`);
+          }
+          if (htmlContent !== renamed.content) {
+            return { ...renamed, content: htmlContent };
+          }
+        }
+
+        return renamed;
+      });
+
+      return {
+        ...prev,
+        entryPath: nextEntry,
+        files: updatedFiles,
+        updatedAt: Date.now(),
+      };
+    });
+
+    setOpenFilePaths((prev) => prev.map(mapPath));
+    setActiveFilePath((prev) => mapPath(prev));
+    setSplitFilePath((prev) => mapPath(prev));
+    showToast(`Renamed ${oldPath} → ${cleanNew}`);
+  };
+
+  // Delete file or folder in project with reference & entry diagnostics
+  const handleDeleteFile = (targetPath: string) => {
+    const remaining = project.files.filter(
+      (f) => f.path !== targetPath && !f.path.startsWith(targetPath + '/')
+    );
+    const remainingVisible = remaining.filter((f) => !f.path.endsWith('/.gitkeep'));
+    if (remainingVisible.length === 0) {
+      showToast('Cannot delete the last file in the project');
+      return;
+    }
+
+    evictCachedEditorState(`${project.id}:${targetPath}`);
+
+    // Warn if deleted path was referenced in manifest.toml or HTML files
+    const toml = remaining.find((f) => f.path === 'manifest.toml');
+    const tomlEntry = toml?.content.match(/entry\s*=\s*["']([^"']+)["']/)?.[1];
+    if (
+      project.entryPath === targetPath ||
+      (project.entryPath && project.entryPath.startsWith(targetPath + '/')) ||
+      tomlEntry === targetPath
+    ) {
+      addConsoleEntry(
+        `[Workspace Warning] Deleted configured entry point "${targetPath}". Update entry point in Settings or manifest.toml before running.`,
+        'error'
+      );
+    }
+
     setProject((prev) => ({
       ...prev,
-      files: prev.files.filter((f) => f.path !== path),
+      entryPath:
+        prev.entryPath === targetPath || (prev.entryPath && prev.entryPath.startsWith(targetPath + '/'))
+          ? undefined
+          : prev.entryPath,
+      files: remaining,
+      updatedAt: Date.now(),
     }));
-    setOpenFilePaths((prev) => prev.filter((p) => p !== path));
-    if (activeFilePath === path) {
-      setActiveFilePath('src/main.manifest');
+
+    const nextOpen = openFilePaths.filter(
+      (p) => p !== targetPath && !p.startsWith(targetPath + '/')
+    );
+    const ensuredOpen = nextOpen.length > 0 ? nextOpen : [remainingVisible[0].path];
+    setOpenFilePaths(ensuredOpen);
+
+    if (activeFilePath === targetPath || activeFilePath.startsWith(targetPath + '/')) {
+      setActiveFilePath(ensuredOpen[0]);
     }
-    showToast(`Deleted ${path}`);
+    showToast(`Deleted ${targetPath}`);
   };
 
   const getFileIcon = (file: ProjectFile) => {
@@ -677,6 +887,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             onSelectFile={handleSelectFile}
             onCreateFile={handleCreateFile}
             onDeleteFile={handleDeleteFile}
+            onRenameFile={handleRenameFile}
             onSelectTemplate={handleSelectTemplate}
             onOpenDevTools={() => setIsTestbenchOpen(true)}
             onOpenProjectMenu={() => setIsProjectMenuOpen(true)}
@@ -756,11 +967,15 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             {/* Primary Left Editor Pane */}
             <div className="flex-1 h-full overflow-hidden flex flex-col bg-[#1f1f1f]">
               <CodeMirrorEditor
-                key={activeFile.path}
+                fileId={`${project.id}:${activeFile.path}`}
                 value={activeFile.content}
                 onChange={handleFileChange}
                 language={activeFile.language}
                 readOnly={activeFile.isReadOnly}
+                isBinary={activeFile.isBinary}
+                mimeType={activeFile.mimeType}
+                fontSize={settings.fontSize}
+                wordWrap={settings.wordWrap}
                 onRun={handleRun}
                 onSave={handleBuild}
                 onCursorChange={(line, col) => setCursorPos({ line, col })}
@@ -781,11 +996,13 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                       onChange={(e) => setSplitFilePath(e.target.value)}
                       className="bg-[#252526] border border-[#2d2d2d] rounded px-2 py-0.5 text-xs text-[#cccccc] outline-none"
                     >
-                      {project.files.map((f) => (
-                        <option key={f.path} value={f.path}>
-                          {f.name} ({f.path})
-                        </option>
-                      ))}
+                      {project.files
+                        .filter((f) => !f.path.endsWith('/.gitkeep'))
+                        .map((f) => (
+                          <option key={f.path} value={f.path}>
+                            {f.name} ({f.path})
+                          </option>
+                        ))}
                     </select>
                   </div>
                   <button
@@ -798,11 +1015,15 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                 </div>
                 <div className="flex-1 overflow-hidden bg-[#1f1f1f]">
                   <CodeMirrorEditor
-                    key={splitFile.path}
+                    fileId={`split:${project.id}:${splitFile.path}`}
                     value={splitFile.content}
                     onChange={handleSplitFileChange}
                     language={splitFile.language}
                     readOnly={splitFile.isReadOnly}
+                    isBinary={splitFile.isBinary}
+                    mimeType={splitFile.mimeType}
+                    fontSize={settings.fontSize}
+                    wordWrap={settings.wordWrap}
                     onRun={handleRun}
                     onSave={handleBuild}
                   />
@@ -1056,10 +1277,19 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
               onSelectFile={handleSelectFile}
               onCreateFile={handleCreateFile}
               onDeleteFile={handleDeleteFile}
+              onRenameFile={handleRenameFile}
               onSelectTemplate={handleSelectTemplate}
               onOpenDevTools={() => {
                 setMobileDrawerOpen(false);
                 setIsTestbenchOpen(true);
+              }}
+              onOpenProjectMenu={() => {
+                setMobileDrawerOpen(false);
+                setIsProjectMenuOpen(true);
+              }}
+              onOpenGitHubImport={() => {
+                setMobileDrawerOpen(false);
+                setIsGitHubImportOpen(true);
               }}
               settings={settings}
               onUpdateSettings={setSettings}
@@ -1394,29 +1624,14 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
         onOpenTemplate={(tplId, customName) => {
           const newProj = createDefaultProject(tplId);
           if (customName) newProj.name = customName;
-          setProject(newProj);
-          const entryPath = newProj.activeFilePath || newProj.files[0]?.path || 'src/main.manifest';
-          setActiveFilePath(entryPath);
-          setOpenFilePaths(newProj.files.slice(0, 3).map((f) => f.path));
-          setConsoleEntries([]);
-          showToast(`Loaded ${newProj.name}`);
           setIsWelcomeOpen(false);
           localStorage.setItem('manifest_studio_seen_welcome_v02', 'true');
-          setTimeout(() => {
-            handleRun();
-          }, 50);
+          activateWorkspaceProject(newProj, `Loaded ${newProj.name}`);
         }}
         onImportProject={(importedProj) => {
-          setProject(importedProj);
-          setActiveFilePath(importedProj.activeFilePath || importedProj.files[0]?.path || 'src/main.manifest');
-          setOpenFilePaths(importedProj.files.slice(0, 3).map((f) => f.path));
-          setConsoleEntries([]);
-          showToast(`Imported ${importedProj.name}`);
           setIsWelcomeOpen(false);
           localStorage.setItem('manifest_studio_seen_welcome_v02', 'true');
-          setTimeout(() => {
-            handleRun();
-          }, 50);
+          activateWorkspaceProject(importedProj, `Imported ${importedProj.name}`);
         }}
         onOpenTestbench={onSwitchToTestbench || (() => setIsTestbenchOpen(true))}
       />
@@ -1427,18 +1642,11 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
         onClose={() => setIsProjectMenuOpen(false)}
         project={project}
         onUpdateProject={(newProj) => {
-          setProject(newProj);
-          setActiveFilePath(newProj.activeFilePath || newProj.files[0]?.path || 'src/main.manifest');
-          setOpenFilePaths(newProj.files.slice(0, 3).map((f) => f.path));
+          activateWorkspaceProject(newProj, `Opened ${newProj.name}`);
         }}
         onShowToast={showToast}
         onSelectTemplate={(tplId) => {
-          const newProj = createDefaultProject(tplId);
-          setProject(newProj);
-          const entryPath = newProj.activeFilePath || newProj.files[0]?.path || 'src/main.manifest';
-          setActiveFilePath(entryPath);
-          setOpenFilePaths(newProj.files.slice(0, 3).map((f) => f.path));
-          showToast(`Loaded ${newProj.name}`);
+          handleSelectTemplate(tplId);
         }}
       />
 
@@ -1447,9 +1655,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
         isOpen={isGitHubImportOpen}
         onClose={() => setIsGitHubImportOpen(false)}
         onImportProject={(importedProj) => {
-          setProject(importedProj);
-          setActiveFilePath(importedProj.activeFilePath || importedProj.files[0]?.path || 'src/main.manifest');
-          setOpenFilePaths(importedProj.files.slice(0, 3).map((f) => f.path));
+          activateWorkspaceProject(importedProj, `Imported ${importedProj.name}`);
         }}
         onShowToast={showToast}
       />

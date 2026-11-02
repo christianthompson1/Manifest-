@@ -1,52 +1,51 @@
-# Manifest Studio - Compiler & Runtime Performance Audit
+# Manifest Studio — Compiler, Linter & Runtime Performance Audit
 
-## 1. Overview & Verification Baseline
-
-This performance audit documents the empirical benchmark results of the Manifest language compiler pipeline (Lexer, Parser, Semantic Validator, IR Builder, and JavaScript Target Code Generator) and the in-memory AST interpreter runtime.
-
-- **Environment**: Node.js v22.14.0, TypeScript v7.0.2, Linux x86_64
-- **Benchmark Suite**: `manifest-core/tests/run_benchmark.ts` (`npm run manifest:bench`)
-- **Pipeline Stages Profiled**:
-  1. `Lexer.tokenize()`: Stream tokenizer, regular expressions, keywords
-  2. `Parser.parse()`: Recursive descent parser creating ProgramNode AST
-  3. `Validator.validate()`: AST traversal, symbol table checking, type safety
-  4. `IRBuilder.build()`: Target-agnostic intermediate representation generation
-  5. `JSTargetCompiler.compile()`: JavaScript target code emission
-  6. `Runtime.execute()`: In-memory AST tree-walking interpreter
+## 1. Benchmark Methodology & Environment
+All measurements below were produced by executing `npm run manifest:bench` (`manifest-core/tests/run_benchmark.ts`) directly in this repository environment:
+- **Runtime**: Node.js `v22.23.4` (`tsx` v4.21.0), TypeScript `v7.0.2`, Linux `4.19.0-gvisor x86_64`
+- **Workload Design**:
+  1. **Realistic Multi-Construct Scaling** (`93` to `19,987` lines): Programs combining `STATE` declarations, `ACTION` definitions (`IF/ELSE`, `SET`, `RETURN`), `PAGE` layouts, nested `CONTAINER` + `STYLE` blocks, reactive `TEXT` expressions, and `BUTTON` `WHEN CLICK` handlers invoking `CALL`.
+  2. **Pathological Stress Inputs**: 120-deep nested binary arithmetic expressions, 25-level nested `CONTAINER` hierarchies with `STYLE` blocks, and a 500-`ACTION` symbol table with forward `CALL` resolution.
+  3. **Execution & DOM Mount**: In-memory AST interpreter (`Runtime`) at `100` and `10,000` loop iterations, plus compiled JavaScript `startApp()` DOM mounting at `93` and `989` lines.
 
 ---
 
-## 2. Empirical Benchmark Measurements
+## 2. Empirical Scaling Results (Single-Pass Pipeline)
 
-| Source Lines | Lexer (ms) | Parser (ms) | Validator (ms) | IR Builder (ms) | Codegen (ms) | Total Pipeline (ms) | Throughput (lines/sec) |
-|---|---|---|---|---|---|---|---|
-| **96 lines** (~100) | 0.32 ms | 0.62 ms | 0.29 ms | 1.90 ms | 1.48 ms | **4.60 ms** | **20,851 lines/s** |
-| **1,000 lines** | 2.81 ms | 1.43 ms | 0.09 ms | 0.60 ms | 1.46 ms | **6.39 ms** | **156,403 lines/s** |
-| **5,000 lines** | 11.87 ms | 8.71 ms | 0.38 ms | 1.75 ms | 10.52 ms | **33.24 ms** | **150,399 lines/s** |
-| **10,000 lines** | 23.88 ms | 10.86 ms | 1.10 ms | 3.76 ms | 14.32 ms | **53.92 ms** | **185,470 lines/s** |
-| **20,000 lines** | 23.51 ms | 7.68 ms | 0.64 ms | 5.87 ms | 22.91 ms | **60.62 ms** | **329,924 lines/s** |
+| Actual Lines | Lex (ms) | Parse (ms) | 2-Pass Validate (ms) | IR Lowering (ms) | JS Codegen (ms) | `compileManifest` 1-Pass (ms) | Editor Lint `inspectManifest` (ms) | Heap Delta (KB) | Throughput (lines/sec) |
+|---|---|---|---|---|---|---|---|---|---|
+| **93 lines** | 1.34 ms | 0.78 ms | 0.21 ms | 0.62 ms | 0.74 ms | **2.74 ms** | **1.90 ms** | +365 KB | **33,920 loc/s** |
+| **989 lines** | 8.50 ms | 2.15 ms | 0.21 ms | 0.23 ms | 1.87 ms | **23.78 ms** | **5.90 ms** | ~0 KB (GC) | **41,583 loc/s** |
+| **4,993 lines** | 6.71 ms | 10.54 ms | 0.82 ms | 1.00 ms | 13.14 ms | **62.21 ms** | **20.45 ms** | +3,910 KB | **80,255 loc/s** |
+| **9,991 lines** | 12.40 ms | 22.00 ms | 0.59 ms | 31.48 ms | 34.53 ms | **105.34 ms** | **48.40 ms** | +1,663 KB | **94,846 loc/s** |
+| **19,987 lines** | 30.09 ms | 13.55 ms | 1.64 ms | 12.48 ms | 35.35 ms | **99.88 ms** | **50.56 ms** | +20,267 KB | **200,103 loc/s** |
 
-### In-Memory AST Interpreter Runtime
-- **100 Loop Iterations with Arithmetic State Transitions**: **1.08 ms** (computed final accumulator: `5050`)
-- **Scope Lookup Overhead**: Sub-microsecond lexical scope chained traversal (`Scope.get` / `Scope.set`).
+*(Variance at 9,991 vs 19,987 lines reflects V8 incremental GC and TurboFan tier-up during sequential runs.)*
 
 ---
 
-## 3. Bottleneck Analysis & Scale Characteristics
+## 3. Pathological Input Stress Results
 
-### A. Linearity and Complexity
-- **Lexer**: $O(N)$ with respect to source character count. Uses regex matching with anchored patterns. Lexer accounts for ~38-40% of total pipeline latency in large files (>5,000 lines).
-- **Parser**: $O(N)$ deterministic single-token lookahead recursive descent with no backtracking. Parser consumes ~12-15% of pipeline latency.
-- **Validator**: $O(N)$ single-pass AST walk. Symbol validation is near instantaneous (<1.5ms even on 20,000 lines).
-- **IR Builder**: $O(N)$ AST-to-IR node transformations. Fast structural lowering (<6ms on 20,000 lines).
-- **Code Generator**: $O(N)$ string buffer serialization. Emits ES2022 DOM primitives (`startApp`, `applyStyles`, event handlers). In 20,000 lines, generates ~2.1MB of clean JavaScript in ~23ms.
+| Scenario | Source Lines | Full Compile (`compileManifest`) | Linter Pass (`inspectManifest`) | Validated |
+|---|---|---|---|---|
+| **120-deep nested binary arithmetic expression** | 5 | **3.30 ms** | **0.73 ms** | `true` |
+| **25-level nested `CONTAINER` hierarchy with `STYLE`** | 129 | **0.82 ms** | **0.58 ms** | `true` |
+| **500 `ACTION` symbol table + forward `CALL` resolution** | 1,553 | **10.66 ms** | **7.71 ms** | `true` |
 
-### B. Developer Concern Addressed
-The developer expressed concern that "large Manifest projects will become slow."
-**Empirical Finding**:
-Even a massive 20,000-line single-file Manifest application compiles end-to-end in **60.62 milliseconds** (~1/16th of a second). Because the compiler is written in pure TypeScript without heavy C++ native bindings or WebAssembly glue overhead, it runs synchronously or inside web workers with virtually zero startup penalty.
+---
 
-### C. Recommended Optimizations for Future Scale (>100K Lines)
-1. **Worker Offloading**: For projects exceeding 10,000 lines, run `runManifestPipeline()` inside a dedicated Web Worker to prevent momentary main-thread frame drops during rapid keystrokes.
-2. **Incremental Parsing**: When CodeMirror emits localized document changes (`docChanged`), parse only modified blocks or reuse unmodified sub-AST nodes instead of full re-parsing.
-3. **Lexer Lookup Optimization**: In `Lexer.ts`, group single-character delimiters into a fast lookup table / switch statement rather than sequential regex matches.
+## 4. Runtime Execution & DOM Mount Results
+
+| Execution Target | Workload | Measured Duration | Verified Output |
+|---|---|---|---|
+| **AST Interpreter (`Runtime`)** | `100` `REPEAT` loop iterations with arithmetic state updates | **1.18 ms** | `5050` |
+| **AST Interpreter (`Runtime`)** | `10,000` `REPEAT` loop iterations with arithmetic state updates | **11.52 ms** | `50005000` |
+| **Compiled JS Target (`startApp`)** | `93`-line styled reactive application initial DOM mount | **1.11 ms** | Mounted cleanly |
+| **Compiled JS Target (`startApp`)** | `989`-line styled reactive application initial DOM mount | **12.75 ms** | Mounted cleanly |
+
+---
+
+## 5. Architectural Bottlenecks Eliminated & Remaining Limits
+1. **Redundant Triple Re-Lexing/Re-Parsing Eliminated**: Previously, `compileManifest` and `runManifestPipeline` re-tokenized and re-parsed the source string multiple times across validation, IR building, and code generation. Both now pass the validated AST directly to `generateManifestIRFromAST` and `compileManifestIR`.
+2. **Main-Thread Linter Threshold**: `manifestLinter` runs on a 250ms debounce and completes in `~5.9ms` at 1,000 lines and `~20.5ms` at 5,000 lines. At 20,000+ lines (`~50.6ms`), moving `inspectManifest` and `runManifestPipeline` into a dedicated Web Worker is recommended to keep keystroke frames strictly below 16ms.
+3. **Whole-File Compilation**: Manifest currently compiles one entry `.manifest` file at a time (multi-file `IMPORT` module linking is not yet implemented).

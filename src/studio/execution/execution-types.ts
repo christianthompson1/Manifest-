@@ -49,6 +49,8 @@ export interface UnifiedExecutionResult {
   providerId: string;
   projectKind: ProjectKind;
   previewKind: PreviewKind;
+  resolvedEntryPath?: string;
+  superseded?: boolean;
   previewHtml?: string;
   outputCode?: string;
   diagnostics: StudioDiagnostic[];

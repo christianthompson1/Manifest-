@@ -12,6 +12,7 @@ import { runGitHubImportTests } from './run_github_import_tests.ts';
 import { runMobileControlsTests } from './run_mobile_controls_tests.ts';
 import { runStyledDashboardTests } from './run_styled_dashboard_tests.ts';
 import { runOrchestratorTests } from './run_orchestrator_tests.ts';
+import { runAuditVerificationTests } from './run_audit_verification_tests.ts';
 
 interface TestCase {
   name: string;
@@ -449,9 +450,21 @@ export async function runAllTests(): Promise<{ passed: number; failed: number; t
   const orchFailed = orchSummary.failed;
   const orchTotal = orchSummary.total;
 
-  const totalPassed = oldPassed + v02Passed + v03Passed + v04Passed + ghPassed + mobilePassed + styledPassed + orchPassed;
-  const totalFailed = oldFailed + v02Failed + v03Failed + v04Failed + ghFailed + mobileFailed + styledFailed + orchFailed;
-  const grandTotal = oldTotal + v02Total + v03Total + v04Total + ghTotal + mobileTotal + styledTotal + orchTotal;
+  // Run Integrated Engineering Audit & Parity Verification Tests
+  let auditSummary = { passed: 0, failed: 0, total: 0 };
+  try {
+    auditSummary = await runAuditVerificationTests();
+  } catch (err: any) {
+    console.error('Audit verification suite fatal error:', err);
+    auditSummary = { passed: 0, failed: 1, total: 1 };
+  }
+  const auditPassed = auditSummary.passed;
+  const auditFailed = auditSummary.failed;
+  const auditTotal = auditSummary.total;
+
+  const totalPassed = oldPassed + v02Passed + v03Passed + v04Passed + ghPassed + mobilePassed + styledPassed + orchPassed + auditPassed;
+  const totalFailed = oldFailed + v02Failed + v03Failed + v04Failed + ghFailed + mobileFailed + styledFailed + orchFailed + auditFailed;
+  const grandTotal = oldTotal + v02Total + v03Total + v04Total + ghTotal + mobileTotal + styledTotal + orchTotal + auditTotal;
 
   console.log('\n====================================================');
   console.log('MANIFEST APPLICATION LANGUAGE TEST REPORT');
@@ -464,6 +477,7 @@ export async function runAllTests(): Promise<{ passed: number; failed: number; t
   console.log(`Mobile IDE controls tests:\n${mobilePassed}/${mobileTotal} (passed: ${mobilePassed}, failed: ${mobileFailed})\n`);
   console.log(`Styled Dashboard verification tests:\n${styledPassed}/${styledTotal} (passed: ${styledPassed}, failed: ${styledFailed})\n`);
   console.log(`Execution Orchestrator tests:\n${orchPassed}/${orchTotal} (passed: ${orchPassed}, failed: ${orchFailed})\n`);
+  console.log(`Integrated Audit & Parity tests:\n${auditPassed}/${auditTotal} (passed: ${auditPassed}, failed: ${auditFailed})\n`);
   console.log(`Grand Total:\n${totalPassed}/${grandTotal} (passed: ${totalPassed}, failed: ${totalFailed})`);
   console.log('====================================================\n');
 

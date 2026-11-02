@@ -19,15 +19,15 @@ export class ManifestExecutionProvider implements ExecutionProvider {
   }
 
   public async validate(project: ManifestProject, activeFile?: ProjectFile): Promise<{ isValid: boolean; diagnostics: StudioDiagnostic[] }> {
-    const entryFile = this.resolveEntryFile(project, activeFile);
-    if (!entryFile) {
+    const resolved = this.resolveEntryFile(project, activeFile);
+    if (!resolved.file) {
       return {
         isValid: false,
         diagnostics: [
           {
             line: 1,
             column: 1,
-            message: 'No Manifest entry file found (expected src/main.manifest or active .manifest file).',
+            message: resolved.error || 'No Manifest entry file found (expected src/main.manifest or active .manifest file).',
             severity: 'error',
             source: 'validator',
           },
@@ -35,7 +35,7 @@ export class ManifestExecutionProvider implements ExecutionProvider {
       };
     }
 
-    const res = await runManifestPipeline(entryFile.content, 'js');
+    const res = await runManifestPipeline(resolved.file.content, 'js');
     return {
       isValid: res.success,
       diagnostics: res.diagnostics,
@@ -45,9 +45,11 @@ export class ManifestExecutionProvider implements ExecutionProvider {
   public async execute(project: ManifestProject, options: ExecutionOptions = {}): Promise<UnifiedExecutionResult> {
     const startTime = performance.now();
     const runId = options.runId || `manifest-run-${Date.now()}`;
-    const entryFile = this.resolveEntryFile(project, options.activeFilePath ? project.files.find((f) => f.path === options.activeFilePath) : undefined);
+    const activeFile = options.activeFilePath ? project.files.find((f) => f.path === options.activeFilePath) : undefined;
+    const resolved = this.resolveEntryFile(project, activeFile);
 
-    if (!entryFile) {
+    if (!resolved.file) {
+      const errMessage = resolved.error || 'No Manifest entry file found in project.';
       return {
         runId,
         timestamp: Date.now(),
@@ -59,17 +61,18 @@ export class ManifestExecutionProvider implements ExecutionProvider {
           {
             line: 1,
             column: 1,
-            message: 'No Manifest entry file found in project.',
+            message: errMessage,
             severity: 'error',
             source: 'compiler',
           },
         ],
-        logs: ['[Manifest Provider] Error: No Manifest entry file found.'],
+        logs: [`[Manifest Provider] Error: ${errMessage}`],
         durationMs: Math.round(performance.now() - startTime),
-        error: 'No Manifest entry file found in project.',
+        error: errMessage,
       };
     }
 
+    const entryFile = resolved.file;
     const pipelineRes = await runManifestPipeline(entryFile.content, options.target || 'js');
     const durationMs = Math.round(performance.now() - startTime);
 
@@ -81,7 +84,8 @@ export class ManifestExecutionProvider implements ExecutionProvider {
         providerId: this.id,
         projectKind: 'manifest',
         previewKind: 'diagnostic-error',
-        previewHtml: this.generateErrorHtml(entryFile.name, pipelineRes.diagnostics),
+        resolvedEntryPath: entryFile.path,
+        previewHtml: this.generateErrorHtml(entryFile.path, pipelineRes.diagnostics),
         outputCode: pipelineRes.outputCode,
         diagnostics: pipelineRes.diagnostics,
         logs: pipelineRes.diagnostics.map((d) => `[${d.severity.toUpperCase()}] line ${d.line}: ${d.message}`),
@@ -100,10 +104,11 @@ export class ManifestExecutionProvider implements ExecutionProvider {
       providerId: this.id,
       projectKind: 'manifest',
       previewKind: 'manifest-canvas',
+      resolvedEntryPath: entryFile.path,
       previewHtml,
       outputCode: pipelineRes.outputCode,
       diagnostics: pipelineRes.diagnostics,
-      logs: [`Program "${entryFile.name}" compiled and mounted in ${durationMs}ms`],
+      logs: [`Program "${entryFile.path}" compiled and mounted in ${durationMs}ms`],
       durationMs,
       ir: pipelineRes.ir,
     };
@@ -130,28 +135,52 @@ export class ManifestExecutionProvider implements ExecutionProvider {
     return true; // 100% self-contained in browser memory & web workers
   }
 
-  private resolveEntryFile(project: ManifestProject, activeFile?: ProjectFile): ProjectFile | undefined {
-    // 1. If active file is a manifest file, prioritize user intent
+  private resolveEntryFile(
+    project: ManifestProject,
+    activeFile?: ProjectFile
+  ): { file?: ProjectFile; error?: string } {
+    // 1. If active file is a .manifest file, execute the exact file the user has open
     if (activeFile && (activeFile.language === 'manifest' || activeFile.path.endsWith('.manifest'))) {
-      return activeFile;
+      return { file: activeFile };
     }
 
-    // 2. Look for manifest.toml entry declaration
+    // 2. Explicit project.entryPath if configured
+    if (project.entryPath) {
+      const explicit = project.files.find((f) => f.path === project.entryPath);
+      if (explicit) return { file: explicit };
+      return {
+        error: `Configured project entry file "${project.entryPath}" does not exist in workspace.`,
+      };
+    }
+
+    // 3. Look for manifest.toml entry declaration (never silently switch if declared entry was deleted!)
     const tomlFile = project.files.find((f) => f.path === 'manifest.toml' || f.name === 'manifest.toml');
     if (tomlFile) {
       const match = tomlFile.content.match(/entry\s*=\s*["']([^"']+)["']/);
       if (match && match[1]) {
-        const declared = project.files.find((f) => f.path === match[1] || f.path.endsWith(match[1]));
-        if (declared) return declared;
+        const configuredPath = match[1].trim();
+        const declared = project.files.find((f) => f.path === configuredPath);
+        if (declared) return { file: declared };
+        return {
+          error: `Entry file "${configuredPath}" declared in manifest.toml was not found in project.`,
+        };
       }
     }
 
-    // 3. Fallback to standard convention: src/main.manifest
+    // 4. Fallback to standard convention: src/main.manifest
     const convention = project.files.find((f) => f.path === 'src/main.manifest');
-    if (convention) return convention;
+    if (convention) return { file: convention };
 
-    // 4. Any .manifest file in the project
-    return project.files.find((f) => f.language === 'manifest' || f.path.endsWith('.manifest'));
+    // 5. Single .manifest file in project
+    const manifestFiles = project.files.filter((f) => f.language === 'manifest' || f.path.endsWith('.manifest'));
+    if (manifestFiles.length === 1) {
+      return { file: manifestFiles[0] };
+    }
+    if (manifestFiles.length > 1) {
+      return { file: manifestFiles[0] };
+    }
+
+    return { error: 'No Manifest (.manifest) entry file found in project.' };
   }
 
   private generateCanvasHtml(title: string, compiledJs: string, ir?: any): string {

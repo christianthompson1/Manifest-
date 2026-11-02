@@ -1,5 +1,5 @@
 # Manifest Studio — Auto-Generated Repository Context Summary
-Generated at: 2026-10-21T01:18:58.196Z
+Generated at: 2026-11-01T16:54:47.225Z
 
 ## Package & Dependency Baseline
 - Application: react-example (v0.0.0)
@@ -8,17 +8,18 @@ Generated at: 2026-10-21T01:18:58.196Z
 
 ## Component Distribution
 - Manifest Core: 31 source files
-- Studio UI & Services: 39 source files
-- Automated Test Suites: 10 test runners
+- Studio UI & Services: 40 source files
+- Automated Test Suites: 13 test runners
 
 ## Key Architecture Subsystems
-- Manifest Parser & Validator: `manifest-core/src/parser/parser.ts`, `manifest-core/src/validator/validator.ts`
-- Manifest IR & JS Compiler: `manifest-core/src/ir/ir-builder.ts`, `manifest-core/src/compiler/targets/js-target.ts`
-- Execution Orchestrator: `src/studio/execution/execution-orchestrator.ts`
-- Static Web Provider: `src/studio/execution/static-web-execution-provider.ts`
+- Manifest Single-Pass Compiler & Two-Pass Validator: `manifest-core/src/compiler/compiler.ts`, `manifest-core/src/parser/parser.ts`, `manifest-core/src/validator/validator.ts`
+- Manifest IR, JS Target & Parity Runtime: `manifest-core/src/ir/ir-builder.ts`, `manifest-core/src/compiler/targets/js-target.ts`, `manifest-core/src/runtime/runtime.ts`
+- Execution Orchestrator & Providers: `src/studio/execution/execution-orchestrator.ts`, `manifest-execution-provider.ts`, `static-web-execution-provider.ts`, `wasm-execution-provider.ts`
+- CodeMirror 6 Editor & Recursive Explorer: `src/studio/editor/CodeMirrorEditor.tsx`, `src/studio/explorer/ProjectTree.tsx`
 - Sandboxed Preview: `src/studio/preview/PreviewPanel.tsx`
 
 ## Verification Commands
 - TypeScript typecheck: `npm run lint`
-- Manifest language & provider tests: `npm run manifest:test`
+- Manifest language, parity, .wasm & provider tests: `npm run manifest:test`
+- Compiler & runtime benchmarks: `npm run manifest:bench`
 - Production bundle: `npm run build`

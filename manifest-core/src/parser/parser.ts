@@ -236,12 +236,13 @@ export class Parser {
       const tok = this.advance();
       const content = this.parseExpression();
       return {
-        type: 'Text',
+        type: 'Badge',
+        text: content,
         content,
         styles: { badge: 'true' },
         line: tok.line,
         column: tok.column,
-      };
+      } as any;
     }
 
     if (valUpper === 'PROGRESS') {
@@ -250,6 +251,56 @@ export class Parser {
       return {
         type: 'Progress',
         value,
+        line: tok.line,
+        column: tok.column,
+      };
+    }
+
+    if (valUpper === 'HEADING') {
+      const tok = this.advance();
+      const content = this.parseExpression();
+      let styles: Record<string, string> = { fontSize: '24px', fontWeight: '700' };
+      this.skipNewlines();
+      if (this.match(TokenType.STYLE)) {
+        styles = { ...styles, ...this.parseStyleBlock() };
+      }
+      return {
+        type: 'Text',
+        content,
+        styles,
+        line: tok.line,
+        column: tok.column,
+      };
+    }
+
+    if (valUpper === 'ICON') {
+      const tok = this.advance();
+      const name = this.parseExpression();
+      return {
+        type: 'Icon',
+        name,
+        line: tok.line,
+        column: tok.column,
+      } as any;
+    }
+
+    if (valUpper === 'CSS' && this.tokens[this.current + 1]?.type === TokenType.STRING) {
+      const tok = this.advance();
+      const cssStr = this.advance().value;
+      return {
+        type: 'CssEscape',
+        css: cssStr,
+        line: tok.line,
+        column: tok.column,
+      };
+    }
+
+    if (valUpper === 'JS' && this.tokens[this.current + 1]?.type === TokenType.STRING) {
+      const tok = this.advance();
+      const jsStr = this.advance().value;
+      return {
+        type: 'JsEscape',
+        code: jsStr,
         line: tok.line,
         column: tok.column,
       };
@@ -882,7 +933,16 @@ export class Parser {
   private parseRouteDeclaration(): RouteDeclarationNode {
     const tok = this.previous();
     const path = this.advance().value.replace(/['"]/g, '');
-    this.consume(TokenType.TO, 'Expected TO after route path');
+    if (this.match(TokenType.TO)) {
+      // ROUTE "/path" TO PageName
+    } else if (this.peek().value === '->') {
+      this.advance();
+    } else if (this.check(TokenType.MINUS) && this.tokens[this.current + 1]?.type === TokenType.GREATER) {
+      this.advance();
+      this.advance();
+    } else {
+      this.consume(TokenType.TO, 'Expected TO or -> after route path');
+    }
     const pageName = this.advance().value.replace(/['"]/g, '');
 
     return {
@@ -1444,11 +1504,47 @@ export class Parser {
   }
 
   private parseFactor(): ExpressionNode {
-    let expr = this.parsePrimary();
+    let expr = this.parseUnary();
     while (this.match(TokenType.STAR) || this.match(TokenType.SLASH) || this.match(TokenType.PERCENT)) {
       const op = this.previous().value;
-      const right = this.parsePrimary();
+      const right = this.parseUnary();
       expr = { type: 'BinaryExpression', operator: op, left: expr, right, line: expr.line, column: expr.column };
+    }
+    return expr;
+  }
+
+  private parseUnary(): ExpressionNode {
+    if (this.matchIdentifier('NOT') || this.matchIdentifier('!')) {
+      const tok = this.previous();
+      const argument = this.parseUnary();
+      return { type: 'UnaryExpression', operator: 'NOT', argument, line: tok.line, column: tok.column };
+    }
+    if (this.match(TokenType.MINUS)) {
+      const tok = this.previous();
+      const argument = this.parseUnary();
+      return { type: 'UnaryExpression', operator: '-', argument, line: tok.line, column: tok.column };
+    }
+    if (this.match(TokenType.PLUS)) {
+      const tok = this.previous();
+      const argument = this.parseUnary();
+      return { type: 'UnaryExpression', operator: '+', argument, line: tok.line, column: tok.column };
+    }
+    return this.parsePostfix();
+  }
+
+  private parsePostfix(): ExpressionNode {
+    let expr = this.parsePrimary();
+    while (this.check(TokenType.LBRACKET) && this.peek().line === expr.line) {
+      const tok = this.advance();
+      const index = this.parseExpression();
+      this.consume(TokenType.RBRACKET, 'Expected ] after index expression');
+      expr = {
+        type: 'IndexAccess',
+        target: expr,
+        index,
+        line: tok.line,
+        column: tok.column,
+      } as any;
     }
     return expr;
   }

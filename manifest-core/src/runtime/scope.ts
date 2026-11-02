@@ -6,6 +6,10 @@ export class Scope {
     this.parent = parent;
   }
 
+  public setLocal(name: string, value: any): void {
+    this.values.set(name, value);
+  }
+
   public set(name: string, value: any): void {
     if (this.values.has(name)) {
       this.values.set(name, value);

@@ -5,6 +5,7 @@
 
 import { ManifestProject, ProjectFile, ProjectTemplate } from './types.ts';
 import { get, set } from 'idb-keyval';
+import { STARTER_WASM_BYTES, encodeWasmDataUrl } from './execution/wasm-execution-provider.ts';
 
 export interface StudioSettings {
   fontSize: number;
@@ -22,7 +23,9 @@ export const DEFAULT_SETTINGS: StudioSettings = {
 
 const SETTINGS_KEY = 'manifest_studio_settings_v1';
 const IDB_PROJECT_KEY = 'manifest_studio_project_idb_v1';
+const IDB_WORKSPACE_KEY = 'manifest_studio_workspace_projects_v1';
 const STORAGE_KEY = 'manifest_studio_project_v1';
+const STORAGE_WORKSPACE_KEY = 'manifest_studio_workspace_projects_ls_v1';
 
 export const TEMPLATES: ProjectTemplate[] = [
   {
@@ -78,7 +81,10 @@ END
 </head>
 <body>
   <div class="card">
-    <h1 id="title">Interactive Web App</h1>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;">
+      <img src="assets/logo.svg" alt="Web Logo" width="32" height="32">
+      <h1 id="title" style="margin-bottom:0;">Interactive Web App</h1>
+    </div>
     <p class="subtitle">First-class static web project running directly in Manifest Studio.</p>
 
     <div class="counter-box">
@@ -95,6 +101,17 @@ END
   <script src="app.js"></script>
 </body>
 </html>
+`,
+      },
+      {
+        id: 'web-logo-svg',
+        name: 'logo.svg',
+        path: 'assets/logo.svg',
+        language: 'xml',
+        content: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="14" fill="#2563eb"/>
+  <path d="M18 44V20h6l8 13 8-13h6v24h-6V30l-8 12-8-12v14z" fill="#ffffff"/>
+</svg>
 `,
       },
       {
@@ -762,14 +779,50 @@ END
       },
     ],
   },
+  {
+    id: 'wasm-module',
+    name: 'WebAssembly Binary (.wasm)',
+    description: 'Compiled WebAssembly MVP binary module exporting main() -> 42 and add(a, b) with host stdout import.',
+    kind: 'wasm',
+    files: [
+      {
+        id: 'wasm-binary-main',
+        name: 'module.wasm',
+        path: 'module.wasm',
+        language: 'wasm',
+        isBinary: true,
+        mimeType: 'application/wasm',
+        content: encodeWasmDataUrl(STARTER_WASM_BYTES),
+      },
+      {
+        id: 'wasm-readme',
+        name: 'README.md',
+        path: 'README.md',
+        language: 'markdown',
+        content: `# WebAssembly Binary Execution (.wasm)
+
+This workspace contains a real compiled WebAssembly binary (\`module.wasm\`).
+
+## Exported Functions
+- \`add(a: i32, b: i32) -> i32\`: Adds two 32-bit integers.
+- \`main() -> i32\`: Computes \`add(20, 22)\`, invokes host import \`env.print_i32(42)\`, and returns \`42\`.
+
+## Capabilities & Boundaries
+- Manifest Studio executes compiled \`.wasm\` binaries directly via the host WebAssembly VM (\`WasmExecutionProvider\`).
+- Manifest source code (\`.manifest\`) currently compiles to JavaScript; Manifest-to-WASM compilation is planned for a future milestone.
+`,
+      },
+    ],
+  },
 ];
 
 export function createBlankProject(): ManifestProject {
   return {
-    id: `project-${Date.now()}`,
+    id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     name: 'my-project',
     description: 'Clean minimal starter Manifest project',
     kind: 'manifest',
+    entryPath: 'src/main.manifest',
     files: [
       {
         id: 'toml-root',
@@ -808,34 +861,55 @@ export function createDefaultProject(templateId = 'empty'): ManifestProject {
   }
   const tpl = TEMPLATES.find((t) => t.id === templateId) || TEMPLATES[0];
   const files: ProjectFile[] = tpl.files.map((f) => ({ ...f }));
+  const preferredActive =
+    files.find((f) => f.path === 'src/main.manifest' || f.path === 'index.html' || f.path.endsWith('.wasm'))?.path ||
+    files[0]?.path ||
+    'src/main.manifest';
 
   return {
-    id: `project-${Date.now()}`,
+    id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
     name: tpl.name,
     description: tpl.description,
     kind: tpl.kind || 'manifest',
+    entryPath: preferredActive,
     files,
-    activeFilePath: files[0]?.path || 'src/main.manifest',
+    activeFilePath: preferredActive,
     createdAt: Date.now(),
     updatedAt: Date.now(),
   };
 }
 
-export function saveProjectToStorage(project: ManifestProject): void {
+export function saveProjectToStorage(project: ManifestProject): { saved: boolean; error?: string } {
   try {
+    if (typeof localStorage === 'undefined') {
+      return { saved: true };
+    }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(project));
-  } catch (err) {
+    try {
+      const rawMap = localStorage.getItem(STORAGE_WORKSPACE_KEY);
+      const parsedMap: Record<string, ManifestProject> = rawMap ? JSON.parse(rawMap) : {};
+      parsedMap[project.id] = project;
+      localStorage.setItem(STORAGE_WORKSPACE_KEY, JSON.stringify(parsedMap));
+    } catch {
+      // Workspace index in localStorage may exceed 5MB if many binary projects exist; IndexedDB handles full workspace
+    }
+    return { saved: true };
+  } catch (err: any) {
+    const msg = err?.message || String(err);
     console.warn('Could not save project to localStorage', err);
+    return { saved: false, error: msg };
   }
 }
 
 export function loadProjectFromStorage(): ManifestProject {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.files) && parsed.files.length > 0) {
-        return parsed;
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.files) && parsed.files.length > 0) {
+          return parsed;
+        }
       }
     }
   } catch (err) {
@@ -857,21 +931,77 @@ export async function loadProjectAsync(): Promise<ManifestProject> {
   return loadProjectFromStorage();
 }
 
-export async function saveProjectAsync(project: ManifestProject): Promise<void> {
-  // Sync to both localStorage (instant synchronous) and IndexedDB (robust offline storage)
-  saveProjectToStorage(project);
+export async function saveProjectAsync(project: ManifestProject): Promise<{ saved: boolean; error?: string }> {
+  const lsResult = saveProjectToStorage(project);
   try {
     await set(IDB_PROJECT_KEY, project);
-  } catch (err) {
+    const existingMap = (await get<Record<string, ManifestProject>>(IDB_WORKSPACE_KEY)) || {};
+    existingMap[project.id] = project;
+    await set(IDB_WORKSPACE_KEY, existingMap);
+    return { saved: true };
+  } catch (err: any) {
+    const idbErr = err?.message || String(err);
     console.warn('Could not save to IndexedDB', err);
+    return lsResult.saved
+      ? { saved: true }
+      : { saved: false, error: `Storage persistence failed (IndexedDB: ${idbErr}; localStorage: ${lsResult.error})` };
+  }
+}
+
+export async function listWorkspaceProjectsAsync(): Promise<ManifestProject[]> {
+  try {
+    const idbMap = await get<Record<string, ManifestProject>>(IDB_WORKSPACE_KEY);
+    if (idbMap && typeof idbMap === 'object') {
+      return Object.values(idbMap).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    }
+  } catch {
+    // Fall back to localStorage workspace map
+  }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(STORAGE_WORKSPACE_KEY);
+      if (raw) {
+        const parsed: Record<string, ManifestProject> = JSON.parse(raw);
+        return Object.values(parsed).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      }
+    }
+  } catch {
+    // Ignore parse error
+  }
+  return [];
+}
+
+export async function deleteWorkspaceProjectAsync(projectId: string): Promise<void> {
+  try {
+    const idbMap = (await get<Record<string, ManifestProject>>(IDB_WORKSPACE_KEY)) || {};
+    if (projectId in idbMap) {
+      delete idbMap[projectId];
+      await set(IDB_WORKSPACE_KEY, idbMap);
+    }
+  } catch {
+    // Ignore IDB error
+  }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(STORAGE_WORKSPACE_KEY);
+      if (raw) {
+        const parsed: Record<string, ManifestProject> = JSON.parse(raw);
+        delete parsed[projectId];
+        localStorage.setItem(STORAGE_WORKSPACE_KEY, JSON.stringify(parsed));
+      }
+    }
+  } catch {
+    // Ignore localStorage error
   }
 }
 
 export function loadSettingsFromStorage(): StudioSettings {
   try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (raw) {
-      return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      if (raw) {
+        return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+      }
     }
   } catch (err) {
     console.warn('Could not load settings', err);
@@ -881,7 +1011,9 @@ export function loadSettingsFromStorage(): StudioSettings {
 
 export function saveSettingsToStorage(settings: StudioSettings): void {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    }
   } catch (err) {
     console.warn('Could not save settings', err);
   }

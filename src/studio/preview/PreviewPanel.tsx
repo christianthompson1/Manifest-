@@ -289,35 +289,46 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
   };
 
   const hasErrors =
-    (executionResult && !executionResult.success) ||
-    (buildResult && !buildResult.success);
+    executionResult !== undefined && executionResult !== null
+      ? !executionResult.success
+      : Boolean(buildResult && !buildResult.success);
   const errorDiagnostics =
-    (executionResult && executionResult.diagnostics.length > 0)
-      ? executionResult.diagnostics
-      : (buildResult?.diagnostics.filter((d) => d.severity === 'error') || []);
+    executionResult && executionResult.diagnostics.length > 0
+      ? executionResult.diagnostics.filter((d) => d.severity === 'error')
+      : buildResult?.diagnostics.filter((d) => d.severity === 'error') || [];
   const activeDurationMs = executionResult?.durationMs ?? buildResult?.durationMs ?? 0;
+  const resolvedEntry = executionResult?.resolvedEntryPath;
 
   return (
     <div className="h-full flex flex-col bg-[#181818] text-[#cccccc] overflow-hidden border-l border-[#2d2d2d]">
       {/* Preview Header Bar (#181818) */}
       <div className="h-8 border-b border-[#2d2d2d] bg-[#181818] px-3 flex items-center justify-between select-none">
-        <div className="flex items-center space-x-2">
-          <span className="text-xs font-medium text-[#ffffff] flex items-center gap-1.5">
+        <div className="flex items-center space-x-2 min-w-0">
+          <span className="text-xs font-medium text-[#ffffff] flex items-center gap-1.5 shrink-0">
             <Sparkles className="w-3.5 h-3.5 text-[#858585]" />
-            Application Preview
+            Preview
           </span>
 
+          {resolvedEntry && (
+            <span
+              title={`Active preview entry: ${resolvedEntry}`}
+              className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#1f1f1f] text-[#9cdcfe] border border-[#2d2d2d] truncate max-w-[140px]"
+            >
+              {resolvedEntry}
+            </span>
+          )}
+
           {isCompiling ? (
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#252526] text-[#cca700] border border-[#2d2d2d]">
-              Compiling...
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#252526] text-[#cca700] border border-[#2d2d2d] shrink-0">
+              Running...
             </span>
           ) : hasErrors ? (
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#4d1f24] text-[#f85149] border border-[#5a1d1d] flex items-center gap-1">
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#4d1f24] text-[#f85149] border border-[#5a1d1d] flex items-center gap-1 shrink-0">
               <AlertTriangle className="w-3 h-3 text-[#f14c4c]" />
-              Build Error
+              Halted
             </span>
           ) : (executionResult || buildResult) ? (
-            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#252526] text-[#89d185] border border-[#2d2d2d] flex items-center gap-1">
+            <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#252526] text-[#89d185] border border-[#2d2d2d] flex items-center gap-1 shrink-0">
               <CheckCircle2 className="w-3 h-3 text-[#89d185]" />
               Ready ({activeDurationMs}ms)
             </span>
@@ -325,7 +336,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
         </div>
 
         {/* View mode toggle & actions */}
-        <div className="flex items-center space-x-1.5">
+        <div className="flex items-center space-x-1.5 shrink-0">
           <button
             onClick={() => setIsInspectorOpen(!isInspectorOpen)}
             className={`px-2 py-0.5 rounded text-[11px] font-medium flex items-center gap-1 transition cursor-pointer border ${
@@ -371,37 +382,49 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
       {/* Main Full Application Canvas (Background: #1f1f1f) */}
       <div className="flex-1 overflow-hidden relative bg-[#1f1f1f] flex flex-col">
         {hasErrors ? (
-          <div className="flex-1 p-6 flex flex-col items-center justify-center text-center max-w-sm mx-auto space-y-3">
-            <div className="w-9 h-9 rounded-full bg-[#4d1f24] border border-[#5a1d1d] flex items-center justify-center text-[#f85149]">
+          <div className="flex-1 p-6 flex flex-col items-center justify-center text-center max-w-md mx-auto space-y-3 overflow-y-auto">
+            <div className="w-9 h-9 rounded-full bg-[#4d1f24] border border-[#5a1d1d] flex items-center justify-center text-[#f85149] shrink-0">
               <AlertTriangle className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="font-semibold text-[#ffffff] text-xs">Compilation Diagnostics</h3>
+              <h3 className="font-semibold text-[#ffffff] text-xs">
+                Execution Halted{resolvedEntry ? ` (${resolvedEntry})` : ''}
+              </h3>
               <p className="text-[11px] text-[#858585] mt-0.5">
-                Fix errors in the Manifest editor to update preview.
+                Previous preview output was cleared to prevent stale display.
               </p>
             </div>
 
-            {errorDiagnostics.length > 0 && (
-              <div className="w-full text-left bg-[#2d1818] border border-[#5a1d1d] rounded-lg p-2.5 text-xs font-mono text-[#f85149] space-y-1">
-                <div className="font-semibold flex items-center gap-1.5 text-[#f14c4c] text-[11px]">
-                  <span>Line {errorDiagnostics[0].line}:</span>
-                  <span>{errorDiagnostics[0].message}</span>
-                </div>
-                {errorDiagnostics[0].hint && (
-                  <div className="text-[10px] text-[#cccccc] font-sans">
-                    💡 {errorDiagnostics[0].hint}
+            {errorDiagnostics.length > 0 ? (
+              <div className="w-full text-left space-y-2 max-h-60 overflow-y-auto custom-scrollbar">
+                {errorDiagnostics.map((diag, idx) => (
+                  <div
+                    key={idx}
+                    className="bg-[#2d1818] border border-[#5a1d1d] rounded-lg p-2.5 text-xs font-mono text-[#f85149] space-y-1"
+                  >
+                    <div className="font-semibold text-[#f14c4c] text-[11px]">
+                      Line {diag.line}: {diag.message}
+                    </div>
+                    {diag.hint && (
+                      <div className="text-[10px] text-[#cccccc] font-sans">
+                        Hint: {diag.hint}
+                      </div>
+                    )}
                   </div>
-                )}
+                ))}
               </div>
-            )}
+            ) : executionResult?.error ? (
+              <div className="w-full text-left bg-[#2d1818] border border-[#5a1d1d] rounded-lg p-2.5 text-xs font-mono text-[#f85149]">
+                {executionResult.error}
+              </div>
+            ) : null}
 
             <button
               onClick={onRun}
               className="px-3 py-1.5 rounded bg-[#238636] hover:bg-[#2ea043] text-white font-medium text-xs flex items-center gap-1.5 transition cursor-pointer"
             >
               <Play className="w-3 h-3 fill-current" />
-              Re-run Program
+              Re-run
             </button>
           </div>
         ) : (

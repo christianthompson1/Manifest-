@@ -52,15 +52,16 @@ export function generateContext(): string {
   lines.push(`- Automated Test Suites: ${testFiles.length} test runners`);
   lines.push('');
   lines.push('## Key Architecture Subsystems');
-  lines.push('- Manifest Parser & Validator: `manifest-core/src/parser/parser.ts`, `manifest-core/src/validator/validator.ts`');
-  lines.push('- Manifest IR & JS Compiler: `manifest-core/src/ir/ir-builder.ts`, `manifest-core/src/compiler/targets/js-target.ts`');
-  lines.push('- Execution Orchestrator: `src/studio/execution/execution-orchestrator.ts`');
-  lines.push('- Static Web Provider: `src/studio/execution/static-web-execution-provider.ts`');
+  lines.push('- Manifest Single-Pass Compiler & Two-Pass Validator: `manifest-core/src/compiler/compiler.ts`, `manifest-core/src/parser/parser.ts`, `manifest-core/src/validator/validator.ts`');
+  lines.push('- Manifest IR, JS Target & Parity Runtime: `manifest-core/src/ir/ir-builder.ts`, `manifest-core/src/compiler/targets/js-target.ts`, `manifest-core/src/runtime/runtime.ts`');
+  lines.push('- Execution Orchestrator & Providers: `src/studio/execution/execution-orchestrator.ts`, `manifest-execution-provider.ts`, `static-web-execution-provider.ts`, `wasm-execution-provider.ts`');
+  lines.push('- CodeMirror 6 Editor & Recursive Explorer: `src/studio/editor/CodeMirrorEditor.tsx`, `src/studio/explorer/ProjectTree.tsx`');
   lines.push('- Sandboxed Preview: `src/studio/preview/PreviewPanel.tsx`');
   lines.push('');
   lines.push('## Verification Commands');
   lines.push('- TypeScript typecheck: `npm run lint`');
-  lines.push('- Manifest language & provider tests: `npm run manifest:test`');
+  lines.push('- Manifest language, parity, .wasm & provider tests: `npm run manifest:test`');
+  lines.push('- Compiler & runtime benchmarks: `npm run manifest:bench`');
   lines.push('- Production bundle: `npm run build`');
 
   return lines.join('\n');

@@ -39,6 +39,8 @@ export interface TreeNode {
 interface ProjectTreeProps {
   project: ManifestProject;
   activeFilePath: string;
+  filterQuery?: string;
+  createTrigger?: { type: 'file' | 'folder'; nonce: number } | null;
   onSelectFile: (path: string) => void;
   onCreateFile: (path: string) => void;
   onCreateFolder?: (folderPath: string) => void;
@@ -62,6 +64,11 @@ export function buildProjectTree(files: ProjectFile[]): TreeNode {
       const part = parts[i];
       const isLeaf = i === parts.length - 1;
       const partPath = parts.slice(0, i + 1).join('/');
+
+      // If leaf is .gitkeep, ensure parent folders exist in tree without showing .gitkeep file row
+      if (isLeaf && part === '.gitkeep') {
+        break;
+      }
 
       let existing = current.children.find((c) => c.name === part);
 
@@ -96,9 +103,29 @@ export function buildProjectTree(files: ProjectFile[]): TreeNode {
   return root;
 }
 
+function filterTreeNode(node: TreeNode, queryLower: string): TreeNode | null {
+  if (!queryLower) return node;
+  if (!node.isFolder) {
+    return node.path.toLowerCase().includes(queryLower) ? node : null;
+  }
+  const filteredChildren = node.children
+    .map((c) => filterTreeNode(c, queryLower))
+    .filter((c): c is TreeNode => c !== null);
+
+  if (node.path && node.name.toLowerCase().includes(queryLower)) {
+    return node;
+  }
+  if (filteredChildren.length > 0 || node.path === '') {
+    return { ...node, children: filteredChildren };
+  }
+  return null;
+}
+
 export const ProjectTree: React.FC<ProjectTreeProps> = ({
   project,
   activeFilePath,
+  filterQuery = '',
+  createTrigger = null,
   onSelectFile,
   onCreateFile,
   onRenameFile,
@@ -110,8 +137,21 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
   const [creatingInPath, setCreatingInPath] = useState<string | null>(null);
   const [newEntryType, setNewEntryType] = useState<'file' | 'folder'>('file');
   const [newEntryName, setNewEntryName] = useState<string>('');
+  const [confirmDeletePath, setConfirmDeletePath] = useState<string | null>(null);
 
-  const tree = useMemo(() => buildProjectTree(project.files), [project.files]);
+  React.useEffect(() => {
+    if (createTrigger) {
+      setCreatingInPath('');
+      setNewEntryType(createTrigger.type);
+      setNewEntryName('');
+    }
+  }, [createTrigger?.nonce]);
+
+  const tree = useMemo(() => {
+    const raw = buildProjectTree(project.files);
+    const q = filterQuery.trim().toLowerCase();
+    return (q ? filterTreeNode(raw, q) : raw) || raw;
+  }, [project.files, filterQuery]);
 
   const toggleFolder = (folderPath: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -128,11 +168,12 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
 
   const startRename = (path: string, currentName: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    setConfirmDeletePath(null);
     setEditingPath(path);
     setEditValue(currentName);
   };
 
-  const commitRename = (oldPath: string, isFolder: boolean) => {
+  const commitRename = (oldPath: string) => {
     const trimmed = editValue.trim();
     if (trimmed && trimmed !== oldPath.split('/').pop()) {
       const parts = oldPath.split('/');
@@ -145,7 +186,7 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
 
   const handleCreateSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const trimmed = newEntryName.trim();
+    const trimmed = newEntryName.trim().replace(/^\/+|\/+$/g, '');
     if (!trimmed) {
       setCreatingInPath(null);
       return;
@@ -155,12 +196,12 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
     let targetPath = `${parent}${trimmed}`;
 
     if (newEntryType === 'file') {
-      if (!targetPath.includes('.')) {
-        targetPath += '.manifest';
+      const leaf = targetPath.split('/').pop() || targetPath;
+      if (!leaf.includes('.')) {
+        targetPath += project.kind === 'web' ? '.html' : '.manifest';
       }
       onCreateFile(targetPath);
     } else {
-      // Create folder placeholder file
       onCreateFile(`${targetPath}/.gitkeep`);
     }
 
@@ -191,6 +232,7 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
       case 'python':
         return <Terminal className="w-3.5 h-3.5 text-[#3572a5] shrink-0" />;
       case 'rust':
+      case 'wasm':
         return <Cpu className="w-3.5 h-3.5 text-[#dea584] shrink-0" />;
       case 'toml':
       case 'yaml':
@@ -201,9 +243,10 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
   };
 
   const renderNode = (node: TreeNode, depth = 0) => {
-    const isCollapsed = collapsedPaths.has(node.path);
+    const isCollapsed = collapsedPaths.has(node.path) && !filterQuery.trim();
     const isSelected = !node.isFolder && activeFilePath === node.path;
     const isEditing = editingPath === node.path;
+    const isConfirmingDelete = confirmDeletePath === node.path;
     const indentPx = depth * 14 + 10;
 
     if (node.isFolder) {
@@ -230,10 +273,11 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
                   type="text"
                   value={editValue}
                   autoFocus
+                  onClick={(e) => e.stopPropagation()}
                   onChange={(e) => setEditValue(e.target.value)}
-                  onBlur={() => commitRename(node.path, true)}
+                  onBlur={() => commitRename(node.path)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRename(node.path, true);
+                    if (e.key === 'Enter') commitRename(node.path);
                     if (e.key === 'Escape') setEditingPath(null);
                   }}
                   className="bg-[#1f1f1f] text-white px-1 py-0.5 rounded border border-[#007acc] text-xs outline-none"
@@ -244,39 +288,81 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
             </div>
 
             {/* Folder Actions */}
-            <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setCreatingInPath(node.path);
-                  setNewEntryType('file');
-                  setNewEntryName('');
-                }}
-                title="New File in folder"
-                className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-white"
-              >
-                <FilePlus className="w-3 h-3" />
-              </button>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setCreatingInPath(node.path);
-                  setNewEntryType('folder');
-                  setNewEntryName('');
-                }}
-                title="New Folder in folder"
-                className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-white"
-              >
-                <FolderPlus className="w-3 h-3" />
-              </button>
-              <button
-                onClick={(e) => startRename(node.path, node.name, e)}
-                title="Rename folder"
-                className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-white"
-              >
-                <Edit2 className="w-3 h-3" />
-              </button>
-            </div>
+            {isConfirmingDelete ? (
+              <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                <button
+                  onClick={() => {
+                    onDeleteFile(node.path);
+                    setConfirmDeletePath(null);
+                  }}
+                  title="Confirm delete folder"
+                  className="px-1.5 py-0.2 rounded bg-[#4d1f24] text-[#f85149] text-[10px] font-medium hover:bg-[#6e282e]"
+                >
+                  Delete
+                </button>
+                <button
+                  onClick={() => setConfirmDeletePath(null)}
+                  title="Cancel"
+                  className="p-0.5 text-[#858585] hover:text-white"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            ) : (
+              <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCollapsedPaths((prev) => {
+                      const next = new Set(prev);
+                      next.delete(node.path);
+                      return next;
+                    });
+                    setCreatingInPath(node.path);
+                    setNewEntryType('file');
+                    setNewEntryName('');
+                  }}
+                  title="New File in folder"
+                  className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-white"
+                >
+                  <FilePlus className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCollapsedPaths((prev) => {
+                      const next = new Set(prev);
+                      next.delete(node.path);
+                      return next;
+                    });
+                    setCreatingInPath(node.path);
+                    setNewEntryType('folder');
+                    setNewEntryName('');
+                  }}
+                  title="New Folder in folder"
+                  className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-white"
+                >
+                  <FolderPlus className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={(e) => startRename(node.path, node.name, e)}
+                  title="Rename folder"
+                  className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-white"
+                >
+                  <Edit2 className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setConfirmDeletePath(node.path);
+                  }}
+                  title="Delete folder"
+                  className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-[#f14c4c]"
+                >
+                  <Trash2 className="w-3 h-3" />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Inline creation input inside this folder */}
@@ -296,7 +382,10 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
                 autoFocus
                 value={newEntryName}
                 onChange={(e) => setNewEntryName(e.target.value)}
-                placeholder={newEntryType === 'file' ? 'name.manifest' : 'folder name'}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setCreatingInPath(null);
+                }}
+                placeholder={newEntryType === 'file' ? 'filename.ext' : 'folder-name'}
                 className="w-full bg-[#181818] border border-[#007acc] rounded px-1.5 py-0.5 text-xs text-white outline-none"
               />
               <button type="submit" className="p-0.5 text-[#4ec9b0]">
@@ -321,6 +410,7 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
     }
 
     // File Node
+    const visibleFileCount = project.files.filter((f) => !f.path.endsWith('/.gitkeep')).length;
     return (
       <div
         key={node.path}
@@ -339,10 +429,11 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
               type="text"
               value={editValue}
               autoFocus
+              onClick={(e) => e.stopPropagation()}
               onChange={(e) => setEditValue(e.target.value)}
-              onBlur={() => commitRename(node.path, false)}
+              onBlur={() => commitRename(node.path)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') commitRename(node.path, false);
+                if (e.key === 'Enter') commitRename(node.path);
                 if (e.key === 'Escape') setEditingPath(null);
               }}
               className="bg-[#1f1f1f] text-white px-1 py-0.5 rounded border border-[#007acc] text-xs outline-none"
@@ -353,27 +444,49 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
         </div>
 
         {/* File Actions */}
-        <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1">
-          <button
-            onClick={(e) => startRename(node.path, node.name, e)}
-            title="Rename file"
-            className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-white"
-          >
-            <Edit2 className="w-3 h-3" />
-          </button>
-          {project.files.length > 1 && (
+        {isConfirmingDelete ? (
+          <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
             <button
-              onClick={(e) => {
-                e.stopPropagation();
+              onClick={() => {
                 onDeleteFile(node.path);
+                setConfirmDeletePath(null);
               }}
-              title="Delete file"
-              className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-[#f14c4c]"
+              title="Confirm delete file"
+              className="px-1.5 py-0.2 rounded bg-[#4d1f24] text-[#f85149] text-[10px] font-medium hover:bg-[#6e282e]"
             >
-              <Trash2 className="w-3 h-3" />
+              Delete
             </button>
-          )}
-        </div>
+            <button
+              onClick={() => setConfirmDeletePath(null)}
+              title="Cancel"
+              className="p-0.5 text-[#858585] hover:text-white"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </div>
+        ) : (
+          <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1">
+            <button
+              onClick={(e) => startRename(node.path, node.name, e)}
+              title="Rename file"
+              className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-white"
+            >
+              <Edit2 className="w-3 h-3" />
+            </button>
+            {visibleFileCount > 1 && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmDeletePath(node.path);
+                }}
+                title="Delete file"
+                className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-[#f14c4c]"
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        )}
       </div>
     );
   };
@@ -396,7 +509,10 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
             autoFocus
             value={newEntryName}
             onChange={(e) => setNewEntryName(e.target.value)}
-            placeholder={newEntryType === 'file' ? 'src/app.manifest' : 'components'}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setCreatingInPath(null);
+            }}
+            placeholder={newEntryType === 'file' ? 'index.html or src/app.manifest' : 'folder-name'}
             className="w-full bg-[#181818] border border-[#007acc] rounded px-1.5 py-0.5 text-xs text-white outline-none"
           />
           <button type="submit" className="p-0.5 text-[#4ec9b0]">
@@ -412,7 +528,13 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
         </form>
       )}
 
-      {tree.children.map((child) => renderNode(child, 0))}
+      {tree.children.length === 0 ? (
+        <div className="px-3 py-4 text-center text-[11px] text-[#858585]">
+          No matching files in workspace.
+        </div>
+      ) : (
+        tree.children.map((child) => renderNode(child, 0))
+      )}
     </div>
   );
 };

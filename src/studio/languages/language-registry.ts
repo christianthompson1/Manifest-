@@ -41,6 +41,14 @@ import { manifestLanguage, manifestSyntaxHighlighting } from '../editor/manifest
 import { manifestAutocomplete } from '../editor/manifest-autocomplete.ts';
 import { manifestLinter } from '../editor/manifest-linter.ts';
 import { autocompletion } from '@codemirror/autocomplete';
+import { linter, Diagnostic as CmDiagnostic } from '@codemirror/lint';
+import { jsonParseLinter } from '@codemirror/lang-json';
+
+const realJsonLinter = linter((view): CmDiagnostic[] => {
+  const doc = view.state.doc.toString();
+  if (!doc.trim()) return [];
+  return jsonParseLinter()(view);
+});
 
 export class LanguageRegistry {
   private static instance: LanguageRegistry;
@@ -66,7 +74,7 @@ export class LanguageRegistry {
         syntaxHighlighting: 'Available',
         completion: 'Available',
         diagnostics: 'Available',
-        formatting: 'Available',
+        formatting: 'Partial',
         localExecution: 'Available',
         localBuild: 'Available',
         remoteBuild: 'Not configured',
@@ -78,23 +86,49 @@ export class LanguageRegistry {
         editing: 'Available',
         syntaxHighlighting: 'Available',
         completion: 'Partial',
-        diagnostics: 'Unsupported',
-        formatting: 'Available',
+        diagnostics: 'Partial',
+        formatting: 'Partial',
         localExecution: 'Available',
         localBuild: 'Available',
         remoteBuild: 'Not configured',
         debugging: 'Unsupported',
       };
     }
-    if (p.id === 'javascript' || p.id === 'typescript') {
+    if (p.id === 'javascript') {
       return {
         editing: 'Available',
         syntaxHighlighting: 'Available',
         completion: 'Partial',
-        diagnostics: 'Partial',
+        diagnostics: 'Unsupported',
         formatting: 'Partial',
-        localExecution: 'Partial',
+        localExecution: 'Available',
         localBuild: 'Available',
+        remoteBuild: 'Not configured',
+        debugging: 'Unsupported',
+      };
+    }
+    if (p.id === 'wasm') {
+      return {
+        editing: 'Unsupported',
+        syntaxHighlighting: 'Unsupported',
+        completion: 'Unsupported',
+        diagnostics: 'Available',
+        formatting: 'Unsupported',
+        localExecution: 'Available',
+        localBuild: 'Unsupported',
+        remoteBuild: 'Not configured',
+        debugging: 'Unsupported',
+      };
+    }
+    if (p.id === 'typescript') {
+      return {
+        editing: 'Available',
+        syntaxHighlighting: 'Available',
+        completion: 'Partial',
+        diagnostics: 'Unsupported',
+        formatting: 'Partial',
+        localExecution: 'Unsupported',
+        localBuild: 'Unsupported',
         remoteBuild: 'Not configured',
         debugging: 'Unsupported',
       };
@@ -105,7 +139,7 @@ export class LanguageRegistry {
         syntaxHighlighting: 'Available',
         completion: 'Partial',
         diagnostics: 'Available',
-        formatting: 'Available',
+        formatting: 'Partial',
         localExecution: 'Unsupported',
         localBuild: 'Unsupported',
         remoteBuild: 'Not configured',
@@ -133,7 +167,7 @@ export class LanguageRegistry {
       formatting: 'Unsupported',
       localExecution: 'Unsupported',
       localBuild: 'Unsupported',
-      remoteBuild: 'Requires remote build',
+      remoteBuild: 'Not configured',
       debugging: 'Unsupported',
     };
   }
@@ -160,16 +194,15 @@ export class LanguageRegistry {
       id: 'manifest',
       name: 'Manifest',
       extensions: ['.manifest'],
-      filenames: ['manifest.toml'],
       capabilities: {
         editing: true,
         highlighting: true,
         completion: 'native',
         diagnostics: 'native',
-        formatting: 'native',
+        formatting: 'none',
         localRun: true,
-        cloudBuild: true,
-        debugging: 'simulated',
+        cloudBuild: false,
+        debugging: 'none',
       },
       commentSyntax: { lineComment: '//' },
       getExtensions: (readOnly = false) => {
@@ -183,6 +216,44 @@ export class LanguageRegistry {
       },
     });
 
+    // 1b. TOML Configuration (manifest.toml, Cargo.toml, Anchor.toml — separated from Manifest linter!)
+    this.register({
+      id: 'toml',
+      name: 'TOML',
+      extensions: ['.toml'],
+      filenames: ['manifest.toml', 'Cargo.toml', 'Cargo.lock', 'Anchor.toml'],
+      capabilities: {
+        editing: true,
+        highlighting: true,
+        completion: 'none',
+        diagnostics: 'none',
+        formatting: 'none',
+        localRun: false,
+        cloudBuild: false,
+        debugging: 'none',
+      },
+      commentSyntax: { lineComment: '#' },
+      getExtensions: () => [yaml()],
+    });
+
+    // 1c. WebAssembly Binary (.wasm)
+    this.register({
+      id: 'wasm',
+      name: 'WebAssembly Binary (.wasm)',
+      extensions: ['.wasm'],
+      capabilities: {
+        editing: false,
+        highlighting: false,
+        completion: 'none',
+        diagnostics: 'native',
+        formatting: 'none',
+        localRun: true,
+        cloudBuild: false,
+        debugging: 'none',
+      },
+      getExtensions: () => [],
+    });
+
     // 2. JavaScript
     this.register({
       id: 'javascript',
@@ -192,11 +263,11 @@ export class LanguageRegistry {
         editing: true,
         highlighting: true,
         completion: 'basic',
-        diagnostics: 'optional',
-        formatting: 'optional',
+        diagnostics: 'none',
+        formatting: 'none',
         localRun: true,
-        cloudBuild: true,
-        debugging: 'future',
+        cloudBuild: false,
+        debugging: 'none',
       },
       commentSyntax: { lineComment: '//', blockComment: { open: '/*', close: '*/' } },
       getExtensions: () => [javascript()],
@@ -211,11 +282,11 @@ export class LanguageRegistry {
         editing: true,
         highlighting: true,
         completion: 'basic',
-        diagnostics: 'optional',
-        formatting: 'optional',
-        localRun: true,
-        cloudBuild: true,
-        debugging: 'future',
+        diagnostics: 'none',
+        formatting: 'none',
+        localRun: false,
+        cloudBuild: false,
+        debugging: 'none',
       },
       commentSyntax: { lineComment: '//', blockComment: { open: '/*', close: '*/' } },
       getExtensions: () => [javascript({ typescript: true, jsx: true })],
@@ -230,11 +301,11 @@ export class LanguageRegistry {
         editing: true,
         highlighting: true,
         completion: 'basic',
-        diagnostics: 'optional',
-        formatting: 'optional',
+        diagnostics: 'none',
+        formatting: 'none',
         localRun: false,
-        cloudBuild: true,
-        debugging: 'future',
+        cloudBuild: false,
+        debugging: 'none',
       },
       commentSyntax: { lineComment: '#' },
       getExtensions: () => [python()],
@@ -245,16 +316,15 @@ export class LanguageRegistry {
       id: 'rust',
       name: 'Rust',
       extensions: ['.rs'],
-      filenames: ['Cargo.toml', 'Cargo.lock'],
       capabilities: {
         editing: true,
         highlighting: true,
         completion: 'basic',
-        diagnostics: 'optional',
-        formatting: 'optional',
+        diagnostics: 'none',
+        formatting: 'none',
         localRun: false,
         cloudBuild: true,
-        debugging: 'future',
+        debugging: 'none',
       },
       commentSyntax: { lineComment: '//', blockComment: { open: '/*', close: '*/' } },
       getExtensions: () => [rust()],
@@ -606,15 +676,15 @@ export class LanguageRegistry {
       id: 'json',
       name: 'JSON',
       extensions: ['.json', '.jsonc'],
-      capabilities: { editing: true, highlighting: true, completion: 'basic', diagnostics: 'optional', formatting: 'native', localRun: true, cloudBuild: false, debugging: 'none' },
-      getExtensions: () => [json()],
+      capabilities: { editing: true, highlighting: true, completion: 'basic', diagnostics: 'native', formatting: 'none', localRun: false, cloudBuild: false, debugging: 'none' },
+      getExtensions: (readOnly = false) => (readOnly ? [json()] : [json(), realJsonLinter]),
     });
 
     this.register({
       id: 'yaml',
       name: 'YAML',
       extensions: ['.yaml', '.yml'],
-      capabilities: { editing: true, highlighting: true, completion: 'basic', diagnostics: 'none', formatting: 'none', localRun: false, cloudBuild: true, debugging: 'none' },
+      capabilities: { editing: true, highlighting: true, completion: 'basic', diagnostics: 'none', formatting: 'none', localRun: false, cloudBuild: false, debugging: 'none' },
       getExtensions: () => [yaml()],
     });
 
@@ -622,7 +692,7 @@ export class LanguageRegistry {
       id: 'xml',
       name: 'XML / SVG',
       extensions: ['.xml', '.svg'],
-      capabilities: { editing: true, highlighting: true, completion: 'basic', diagnostics: 'none', formatting: 'none', localRun: true, cloudBuild: false, debugging: 'none' },
+      capabilities: { editing: true, highlighting: true, completion: 'basic', diagnostics: 'none', formatting: 'none', localRun: false, cloudBuild: false, debugging: 'none' },
       getExtensions: () => [xml()],
     });
 
@@ -630,7 +700,7 @@ export class LanguageRegistry {
       id: 'markdown',
       name: 'Markdown',
       extensions: ['.md', '.markdown'],
-      capabilities: { editing: true, highlighting: true, completion: 'none', diagnostics: 'none', formatting: 'none', localRun: true, cloudBuild: false, debugging: 'none' },
+      capabilities: { editing: true, highlighting: true, completion: 'none', diagnostics: 'none', formatting: 'none', localRun: false, cloudBuild: false, debugging: 'none' },
       getExtensions: () => [markdown()],
     });
 

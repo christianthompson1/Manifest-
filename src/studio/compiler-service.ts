@@ -1,13 +1,15 @@
 /**
- * Manifest Studio - Compiler Service
- * Coordinates the full compiler pipeline:
- * Manifest Source -> Lexer -> Parser -> Validator -> Manifest IR -> JS Target Compiler.
+ * Manifest Studio - Single-Pass Compiler Service
+ * Coordinates the full compiler pipeline in a single parse pass:
+ * Manifest Source -> Lexer -> Parser -> Validator -> Manifest IR -> Target Compiler.
  */
 
 import {
-  inspectManifest,
-  generateManifestIR,
-  compileManifest,
+  Lexer,
+  Parser,
+  Validator,
+  generateManifestIRFromAST,
+  compileManifestIR,
   ManifestError,
 } from '../../manifest-core/src/index.ts';
 import { BuildResult, StudioDiagnostic } from './types.ts';
@@ -17,49 +19,21 @@ export async function runManifestPipeline(source: string, target = 'js'): Promis
   const diagnostics: StudioDiagnostic[] = [];
 
   try {
-    // 1. Lexing, Parsing & Semantic Validation
-    const inspection = inspectManifest(source);
-
-    if (inspection.validation && !inspection.validation.isValid) {
-      for (const issue of inspection.validation.issues) {
-        diagnostics.push({
-          line: issue.line || 1,
-          column: issue.column || 1,
-          message: issue.message,
-          severity: issue.severity || 'error',
-          source: 'validator',
-          hint: issue.hint,
-          example: issue.example,
-        });
-      }
-
-      if (diagnostics.some((d) => d.severity === 'error')) {
-        return {
-          success: false,
-          timestamp: Date.now(),
-          target,
-          artifacts: [],
-          diagnostics,
-          durationMs: Math.round(performance.now() - startTime),
-        };
-      }
-    }
-
-    // 2. IR Generation
-    let ir: any;
+    // 1. Lexing (single pass)
+    let tokens: any[];
     try {
-      ir = generateManifestIR(source);
+      tokens = new Lexer(source).tokenize();
     } catch (err: any) {
       diagnostics.push({
         line: err.line || 1,
         column: err.column || 1,
-        message: `IR generation failed: ${err.message || String(err)}`,
+        message: err.message || String(err),
         severity: 'error',
-        source: 'ir',
+        source: 'lexer',
         hint: err.hint,
         example: err.example,
+        sourceLine: err.sourceLine,
       });
-
       return {
         success: false,
         timestamp: Date.now(),
@@ -70,8 +44,82 @@ export async function runManifestPipeline(source: string, target = 'js'): Promis
       };
     }
 
-    // 3. Target Compiler (JavaScript)
-    const compilationResult = await compileManifest(source, target);
+    // 2. Parsing (single pass)
+    let ast: any;
+    try {
+      ast = new Parser(tokens, source).parse();
+    } catch (err: any) {
+      diagnostics.push({
+        line: err.line || 1,
+        column: err.column || 1,
+        message: err.message || String(err),
+        severity: 'error',
+        source: 'parser',
+        hint: err.hint,
+        example: err.example,
+        sourceLine: err.sourceLine,
+      });
+      return {
+        success: false,
+        timestamp: Date.now(),
+        target,
+        artifacts: [],
+        diagnostics,
+        durationMs: Math.round(performance.now() - startTime),
+      };
+    }
+
+    // 3. Semantic Validation
+    const validation = new Validator(ast, source).validate(ast);
+    for (const issue of validation.issues) {
+      diagnostics.push({
+        line: issue.line || 1,
+        column: issue.column || 1,
+        message: issue.message,
+        severity: issue.severity || 'error',
+        source: 'validator',
+        hint: issue.hint,
+        example: issue.example,
+      });
+    }
+
+    if (!validation.isValid) {
+      return {
+        success: false,
+        timestamp: Date.now(),
+        target,
+        artifacts: [],
+        diagnostics,
+        durationMs: Math.round(performance.now() - startTime),
+      };
+    }
+
+    // 4. IR Generation (directly from validated AST — zero re-lexing/re-parsing)
+    let ir: any;
+    try {
+      ir = generateManifestIRFromAST(ast);
+    } catch (err: any) {
+      diagnostics.push({
+        line: err.line || 1,
+        column: err.column || 1,
+        message: `IR generation failed: ${err.message || String(err)}`,
+        severity: 'error',
+        source: 'ir',
+        hint: err.hint,
+        example: err.example,
+      });
+      return {
+        success: false,
+        timestamp: Date.now(),
+        target,
+        artifacts: [],
+        diagnostics,
+        durationMs: Math.round(performance.now() - startTime),
+      };
+    }
+
+    // 5. Target Compiler (directly from IR)
+    const compilationResult = await compileManifestIR(ir, target);
 
     if (!compilationResult.success) {
       for (const diag of compilationResult.diagnostics) {
@@ -95,7 +143,17 @@ export async function runManifestPipeline(source: string, target = 'js'): Promis
       };
     }
 
-    // Map compiler artifacts
+    for (const diag of compilationResult.diagnostics || []) {
+      diagnostics.push({
+        line: diag.line || 1,
+        column: diag.column || 1,
+        message: diag.message,
+        severity: diag.severity,
+        source: 'compiler',
+        hint: diag.hint,
+      });
+    }
+
     const artifacts = (compilationResult.artifacts || []).map((art) => ({
       fileName: art.fileName,
       fileType: art.fileType,
