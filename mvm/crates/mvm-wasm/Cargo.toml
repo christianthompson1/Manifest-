@@ -1,0 +1,11 @@
+[package]
+name = "mvm-wasm"
+version = "1.0.0"
+edition = "2021"
+description = "WebAssembly cdylib bridge exposing the Rust Manifest Virtual Machine to Browser and Node.js hosts"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+mvm-core = { path = "../mvm-core" }

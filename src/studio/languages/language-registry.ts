@@ -38,7 +38,7 @@ import { dockerFile } from '@codemirror/legacy-modes/mode/dockerfile';
 
 // Manifest native mode
 import { manifestLanguage, manifestSyntaxHighlighting } from '../editor/manifest-language.ts';
-import { manifestAutocomplete } from '../editor/manifest-autocomplete.ts';
+import { manifestAutocomplete, manifestHoverTooltip } from '../editor/manifest-autocomplete.ts';
 import { manifestLinter } from '../editor/manifest-linter.ts';
 import { autocompletion } from '@codemirror/autocomplete';
 import { linter, Diagnostic as CmDiagnostic } from '@codemirror/lint';
@@ -74,9 +74,22 @@ export class LanguageRegistry {
         syntaxHighlighting: 'Available',
         completion: 'Available',
         diagnostics: 'Available',
-        formatting: 'Partial',
+        formatting: 'Available',
         localExecution: 'Available',
         localBuild: 'Available',
+        remoteBuild: 'Not configured',
+        debugging: 'Unsupported',
+      };
+    }
+    if (p.id === 'mbc') {
+      return {
+        editing: 'Unsupported',
+        syntaxHighlighting: 'Unsupported',
+        completion: 'Unsupported',
+        diagnostics: 'Available',
+        formatting: 'Unsupported',
+        localExecution: 'Available',
+        localBuild: 'Unsupported',
         remoteBuild: 'Not configured',
         debugging: 'Unsupported',
       };
@@ -189,7 +202,7 @@ export class LanguageRegistry {
   }
 
   private registerAllProviders() {
-    // 1. Manifest (First-Class Native)
+    // 1. Manifest (First-Class Native - Dual Syntax Profiles: Beginner & Professional)
     this.register({
       id: 'manifest',
       name: 'Manifest',
@@ -199,7 +212,7 @@ export class LanguageRegistry {
         highlighting: true,
         completion: 'native',
         diagnostics: 'native',
-        formatting: 'none',
+        formatting: 'optional',
         localRun: true,
         cloudBuild: false,
         debugging: 'none',
@@ -209,11 +222,30 @@ export class LanguageRegistry {
         const exts: Extension[] = [
           manifestSyntaxHighlighting,
           manifestLanguage,
+          manifestHoverTooltip,
           autocompletion({ override: [manifestAutocomplete], defaultKeymap: true }),
         ];
         if (!readOnly) exts.push(manifestLinter);
         return exts;
       },
+    });
+
+    // 1a. Manifest Portable Bytecode (.mbc) — Verified & Executed by Rust MVM
+    this.register({
+      id: 'mbc',
+      name: 'Manifest Bytecode (.mbc)',
+      extensions: ['.mbc'],
+      capabilities: {
+        editing: false,
+        highlighting: false,
+        completion: 'none',
+        diagnostics: 'native',
+        formatting: 'none',
+        localRun: true,
+        cloudBuild: false,
+        debugging: 'none',
+      },
+      getExtensions: () => [],
     });
 
     // 1b. TOML Configuration (manifest.toml, Cargo.toml, Anchor.toml — separated from Manifest linter!)

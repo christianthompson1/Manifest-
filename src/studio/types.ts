@@ -4,6 +4,7 @@
 
 export type FileLanguage =
   | 'manifest'
+  | 'mbc'
   | 'javascript'
   | 'typescript'
   | 'python'
@@ -38,6 +39,8 @@ export type FileLanguage =
   | 'plaintext'
   | string;
 
+export type StudioSyntaxProfile = 'beginner' | 'professional' | 'auto';
+
 export interface ProjectFile {
   id: string;
   name: string;
@@ -69,6 +72,8 @@ export interface ProjectTemplate {
   name: string;
   description: string;
   kind?: ProjectKind;
+  syntaxProfile?: StudioSyntaxProfile;
+  compilerTarget?: string;
   files: ProjectFile[];
 }
 
@@ -78,6 +83,8 @@ export interface ManifestProject {
   description?: string;
   kind?: ProjectKind;
   entryPath?: string;
+  syntaxProfile?: StudioSyntaxProfile;
+  compilerTarget?: string;
   files: ProjectFile[];
   activeFilePath?: string;
   createdAt?: number;
@@ -89,7 +96,8 @@ export interface StudioDiagnostic {
   column: number;
   message: string;
   severity: 'error' | 'warning' | 'info';
-  source: 'lexer' | 'parser' | 'validator' | 'ir' | 'compiler' | string;
+  source: 'lexer' | 'parser' | 'validator' | 'typechecker' | 'capability' | 'ir' | 'bytecode' | 'compiler' | string;
+  code?: string;
   hint?: string;
   example?: string;
   sourceLine?: string;
@@ -100,16 +108,27 @@ export interface BuildArtifact {
   fileType: string;
   content: string;
   sizeBytes: number;
+  isBinary?: boolean;
+  mimeType?: string;
 }
 
 export interface BuildResult {
   success: boolean;
   timestamp: number;
   target: string;
+  targetId?: string;
+  targetStatus?: string;
+  syntaxProfile?: 'beginner' | 'professional';
   artifacts: BuildArtifact[];
   diagnostics: StudioDiagnostic[];
   outputCode?: string;
   ir?: any;
+  irText?: string;
+  disassembly?: string;
+  capabilityAudit?: any;
+  mbcBytes?: Uint8Array;
+  returnValue?: string;
+  vmSteps?: number;
   durationMs: number;
 }
 

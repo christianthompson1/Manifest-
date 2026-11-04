@@ -38,6 +38,8 @@ export interface ProviderCapability {
 export interface ExecutionOptions {
   activeFilePath?: string;
   target?: string;
+  compilerTarget?: string;
+  syntaxProfile?: 'beginner' | 'professional' | 'auto';
   runId?: string;
   isDev?: boolean;
 }
@@ -50,6 +52,9 @@ export interface UnifiedExecutionResult {
   projectKind: ProjectKind;
   previewKind: PreviewKind;
   resolvedEntryPath?: string;
+  targetId?: string;
+  targetStatus?: string;
+  syntaxProfile?: 'beginner' | 'professional';
   superseded?: boolean;
   previewHtml?: string;
   outputCode?: string;
@@ -58,6 +63,19 @@ export interface UnifiedExecutionResult {
   state?: Record<string, any>;
   durationMs: number;
   ir?: any;
+  irText?: string;
+  disassembly?: string;
+  capabilityAudit?: any;
+  returnValue?: string;
+  vmSteps?: number;
+  artifacts?: Array<{
+    fileName: string;
+    fileType: string;
+    content: string;
+    sizeBytes: number;
+    isBinary?: boolean;
+    mimeType?: string;
+  }>;
   error?: string;
 }
 

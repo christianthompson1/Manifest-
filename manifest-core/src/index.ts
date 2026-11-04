@@ -19,6 +19,31 @@ export * from './solana/solana-simulator.ts';
 export * from './solana/solana-toolchain.ts';
 export * from './compiler/targets/solana-target.ts';
 
+// Manifest v1.0 General-Purpose Language Core, Typed IR, .mbc Bytecode, Rust MVM & Targets
+export * from './core/profile.ts';
+export * from './core/ast-v2.ts';
+export * from './core/beginner-parser.ts';
+export * from './core/professional-parser.ts';
+export * from './core/parse-unified.ts';
+export * from './core/formatter.ts';
+export * from './semantics/types.ts';
+export * from './semantics/module-resolver.ts';
+export * from './semantics/type-checker.ts';
+export * from './semantics/capability-analyzer.ts';
+export * from './ir/typed-ir.ts';
+export * from './ir/typed-ir-builder.ts';
+export * from './ir/ir-optimizer.ts';
+export * from './bytecode/mbc-format.ts';
+export * from './bytecode/mbc-compiler.ts';
+export * from './bytecode/mbc-reader.ts';
+export * from './vm/mvm-runner.ts';
+export * from './targets/target-registry.ts';
+export * from './targets/wasm-target.ts';
+export * from './targets/web-js-target.ts';
+export * from './targets/native-target.ts';
+export * from './runtime/semantic-evaluator.ts';
+export * from './pipeline.ts';
+
 import { Lexer } from './lexer/lexer.ts';
 import { Parser } from './parser/parser.ts';
 import { Validator } from './validator/validator.ts';

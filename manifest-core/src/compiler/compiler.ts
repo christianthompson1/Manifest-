@@ -10,6 +10,7 @@ import {
 } from './compiler-interface.ts';
 import { JSTargetCompiler } from './targets/js-target.ts';
 import { SolanaTargetCompiler } from './targets/solana-target.ts';
+import { isLegacyDomainManifestSource } from '../core/profile.ts';
 
 export class CompilerRegistry {
   private static compilers: Map<string, TargetCompiler> = new Map();
@@ -115,6 +116,35 @@ export async function compileManifest(
   targetName = 'js',
   options: TargetCompilerOptions = {}
 ): Promise<CompilationResult> {
+  if (!isLegacyDomainManifestSource(source)) {
+    const { compileManifestV1 } = await import('../pipeline.ts');
+    const mappedTarget = targetName === 'js' ? 'web-js' : targetName;
+    const v1 = await compileManifestV1(source, {
+      target: mappedTarget,
+      profile: options.profile,
+      entryFile: options.entryFile,
+      files: options.files,
+      optimize: options.optimize,
+    });
+    return {
+      success: v1.success,
+      target: v1.target.id,
+      outputCode: v1.jsCode || v1.rustCode || v1.watText || v1.disassembly || v1.irText,
+      artifacts: v1.artifacts.map((a) => ({
+        fileName: a.filename,
+        content: a.isBinary && a.bytes ? Buffer.from(a.bytes).toString('base64') : a.text || '',
+        fileType: a.isBinary ? 'binary' : a.filename.endsWith('.json') ? 'json' : 'text',
+      })),
+      diagnostics: v1.diagnostics.map((d) => ({
+        severity: d.severity,
+        message: d.message,
+        line: d.line,
+        column: d.column,
+        hint: d.hint,
+      })),
+    };
+  }
+
   const compiler = CompilerRegistry.get(targetName);
   if (!compiler) {
     return {

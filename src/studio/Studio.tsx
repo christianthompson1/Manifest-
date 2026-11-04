@@ -48,6 +48,7 @@ import {
   ConsoleEntry,
   StudioDiagnostic,
   BottomPanelTab,
+  StudioSyntaxProfile,
 } from './types.ts';
 import {
   loadProjectFromStorage,
@@ -59,7 +60,6 @@ import {
   StudioSettings,
   TEMPLATES,
 } from './project-store.ts';
-import { runManifestPipeline } from './compiler-service.ts';
 import { ExecutionOrchestrator } from './execution/execution-orchestrator.ts';
 import { UnifiedExecutionResult } from './execution/execution-types.ts';
 import { Sidebar, ActivityTab } from './sidebar/Sidebar.tsx';
@@ -76,10 +76,16 @@ import { ProjectSettingsModal } from './modals/ProjectSettingsModal.tsx';
 import { MainnetWarningModal } from './modals/MainnetWarningModal.tsx';
 import { TestRunnerModal } from './modals/TestRunnerModal.tsx';
 import { SolanaDeployModal } from './modals/SolanaDeployModal.tsx';
-import { SolanaWalletService, WalletState, SolanaNetwork } from './services/solana-wallet.ts';
+import { SolanaWalletService, WalletState } from './services/solana-wallet.ts';
 import { detectLanguage } from './editor/language-support.ts';
-import { Coins, ShieldCheck } from 'lucide-react';
+import { Coins, ShieldCheck, Wand2 } from 'lucide-react';
 import { LanguageRegistry } from './languages/language-registry.ts';
+import {
+  COMPILER_TARGETS,
+  formatManifestSource,
+  detectSyntaxProfile,
+  isLegacyDomainManifestSource,
+} from '../../manifest-core/src/index.ts';
 
 interface StudioProps {
   onSwitchToTestbench?: () => void;
@@ -133,6 +139,9 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
   const [isSplitView, setIsSplitView] = useState<boolean>(false);
   const [splitFilePath, setSplitFilePath] = useState<string>('manifest.toml');
 
+  // Dirty (unsaved) file tracking
+  const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(() => new Set());
+
   // Cursor position tracking for status bar
   const [cursorPos, setCursorPos] = useState<{ line: number; col: number }>({ line: 1, col: 1 });
 
@@ -171,12 +180,17 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
   // Save project asynchronously to IndexedDB only after initial hydration completes
   useEffect(() => {
     if (!isHydratedRef.current) return;
-    saveProjectAsync({ ...project, activeFilePath }).then((res) => {
-      if (!res.saved && res.error) {
-        addConsoleEntry(`[Storage Warning] ${res.error}`, 'error');
-        showToast('Warning: Workspace storage quota exceeded');
-      }
-    });
+    const saveTimer = setTimeout(() => {
+      saveProjectAsync({ ...project, activeFilePath }).then((res) => {
+        if (res.saved) {
+          setDirtyPaths(new Set());
+        } else if (res.error) {
+          addConsoleEntry(`[Storage Warning] ${res.error}`, 'error');
+          showToast('Warning: Workspace storage quota exceeded');
+        }
+      });
+    }, 180);
+    return () => clearTimeout(saveTimer);
   }, [project, activeFilePath]);
 
   // Save settings upon updates
@@ -247,6 +261,11 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
 
   // Update active file content
   const handleFileChange = (newContent: string) => {
+    setDirtyPaths((prev) => {
+      const next = new Set(prev);
+      next.add(activeFilePath);
+      return next;
+    });
     setProject((prev) => ({
       ...prev,
       files: prev.files.map((f) =>
@@ -259,6 +278,11 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
   // Update split file content
   const handleSplitFileChange = (newContent: string) => {
     if (!splitFile) return;
+    setDirtyPaths((prev) => {
+      const next = new Set(prev);
+      next.add(splitFile.path);
+      return next;
+    });
     setProject((prev) => ({
       ...prev,
       files: prev.files.map((f) =>
@@ -291,9 +315,81 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     }
   };
 
+  // Format or convert active Manifest source file into selected Syntax Profile
+  const handleFormatManifest = (targetProfOverride?: 'beginner' | 'professional') => {
+    if (activeFile.language !== 'manifest' && !activeFile.path.endsWith('.manifest')) {
+      showToast('Open a .manifest source file to format');
+      return;
+    }
+    if (isLegacyDomainManifestSource(activeFile.content)) {
+      showToast('Declarative UI / Solana domain blocks keep their canonical block layout');
+      return;
+    }
+    const targetProf: 'beginner' | 'professional' =
+      targetProfOverride ||
+      (project.syntaxProfile && project.syntaxProfile !== 'auto'
+        ? project.syntaxProfile
+        : detectSyntaxProfile(activeFile.content));
+    const fmt = formatManifestSource(activeFile.content, targetProf);
+    if (!fmt.ok || !fmt.formatted) {
+      const msg = fmt.diagnostics[0]?.message || 'Cannot format file with syntax errors';
+      addConsoleEntry(`[Formatter] ${msg}`, 'error');
+      showToast('Fix syntax errors before formatting');
+      return;
+    }
+    handleFileChange(fmt.formatted);
+    setProject((prev) => ({ ...prev, syntaxProfile: targetProf }));
+    showToast(`Formatted as ${targetProf === 'professional' ? 'Professional' : 'Beginner'} Profile`);
+  };
+
+  // Helper to persist generated BuildArtifacts into project.files under build/ (or declared artifact path)
+  const writeArtifactsToWorkspace = (
+    projId: string,
+    artifacts: Array<{
+      fileName: string;
+      fileType: string;
+      content: string;
+      sizeBytes: number;
+      isBinary?: boolean;
+      mimeType?: string;
+    }>
+  ) => {
+    if (!artifacts || artifacts.length === 0) return;
+    setProject((prev) => {
+      if (prev.id !== projId) return prev;
+      let nextFiles = [...prev.files];
+      for (const art of artifacts) {
+        const cleanPath = art.fileName.includes('/') ? art.fileName : `build/${art.fileName}`;
+        const name = cleanPath.split('/').pop() || cleanPath;
+        const lang = detectLanguage(cleanPath);
+        const existingIdx = nextFiles.findIndex((f) => f.path === cleanPath);
+        const fileEntry: ProjectFile = {
+          id: existingIdx >= 0 ? nextFiles[existingIdx].id : `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          name,
+          path: cleanPath,
+          language: lang,
+          content: art.content,
+          isReadOnly: true,
+          isBinary: art.isBinary,
+          mimeType: art.mimeType,
+        };
+        if (existingIdx >= 0) {
+          nextFiles[existingIdx] = fileEntry;
+        } else {
+          nextFiles.push(fileEntry);
+        }
+      }
+      return { ...prev, files: nextFiles };
+    });
+  };
+
   // Unified Run pipeline: uses ExecutionOrchestrator to detect and execute project deterministically
   const handleRun = useCallback(
-    async (projOverride?: ManifestProject | React.MouseEvent | any, fileOverride?: ProjectFile) => {
+    async (
+      projOverride?: ManifestProject | React.MouseEvent | any,
+      fileOverride?: ProjectFile,
+      targetOverride?: string
+    ) => {
       const isActualProject = projOverride && typeof projOverride === 'object' && 'files' in projOverride;
       const currentProj = isActualProject ? (projOverride as ManifestProject) : project;
       const currentFile =
@@ -303,42 +399,41 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
 
       setIsCompiling(true);
       const orchestrator = ExecutionOrchestrator.getInstance();
-      addConsoleEntry(`Running "${currentFile.path}" in workspace "${currentProj.name}"...`, 'info');
+      const chosenTarget = targetOverride || currentProj.compilerTarget || 'auto';
+      addConsoleEntry(
+        `Running "${currentFile.path}"${chosenTarget !== 'auto' ? ` [Target: ${chosenTarget}]` : ''}...`,
+        'info'
+      );
 
       try {
         const res = await orchestrator.executeProject(currentProj, {
           activeFilePath: currentFile.path,
-          target: 'js',
+          compilerTarget: chosenTarget === 'auto' ? undefined : chosenTarget,
+          syntaxProfile: currentProj.syntaxProfile,
         });
 
-        // Discard superseded asynchronous runs so stale output never overwrites newer preview state
         if (res.superseded) {
           return;
         }
 
         setExecutionResult(res);
 
-        // Create/update BuildResult for inspector & Problems panel
         const bRes: BuildResult = {
           success: res.success,
           timestamp: res.timestamp,
-          target: res.projectKind === 'manifest' ? 'js' : res.projectKind,
-          artifacts: res.outputCode
-            ? [
-                {
-                  fileName:
-                    res.projectKind === 'manifest'
-                      ? `${(res.ir?.appName || 'app').toLowerCase()}.js`
-                      : res.resolvedEntryPath || currentFile.name,
-                  fileType: res.projectKind === 'manifest' ? 'javascript' : currentFile.language,
-                  content: res.outputCode,
-                  sizeBytes: new Blob([res.outputCode]).size,
-                },
-              ]
-            : [],
+          target: res.targetId || (res.projectKind === 'manifest' ? 'mvm' : res.projectKind),
+          targetId: res.targetId,
+          targetStatus: res.targetStatus,
+          syntaxProfile: res.syntaxProfile,
+          artifacts: res.artifacts || [],
           diagnostics: res.diagnostics,
           outputCode: res.outputCode,
           ir: res.ir,
+          irText: res.irText,
+          disassembly: res.disassembly,
+          capabilityAudit: res.capabilityAudit,
+          returnValue: res.returnValue,
+          vmSteps: res.vmSteps,
           durationMs: res.durationMs,
         };
         setBuildResult(bRes);
@@ -351,34 +446,14 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           const entryLabel = res.resolvedEntryPath || currentFile.path;
           setIsPreviewOpen(true);
           setMobileActiveView('preview');
-          showToast(`Running "${entryLabel}" in Preview`);
-
-          // If manifest code produced an output artifact, update build/ folder
-          if (res.projectKind === 'manifest' && res.outputCode) {
-            const appSlug = (res.ir?.appName || 'app').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-            const artifactPath = `build/${appSlug}.js`;
-            setProject((prev) => {
-              if (prev.id !== currentProj.id) return prev;
-              const hasBuild = prev.files.some((f) => f.path === artifactPath);
-              const updated = hasBuild
-                ? prev.files.map((f) => (f.path === artifactPath ? { ...f, content: res.outputCode! } : f))
-                : [
-                    ...prev.files,
-                    {
-                      id: `artifact-${Date.now()}`,
-                      name: `${appSlug}.js`,
-                      path: artifactPath,
-                      language: 'javascript' as const,
-                      content: res.outputCode!,
-                      isReadOnly: true,
-                    },
-                  ];
-              return { ...prev, files: updated };
-            });
-          }
+          showToast(
+            res.targetId === 'mvm'
+              ? `Executed "${entryLabel}" on Rust MVM`
+              : `Running "${entryLabel}" (${res.targetId || res.projectKind})`
+          );
         } else {
           const errorCount = res.diagnostics.filter((d) => d.severity === 'error').length || 1;
-          addConsoleEntry(`Execution halted with ${errorCount} error(s). Inspect Preview or Problems panel.`, 'error');
+          addConsoleEntry(`Execution halted with ${errorCount} diagnostic(s).`, 'error');
           setIsPreviewOpen(true);
           setActiveBottomTab('problems');
           setIsBottomOpen(true);
@@ -393,14 +468,14 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     [project, activeFile, activeFilePath, addConsoleEntry]
   );
 
-  // Build command: compiles Manifest -> build/<app>.js OR Static Web -> build/bundle.html
+  // Build command: emits real target artifacts (.mbc, .disasm.txt, .wasm, .wat, .rs, .js, bundle.html) into workspace
   const handleBuild = async () => {
     const langProvider = LanguageRegistry.getInstance().detectProvider(activeFile.path);
     const buildStatus = langProvider.getCapabilityStatus
       ? langProvider.getCapabilityStatus('localBuild')
       : 'Unsupported';
 
-    if (buildStatus !== 'Available') {
+    if (buildStatus !== 'Available' && activeFile.language !== 'manifest') {
       addConsoleEntry(
         `[Build] Cannot build "${activeFile.path}" locally. ${langProvider.name} local build is ${buildStatus}.`,
         'error'
@@ -444,42 +519,51 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
         return;
       }
 
-      // Manifest -> JavaScript artifact build
+      const orchestrator = ExecutionOrchestrator.getInstance();
       const targetManifest =
         activeFile.language === 'manifest' || activeFile.path.endsWith('.manifest')
           ? activeFile
           : mainManifestFile;
-      addConsoleEntry(`Building "${targetManifest.path}" (Target: JS)...`, 'build');
 
-      const res = await runManifestPipeline(targetManifest.content, 'js');
-      setBuildResult(res);
+      const buildRes = await orchestrator.buildProject(project, {
+        activeFilePath: targetManifest.path,
+        compilerTarget: project.compilerTarget === 'auto' ? undefined : project.compilerTarget,
+        syntaxProfile: project.syntaxProfile,
+      });
 
-      if (res.success && res.outputCode) {
-        const appSlug = (res.ir?.appName || 'app').toLowerCase().replace(/[^a-z0-9_-]/g, '_');
-        const artifactPath = `build/${appSlug}.js`;
+      const bRes: BuildResult = {
+        success: buildRes.success,
+        timestamp: buildRes.timestamp,
+        target: buildRes.targetId || project.compilerTarget || 'mvm',
+        targetId: buildRes.targetId,
+        targetStatus: buildRes.targetStatus,
+        syntaxProfile: buildRes.syntaxProfile,
+        artifacts: buildRes.artifacts || [],
+        diagnostics: buildRes.diagnostics,
+        outputCode: buildRes.outputCode,
+        ir: buildRes.ir,
+        irText: buildRes.irText,
+        disassembly: buildRes.disassembly,
+        capabilityAudit: buildRes.capabilityAudit,
+        durationMs: buildRes.durationMs,
+      };
+      setBuildResult(bRes);
 
-        setProject((prev) => {
-          const filtered = prev.files.filter((f) => f.path !== artifactPath);
-          const newFiles: ProjectFile[] = [
-            ...filtered,
-            {
-              id: `artifact-${Date.now()}`,
-              name: `${appSlug}.js`,
-              path: artifactPath,
-              language: 'javascript',
-              content: res.outputCode!,
-              isReadOnly: true,
-            },
-          ];
-          return { ...prev, files: newFiles };
-        });
+      for (const line of buildRes.logs) {
+        addConsoleEntry(line, buildRes.success ? 'build' : 'error');
+      }
 
-        addConsoleEntry(`Artifact generated: ${artifactPath} (${res.artifacts[0]?.sizeBytes || 0} bytes)`, 'build');
-        showToast(`Artifact built: ${artifactPath}`);
-      } else {
-        addConsoleEntry(`Build failed for "${targetManifest.path}". Inspect Problems tab.`, 'error');
+      if (buildRes.success && buildRes.artifacts && buildRes.artifacts.length > 0) {
+        writeArtifactsToWorkspace(project.id, buildRes.artifacts);
+        const primaryArt = buildRes.artifacts[0];
+        const primaryPath = primaryArt.fileName.includes('/')
+          ? primaryArt.fileName
+          : `build/${primaryArt.fileName}`;
+        showToast(`Built ${primaryPath} (${primaryArt.sizeBytes} B)`);
+      } else if (!buildRes.success) {
         setActiveBottomTab('problems');
         setIsBottomOpen(true);
+        showToast(`Build failed (${targetManifest.name})`);
       }
     } finally {
       setIsCompiling(false);
@@ -524,13 +608,22 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     const isGitKeep = cleanPath.endsWith('/.gitkeep');
     const name = cleanPath.split('/').pop() || cleanPath;
     const isManifest = cleanPath.endsWith('.manifest');
+    const modIdent = name.replace(/\.manifest$/i, '').replace(/[^a-zA-Z0-9_]/g, '_') || 'mod';
+
+    const starterContent = !isManifest
+      ? ''
+      : project.syntaxProfile === 'professional'
+      ? `module ${modIdent};\n\nexport fn helper(x: i64) -> i64 {\n    return x;\n}\n`
+      : project.syntaxProfile === 'beginner'
+      ? `MODULE ${modIdent}\n\nEXPORT FUNCTION helper(x: Int) RETURNS Int\n    RETURN x\nEND\n`
+      : `module ${modIdent};\n\nrequires console;\n\nfn main() -> i64 effects(console) {\n    console.print("Module ${modIdent} ready");\n    return 0;\n}\n`;
 
     const newFile: ProjectFile = {
       id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name,
       path: cleanPath,
       language: detectLanguage(cleanPath),
-      content: isManifest ? `APP "Module"\n\nPAGE Home\n    TEXT "Module loaded"\nEND\n` : '',
+      content: starterContent,
     };
 
     setProject((prev) => ({
@@ -696,6 +789,9 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     if (file.language === 'manifest') {
       return <FileCode className="w-3.5 h-3.5 text-[#ce9178]" />;
     }
+    if (file.language === 'mbc') {
+      return <Cpu className="w-3.5 h-3.5 text-[#89d185]" />;
+    }
     if (file.language === 'toml') {
       return <Settings className="w-3.5 h-3.5 text-[#9cdcfe]" />;
     }
@@ -759,13 +855,70 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           </button>
         </div>
 
-        {/* Right: Primary Run / Build / Preview Actions */}
+        {/* Right: Syntax Profile, Compiler Target, Run / Build / Preview Actions */}
         <div className="flex items-center space-x-1.5 sm:space-x-2">
+          {/* Syntax Profile Selector (Beginner | Professional | Auto) */}
+          <div className="hidden xl:flex items-center gap-1">
+            <select
+              aria-label="Manifest Syntax Profile"
+              title="Syntax Profile (Beginner & Professional normalize to identical AST, IR, and .mbc bytecode)"
+              value={project.syntaxProfile || 'auto'}
+              onChange={(e) => {
+                const nextProf = e.target.value as StudioSyntaxProfile;
+                setProject((prev) => ({ ...prev, syntaxProfile: nextProf, updatedAt: Date.now() }));
+              }}
+              className="h-[30px] px-2 rounded-md bg-[#1f1f1f] border border-[#2d2d2d] text-[#cccccc] text-[11px] outline-none hover:border-[#454545] cursor-pointer"
+            >
+              <option value="auto">Profile: Auto</option>
+              <option value="beginner">Profile: Beginner</option>
+              <option value="professional">Profile: Professional</option>
+            </select>
+
+            {activeFile.language === 'manifest' && !isLegacyDomainManifestSource(activeFile.content) && (
+              <button
+                onClick={() => handleFormatManifest()}
+                title="Format active .manifest file in selected Syntax Profile"
+                className="h-[30px] px-2 rounded-md bg-[#252526] hover:bg-[#2d2d2d] border border-[#2d2d2d] text-[#cccccc] text-[11px] flex items-center gap-1 transition cursor-pointer"
+              >
+                <Wand2 className="w-3 h-3 text-[#9cdcfe]" />
+                <span>Format</span>
+              </button>
+            )}
+          </div>
+
+          {/* Compiler Target Selector */}
+          <select
+            aria-label="Compiler Target"
+            title="Select Manifest Compilation & Execution Target"
+            value={project.compilerTarget || 'auto'}
+            onChange={(e) => {
+              const nextTarget = e.target.value;
+              const updatedProj = { ...project, compilerTarget: nextTarget, updatedAt: Date.now() };
+              setProject(updatedProj);
+              if (activeFile.language === 'manifest' || activeFile.path.endsWith('.manifest')) {
+                handleRun(updatedProj, activeFile, nextTarget);
+              }
+            }}
+            className="hidden md:block h-[30px] px-2 rounded-md bg-[#1f1f1f] border border-[#2d2d2d] text-[#cccccc] text-[11px] outline-none hover:border-[#454545] cursor-pointer max-w-[185px]"
+          >
+            <option value="auto">Target: Auto</option>
+            {COMPILER_TARGETS.map((tgt) => (
+              <option key={tgt.id} value={tgt.id} disabled={tgt.status === 'planned'}>
+                {tgt.name}
+                {tgt.status === 'planned'
+                  ? ' (Planned)'
+                  : tgt.status === 'requires-toolchain'
+                  ? ' (rustc)'
+                  : ''}
+              </option>
+            ))}
+          </select>
+
           {/* Primary Run Button - VS Code Green #238636 */}
           <button
             onClick={handleRun}
             disabled={isCompiling}
-            title="Compile & Run in Preview (Mod+Enter)"
+            title="Compile & Run Active Entry (Mod+Enter)"
             className="py-1 px-3 min-h-[32px] rounded-md bg-[#238636] hover:bg-[#2ea043] active:scale-[0.98] text-white font-medium text-xs flex items-center gap-1.5 transition cursor-pointer shadow-xs"
           >
             <Play className="w-3.5 h-3.5 fill-current" />
@@ -786,7 +939,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           <button
             onClick={handleBuild}
             disabled={isCompiling}
-            title="Compile JavaScript target artifact"
+            title="Emit target build artifacts (.mbc, .wasm, .rs, .js) into workspace build/"
             className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer"
           >
             <Hammer className="w-3 h-3 text-[#dcdcaa]" />
@@ -926,6 +1079,9 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                   >
                     {file ? getFileIcon(file) : <FileCode className="w-3.5 h-3.5 text-[#858585]" />}
                     <span className="truncate max-w-[140px]">{fileName}</span>
+                    {dirtyPaths.has(path) && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#cca700]" title="Unsaved edits" />
+                    )}
                     {openFilePaths.length > 1 && (
                       <button
                         onClick={(e) => handleCloseTab(path, e)}
@@ -1117,7 +1273,14 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                 />
               )}
               {activeBottomTab === 'build-output' && (
-                <TerminalPanel currentSource={mainManifestFile.content} />
+                <TerminalPanel
+                  currentSource={mainManifestFile.content}
+                  workspaceFiles={Object.fromEntries(
+                    project.files
+                      .filter((f) => !f.isBinary && !f.path.endsWith('/.gitkeep'))
+                      .map((f) => [f.path, f.content])
+                  )}
+                />
               )}
             </div>
           )}

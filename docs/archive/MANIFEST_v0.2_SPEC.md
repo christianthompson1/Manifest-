@@ -1,4 +1,6 @@
-# Manifest Application Language v0.2 — Foundation Specification
+# Manifest Application Language v0.2 — Foundation Specification (Historical Archive)
+
+> **Historical Archive Notice (Non-Normative):** This document records the early v0.2 declarative application prototype (`APP`, `PAGE`, `STATE`, `BUTTON`) preserved for backward compatibility. For the authoritative Manifest v1.0 general-purpose language specification (Beginner & Professional syntax profiles, static type system, capability & effect verification, Typed IR, `.mbc` bytecode, and Rust MVM), see [`../LANGUAGE_SPEC.md`](../LANGUAGE_SPEC.md).
 
 ## 1. Overview
 Manifest Application Language v0.2 extends the core Manifest compiler prototype into a real application-development language. It introduces a minimal, human-readable, and target-agnostic set of interactive application primitives while preserving Manifest's existing multi-stage pipeline:

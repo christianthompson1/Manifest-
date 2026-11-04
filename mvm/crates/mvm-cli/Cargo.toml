@@ -1,0 +1,12 @@
+[package]
+name = "mvm-cli"
+version = "1.0.0"
+edition = "2021"
+description = "Native CLI runner, verifier, and disassembler for Manifest Bytecode (.mbc)"
+
+[[bin]]
+name = "mvm"
+path = "src/main.rs"
+
+[dependencies]
+mvm-core = { path = "../mvm-core" }

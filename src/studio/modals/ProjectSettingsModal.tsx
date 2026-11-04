@@ -20,11 +20,12 @@ import {
   Lock,
   ExternalLink,
 } from 'lucide-react';
-import { ManifestProject } from '../types.ts';
+import { ManifestProject, StudioSyntaxProfile } from '../types.ts';
 import { StudioSettings } from '../project-store.ts';
 import { SolanaWalletService, SolanaNetwork } from '../services/solana-wallet.ts';
 import { PriorityFeeLevel } from '../services/priority-fees.ts';
 import { LibraryRegistry } from '../../../manifest-core/src/libraries/library-registry.ts';
+import { COMPILER_TARGETS } from '../../../manifest-core/src/index.ts';
 
 export interface ProjectSettingsModalProps {
   isOpen: boolean;
@@ -71,11 +72,15 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
   const [programId, setProgramId] = useState('Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS');
   const [githubRepo, setGithubRepo] = useState('');
   const [githubBranch, setGithubBranch] = useState('main');
+  const [syntaxProfile, setSyntaxProfile] = useState<StudioSyntaxProfile>(project?.syntaxProfile || 'auto');
+  const [compilerTarget, setCompilerTarget] = useState<string>(project?.compilerTarget || 'auto');
 
   useEffect(() => {
     if (project) {
       setProjectName(project.name || 'Manifest Project');
       setProjectDesc(project.description || '');
+      setSyntaxProfile(project.syntaxProfile || 'auto');
+      setCompilerTarget(project.compilerTarget || 'auto');
       const toml = project.files.find((f) => f.path === 'manifest.toml');
       const tomlEntry = toml?.content.match(/entry\s*=\s*["']([^"']+)["']/)?.[1];
       setEntryPath(
@@ -121,6 +126,8 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
         ...project,
         name: projectName,
         description: projectDesc,
+        syntaxProfile,
+        compilerTarget,
         entryPath: cleanEntry || project.entryPath,
         files: updatedFiles,
         updatedAt: Date.now(),
@@ -403,13 +410,42 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
             {activeTab === 'manifest' && (
               <div className="space-y-3">
                 <div className="p-3 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-1.5">
-                  <div className="font-semibold text-[#ffffff]">Manifest Language Core</div>
+                  <div className="font-semibold text-[#ffffff]">Manifest Language Core &amp; Rust MVM</div>
                   <p className="text-[11px] text-[#858585]">
-                    Compiler Engine Version: <span className="text-[#569cd6] font-mono font-semibold">0.4.0</span>
+                    Compiler &amp; VM Version: <span className="text-[#569cd6] font-mono font-semibold">1.0.0</span>
                   </p>
                   <p className="text-[11px] text-[#858585]">
-                    Architecture: Lexer → AST → Target-Independent IR → Multi-Target Compilers.
+                    Architecture: Dual Syntax Profiles (Beginner &amp; Professional) &rarr; Semantic AST &rarr; Static Type &amp; Capability Verifier &rarr; Typed IR &rarr; .mbc Bytecode / Rust MVM / WASM / Web / Native / Solana.
                   </p>
+                </div>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <div className="space-y-1">
+                    <label className="text-[#cccccc] font-medium">Syntax Profile</label>
+                    <select
+                      value={syntaxProfile}
+                      onChange={(e) => setSyntaxProfile(e.target.value as StudioSyntaxProfile)}
+                      className="w-full bg-[#1f1f1f] border border-[#2d2d2d] rounded-md px-2.5 py-1.5 text-xs text-[#ffffff] outline-none focus:border-[#569cd6]"
+                    >
+                      <option value="auto">Auto-detect from source</option>
+                      <option value="beginner">Beginner Profile (Keyword-guided)</option>
+                      <option value="professional">Professional Profile (Concise)</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[#cccccc] font-medium">Default Compiler Target</label>
+                    <select
+                      value={compilerTarget}
+                      onChange={(e) => setCompilerTarget(e.target.value)}
+                      className="w-full bg-[#1f1f1f] border border-[#2d2d2d] rounded-md px-2.5 py-1.5 text-xs text-[#ffffff] outline-none focus:border-[#569cd6]"
+                    >
+                      <option value="auto">Automatic (MVM for v1.0 / Web for UI)</option>
+                      {COMPILER_TARGETS.map((t) => (
+                        <option key={t.id} value={t.id} disabled={t.status === 'planned'}>
+                          {t.name}{t.status === 'planned' ? ' (Planned)' : t.status === 'requires-toolchain' ? ' (Host rustc)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <label className="text-[#cccccc] font-medium">Default Application Entry Point</label>
@@ -427,7 +463,7 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
                       ))}
                   </select>
                   <p className="text-[10px] text-[#858585]">
-                    Used when running from neutral config/documentation files. Active executable files (.manifest, .html, .wasm) take direct precedence.
+                    Used when running from neutral config/documentation files. Active executable files (.manifest, .mbc, .html, .wasm) take direct precedence.
                   </p>
                 </div>
               </div>
@@ -490,21 +526,32 @@ export const ProjectSettingsModal: React.FC<ProjectSettingsModalProps> = ({
             )}
 
             {activeTab === 'build' && (
-              <div className="space-y-3">
-                <div className="p-3 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-1">
-                  <div className="font-semibold text-[#ffffff]">Local In-Browser Simulator</div>
-                  <div className="text-[11px] text-[#89d185]">Status: Available (Offline)</div>
-                  <p className="text-[11px] text-[#858585]">
-                    Simulates instruction execution, state mutation, and constraint checking without local Cargo installation.
-                  </p>
-                </div>
-                <div className="p-3 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-1">
-                  <div className="font-semibold text-[#ffffff]">GitHub Actions Cloud Builder</div>
-                  <div className="text-[11px] text-[#cca700]">Status: Workflow Generator Ready</div>
-                  <p className="text-[11px] text-[#858585]">
-                    Pinned toolchain: Rust 1.83.0, Solana 1.18.26, Anchor 0.30.1 in .github/workflows/anchor-build.yml.
-                  </p>
-                </div>
+              <div className="space-y-2.5">
+                {COMPILER_TARGETS.map((tgt) => {
+                  const statusColor =
+                    tgt.status === 'available' || tgt.status === 'available-with-limitations'
+                      ? 'text-[#89d185]'
+                      : tgt.status === 'requires-toolchain'
+                      ? 'text-[#cca700]'
+                      : 'text-[#858585]';
+                  const statusLabel =
+                    tgt.status === 'available'
+                      ? 'Available (Offline Ready)'
+                      : tgt.status === 'available-with-limitations'
+                      ? 'Available (Subset / Local Simulation)'
+                      : tgt.status === 'requires-toolchain'
+                      ? 'Emits Rust Source (Binary Requires Host rustc)'
+                      : 'Planned (Not Implemented in v1.0)';
+                  return (
+                    <div key={tgt.id} className="p-2.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-semibold text-[#ffffff]">{tgt.name}</span>
+                        <span className={`text-[10px] font-mono ${statusColor}`}>{statusLabel}</span>
+                      </div>
+                      <p className="text-[11px] text-[#858585]">{tgt.description}</p>
+                    </div>
+                  );
+                })}
               </div>
             )}
 

@@ -1,0 +1,21 @@
+module math_utils;
+
+export const SCALE_FACTOR: i64 = 100;
+
+export fn gcd(a: i64, b: i64) -> i64 {
+    let mut x: i64 = std::math::abs(a);
+    let mut y: i64 = std::math::abs(b);
+    while y != 0 {
+        let rem: i64 = x % y;
+        x = y;
+        y = rem;
+    }
+    return x;
+}
+
+export fn lcm(a: i64, b: i64) -> i64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    return (std::math::abs(a) / gcd(a, b)) * std::math::abs(b);
+}

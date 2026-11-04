@@ -1,0 +1,27 @@
+MODULE basics_and_loops
+
+REQUIRES console
+DENIES net
+
+CONSTANT BONUS_THRESHOLD: Int = 50
+CONSTANT BONUS_AMOUNT: Int = 15
+
+FUNCTION accumulate_scores(scores: List<Int>) -> Int
+    MUTABLE total: Int = 0
+    FOR EACH score IN scores
+        SET total TO total + score
+    END
+
+    IF total >= BONUS_THRESHOLD
+        RETURN total + BONUS_AMOUNT
+    ELSE
+        RETURN total
+    END
+END
+
+FUNCTION main() -> Int EFFECTS console
+    LET scores: List<Int> = [12, 18, 25]
+    LET final_score: Int = accumulate_scores(scores)
+    SHOW "Final score: " + to_str(final_score)
+    RETURN final_score
+END

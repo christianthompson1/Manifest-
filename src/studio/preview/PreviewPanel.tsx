@@ -27,6 +27,8 @@ import {
   Activity,
   FileCode,
   Layout,
+  Shield,
+  Binary,
 } from 'lucide-react';
 import { BuildResult } from '../types.ts';
 import { UnifiedExecutionResult } from '../execution/execution-types.ts';
@@ -58,9 +60,9 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
   const [firedEvents, setFiredEvents] = useState<Array<{ name: string; timestamp: number }>>([]);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(false);
   const [inspectorTab, setInspectorTab] = useState<
-    'console' | 'state' | 'elements' | 'events' | 'ir' | 'target' | 'solana' | 'build'
+    'console' | 'bytecode' | 'capabilities' | 'ir' | 'target' | 'state' | 'elements' | 'events' | 'solana' | 'build'
   >('console');
-  const [codeTarget, setCodeTarget] = useState<'js' | 'rust'>('js');
+  const [codeTarget, setCodeTarget] = useState<'primary' | 'rust'>('primary');
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
@@ -462,11 +464,17 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
                 </span>
                 {[
                   { id: 'console', label: 'Console', icon: Terminal, badge: previewLogs.length },
+                  { id: 'bytecode', label: 'Bytecode (.mbc)', icon: Binary },
+                  {
+                    id: 'capabilities',
+                    label: 'Capabilities',
+                    icon: Shield,
+                    badge: (executionResult?.capabilityAudit || buildResult?.capabilityAudit)?.required?.length,
+                  },
+                  { id: 'ir', label: 'Typed IR', icon: Cpu },
+                  { id: 'target', label: 'Target Code', icon: FileCode },
                   { id: 'state', label: 'State', icon: Activity, badge: Object.keys(liveState).length },
                   { id: 'elements', label: 'Elements', icon: Layout },
-                  { id: 'events', label: 'Events', icon: Bug, badge: firedEvents.length },
-                  { id: 'ir', label: 'IR / AST', icon: Cpu },
-                  { id: 'target', label: 'Target Code', icon: FileCode },
                   { id: 'solana', label: 'Solana', icon: Coins },
                   { id: 'build', label: 'Build Logs', icon: Layers },
                 ].map((t) => {
@@ -476,7 +484,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
                     <button
                       key={t.id}
                       onClick={() => setInspectorTab(t.id as any)}
-                      className={`px-2 py-0.5 rounded flex items-center gap-1 transition cursor-pointer ${
+                      className={`px-2 py-0.5 rounded flex items-center gap-1 transition cursor-pointer shrink-0 ${
                         isActive
                           ? 'bg-[#2d2d2d] text-[#ffffff] font-medium'
                           : 'text-[#858585] hover:text-[#cccccc]'
@@ -485,7 +493,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
                       <Icon className="w-3 h-3" />
                       <span>{t.label}</span>
                       {t.badge !== undefined && t.badge > 0 && (
-                        <span className="text-[9px] px-1 rounded-full bg-[#3c3c3c] text-[#ffffff]">
+                        <span className="text-[9px] px-1 rounded bg-[#3c3c3c] text-[#ffffff]">
                           {t.badge}
                         </span>
                       )}
@@ -507,16 +515,81 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
             <div className="flex-1 overflow-y-auto p-3 font-mono text-xs text-[#cccccc] bg-[#181818] custom-scrollbar">
               {inspectorTab === 'console' && (
                 <div className="space-y-1">
-                  {previewLogs.length === 0 ? (
+                  {previewLogs.length === 0 && (!executionResult?.logs || executionResult.logs.length === 0) ? (
                     <div className="text-[#666666] italic py-2">No console output received yet.</div>
                   ) : (
-                    previewLogs.map((log, idx) => (
+                    [...(executionResult?.logs || []), ...previewLogs].map((log, idx) => (
                       <div key={idx} className="flex items-start gap-1.5 py-0.5 text-xs text-[#d4d4d4]">
                         <span className="text-[#858585] select-none">&gt;</span>
                         <span>{log}</span>
                       </div>
                     ))
                   )}
+                </div>
+              )}
+
+              {inspectorTab === 'bytecode' && (
+                <div className="space-y-2">
+                  <div className="text-[11px] text-[#858585] font-sans flex items-center justify-between">
+                    <span>Portable Manifest Bytecode (.mbc v1.0 Disassembly)</span>
+                    {executionResult?.vmSteps !== undefined && (
+                      <span className="font-mono text-[#89d185]">
+                        Executed {executionResult.vmSteps} MVM steps &bull; Return: {executionResult.returnValue}
+                      </span>
+                    )}
+                  </div>
+                  <pre className="text-[11px] text-[#d4d4d4] leading-relaxed overflow-x-auto p-2.5 bg-[#1f1f1f] rounded border border-[#2d2d2d]">
+                    {executionResult?.disassembly ||
+                      buildResult?.disassembly ||
+                      '; No .mbc bytecode emitted for the current target.\n; Switch Compiler Target to "Manifest VM (.mbc)" and click Run or Build to inspect disassembled instructions.'}
+                  </pre>
+                </div>
+              )}
+
+              {inspectorTab === 'capabilities' && (
+                <div className="space-y-2.5 font-sans text-xs">
+                  {(() => {
+                    const audit = executionResult?.capabilityAudit || buildResult?.capabilityAudit;
+                    if (!audit) {
+                      return (
+                        <div className="text-[#666666] italic py-2">
+                          No v1.0 capability &amp; transitive effect audit available for the current file.
+                        </div>
+                      );
+                    }
+                    return (
+                      <>
+                        <div className="grid grid-cols-3 gap-2 font-mono text-[11px]">
+                          <div className="p-2 rounded bg-[#1f1f1f] border border-[#2d2d2d]">
+                            <div className="text-[#858585] text-[10px] mb-1">Requires</div>
+                            <div className="text-[#9cdcfe]">{audit.required?.length ? audit.required.join(', ') : 'none'}</div>
+                          </div>
+                          <div className="p-2 rounded bg-[#1f1f1f] border border-[#2d2d2d]">
+                            <div className="text-[#858585] text-[10px] mb-1">Provides</div>
+                            <div className="text-[#89d185]">{audit.provided?.length ? audit.provided.join(', ') : 'none'}</div>
+                          </div>
+                          <div className="p-2 rounded bg-[#1f1f1f] border border-[#2d2d2d]">
+                            <div className="text-[#858585] text-[10px] mb-1">Denies</div>
+                            <div className="text-[#f85149]">{audit.denied?.length ? audit.denied.join(', ') : 'none'}</div>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <div className="text-[11px] text-[#858585]">Per-Function Transitive Effect Closure</div>
+                          {(audit.functionSummaries || []).map((fn: any) => (
+                            <div
+                              key={fn.name}
+                              className="p-2 rounded bg-[#1f1f1f] border border-[#2d2d2d] flex items-center justify-between font-mono text-[11px]"
+                            >
+                              <span className="text-[#dcdcaa]">fn {fn.name}()</span>
+                              <span className={fn.isPure ? 'text-[#89d185]' : 'text-[#ce9178]'}>
+                                {fn.isPure ? 'pure' : `effects(${fn.inferredEffects.join(', ')})`}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               )}
 
@@ -543,7 +616,7 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
               {inspectorTab === 'elements' && (
                 <div className="space-y-2 font-sans text-xs">
                   <div className="text-[11px] text-[#858585] mb-1">
-                    Component Tree Hierarchy (Derived from Manifest IR)
+                    Component Tree Hierarchy (Derived from Manifest UI IR)
                   </div>
                   <div className="p-2 rounded bg-[#1f1f1f] border border-[#2d2d2d] font-mono text-[11px]">
                     <div className="text-[#569cd6]">&lt;App name="{buildResult?.ir?.appName || 'App'}"&gt;</div>
@@ -563,27 +636,11 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
                 </div>
               )}
 
-              {inspectorTab === 'events' && (
-                <div className="space-y-1">
-                  <div className="text-[11px] text-[#858585] mb-2 font-sans">
-                    Recent User & Lifecycle Events
-                  </div>
-                  {firedEvents.length === 0 ? (
-                    <div className="text-[#666666] italic py-2">No interactive events recorded yet.</div>
-                  ) : (
-                    firedEvents.map((ev, idx) => (
-                      <div key={idx} className="flex items-center justify-between p-1.5 rounded bg-[#1f1f1f] border border-[#2d2d2d]">
-                        <span className="text-[#dcdcaa]">{ev.name}</span>
-                        <span className="text-[10px] text-[#858585]">{new Date(ev.timestamp).toLocaleTimeString()}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              )}
-
               {inspectorTab === 'ir' && (
-                <pre className="text-[11px] text-[#ce9178] leading-relaxed">
-                  {JSON.stringify(buildResult?.ir || {}, null, 2)}
+                <pre className="text-[11px] text-[#ce9178] leading-relaxed overflow-x-auto p-2 bg-[#1f1f1f] rounded border border-[#2d2d2d]">
+                  {executionResult?.irText ||
+                    buildResult?.irText ||
+                    JSON.stringify(executionResult?.ir || buildResult?.ir || {}, null, 2)}
                 </pre>
               )}
 
@@ -591,12 +648,12 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 pb-1 border-b border-[#2d2d2d]">
                     <button
-                      onClick={() => setCodeTarget('js')}
+                      onClick={() => setCodeTarget('primary')}
                       className={`px-2 py-0.5 rounded text-[11px] cursor-pointer ${
-                        codeTarget === 'js' ? 'bg-[#2d2d2d] text-white' : 'text-[#858585]'
+                        codeTarget === 'primary' ? 'bg-[#2d2d2d] text-white' : 'text-[#858585]'
                       }`}
                     >
-                      JavaScript Target (Web DOM)
+                      Active Target Output ({executionResult?.targetId || buildResult?.target || 'js'})
                     </button>
                     <button
                       onClick={() => setCodeTarget('rust')}
@@ -608,7 +665,9 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
                     </button>
                   </div>
                   <pre className="text-[11px] text-[#d4d4d4] leading-relaxed overflow-x-auto p-2 bg-[#1f1f1f] rounded border border-[#2d2d2d]">
-                    {codeTarget === 'js' ? buildResult?.outputCode || '// No JS' : getRustGeneratedCode()}
+                    {codeTarget === 'primary'
+                      ? executionResult?.outputCode || buildResult?.outputCode || '// No target code emitted'
+                      : getRustGeneratedCode()}
                   </pre>
                 </div>
               )}
@@ -642,11 +701,22 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
 
               {inspectorTab === 'build' && (
                 <div className="space-y-1 text-xs font-mono">
-                  <div className="text-[#89d185]">✓ Compilation pipeline completed successfully</div>
-                  <div className="text-[#858585]">Target: {buildResult?.target || 'js'}</div>
-                  <div className="text-[#858585]">Build Time: {buildResult?.durationMs || 0}ms</div>
-                  <div className="text-[#858585]">Artifacts: {buildResult?.artifacts?.length || 1} generated</div>
-                  <div className="text-[#858585]">Diagnostics: {buildResult?.diagnostics?.length || 0} warnings/errors</div>
+                  <div className="text-[#89d185]">
+                    {hasErrors ? '✗ Pipeline halted with diagnostics' : '✓ Compilation pipeline completed'}
+                  </div>
+                  <div className="text-[#858585]">
+                    Syntax Profile: {executionResult?.syntaxProfile || buildResult?.syntaxProfile || 'auto'}
+                  </div>
+                  <div className="text-[#858585]">
+                    Target: {executionResult?.targetId || buildResult?.target || 'js'}
+                  </div>
+                  <div className="text-[#858585]">Duration: {activeDurationMs}ms</div>
+                  <div className="text-[#858585]">
+                    Artifacts: {(executionResult?.artifacts || buildResult?.artifacts || []).length} generated
+                  </div>
+                  <div className="text-[#858585]">
+                    Diagnostics: {(executionResult?.diagnostics || buildResult?.diagnostics || []).length} total
+                  </div>
                 </div>
               )}
             </div>

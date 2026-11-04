@@ -9,6 +9,7 @@ import { detectLanguage } from '../editor/language-support.ts';
 import { detectProjectType } from './project-detector.ts';
 
 const BINARY_ZIP_MIME_MAP: Record<string, string> = {
+  mbc: 'application/x-manifest-bytecode',
   wasm: 'application/wasm',
   png: 'image/png',
   jpg: 'image/jpeg',
@@ -46,7 +47,12 @@ export async function exportProjectToZip(project: ManifestProject): Promise<Blob
 
   for (const file of project.files) {
     const base64Match = file.content.match(/^data:[^;]+;base64,([A-Za-z0-9+/=\s]+)$/);
-    if ((file.isBinary || file.path.toLowerCase().endsWith('.wasm')) && base64Match) {
+    if (
+      (file.isBinary ||
+        file.path.toLowerCase().endsWith('.wasm') ||
+        file.path.toLowerCase().endsWith('.mbc')) &&
+      base64Match
+    ) {
       zip.file(file.path, base64Match[1].replace(/\s+/g, ''), { base64: true });
     } else {
       zip.file(file.path, file.content);
@@ -147,6 +153,7 @@ export async function importProjectFromZip(
   const activeFile =
     projectFiles.find((f) => f.path === 'src/main.manifest') ||
     projectFiles.find((f) => f.path.endsWith('.manifest')) ||
+    projectFiles.find((f) => f.path.endsWith('.mbc')) ||
     projectFiles.find((f) => f.path.endsWith('.wasm')) ||
     projectFiles.find((f) => f.path === 'package.json') ||
     projectFiles.find((f) => f.path === 'index.html') ||

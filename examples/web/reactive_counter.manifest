@@ -1,0 +1,28 @@
+APP "Reactive Counter"
+
+STATE count TO 0
+
+ACTION increment
+    SET count TO count + 1
+END
+
+ACTION reset_counter
+    SET count TO 0
+END
+
+PAGE Home
+    CONTAINER
+        HEADING "Manifest Web Counter"
+        TEXT "Current count: " + count
+        BUTTON "Increment"
+            WHEN CLICK
+                CALL increment
+            END
+        END
+        BUTTON "Reset"
+            WHEN CLICK
+                CALL reset_counter
+            END
+        END
+    END
+END

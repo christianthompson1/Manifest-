@@ -1,21 +1,29 @@
 /**
- * Manifest Studio - Interactive CLI Terminal Panel
- * Executes real Manifest CLI commands (check, run, build, ir, targets) directly in the browser environment.
+ * Manifest Studio - Interactive CLI Terminal Panel (v1.0)
+ * Executes real Manifest v1.0 CLI commands (check, run, build, ir, bytecode, disassemble, verify, format, targets)
+ * directly in the browser environment against the Rust Manifest Virtual Machine (WASM) and compiler pipeline.
  * Styled with VS Code Dark Modern tokens (#1f1f1f buffer, #181818 subheader/input, #2d2d2d borders).
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Terminal, Send, Trash2, HelpCircle } from 'lucide-react';
+import { Terminal, Send, Trash2 } from 'lucide-react';
 import {
   executeManifest,
   inspectManifest,
   generateManifestIR,
   compileManifest,
-  Compiler,
+  isLegacyDomainManifestSource,
+  checkManifestSource,
+  compileManifestV1,
+  runManifestOnRustMvm,
+  formatManifestSource,
+  verifyMbcInRustVm,
+  COMPILER_TARGETS,
 } from '../../../manifest-core/src/index.ts';
 
 interface TerminalPanelProps {
   currentSource: string;
+  workspaceFiles?: Record<string, string>;
   onClear?: () => void;
 }
 
@@ -26,25 +34,27 @@ interface CommandLog {
   isError?: boolean;
 }
 
-export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) => {
+export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource, workspaceFiles }) => {
   const [inputVal, setInputVal] = useState('');
   const [history, setHistory] = useState<CommandLog[]>([
     {
       id: 'init-1',
       command: 'manifest --version',
-      output: ['Manifest Core CLI v0.1.0 (Architecture: IR + Target Compiler)'],
+      output: ['Manifest Language & Rust MVM CLI v1.0.0 (Beginner & Professional Syntax Profiles)'],
     },
     {
       id: 'init-2',
       command: 'help',
       output: [
         'Available commands:',
-        '  manifest run <file>       - Execute via interpreter',
-        '  manifest check <file>     - Validate syntax & semantics',
-        '  manifest build <file> js  - Compile to JavaScript artifact',
-        '  manifest ir <file>        - Print Manifest IR JSON',
-        '  manifest targets          - List registered compilation targets',
-        '  clear                     - Clear terminal buffer',
+        '  manifest check             - Type-check & verify capabilities/effects',
+        '  manifest run               - Compile to .mbc & execute on Rust MVM (or UI runtime)',
+        '  manifest ir                - Print optimized Typed Manifest IR',
+        '  manifest disassemble       - Emit & disassemble .mbc v1.0 bytecode',
+        '  manifest verify            - Run static .mbc verifier inside Rust MVM',
+        '  manifest build [target]    - Build target (mvm | web-js | wasm | native | solana-sbf)',
+        '  manifest targets           - List all compiler targets & honest statuses',
+        '  clear                      - Clear terminal buffer',
       ],
     },
   ]);
@@ -68,7 +78,6 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
     const parts = trimmed.split(/\s+/);
     const primary = parts[0].toLowerCase();
     const action = parts[1]?.toLowerCase();
-    const target = parts[3]?.toLowerCase() || 'js';
 
     let output: string[] = [];
     let isError = false;
@@ -77,91 +86,167 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
       if (primary === 'manifest' || primary === 'm') {
         if (!action || action === 'help' || action === '--help') {
           output = [
-            'Manifest Core v0.1 CLI',
-            'Usage: manifest <command> [file] [options]',
+            'Manifest v1.0 CLI',
+            'Usage: manifest <command> [options]',
             '',
             'Commands:',
-            '  run [file]         Run Manifest program directly via interpreter',
-            '  check [file]       Check syntax and semantic validity without running',
-            '  build [file] [tg]  Compile Manifest source to target code (js)',
-            '  ir [file]          Inspect target-agnostic Manifest Intermediate Representation',
-            '  targets            List available target compilers',
+            '  check                 Validate syntax, static types & transitive capability effects',
+            '  run                   Execute active program on Rust MVM (.mbc) or Web runtime',
+            '  ir                    Inspect optimized Typed Manifest IR',
+            '  bytecode              Compile to binary .mbc and report container metrics',
+            '  disassemble           Print human-readable .mbc bytecode disassembly',
+            '  verify                Verify .mbc stack heights & jump bounds via Rust MVM',
+            '  build [target]        Compile to mvm | web-js | wasm | native | solana-sbf',
+            '  format [profile]      Format source as beginner or professional',
+            '  targets               List all registered compilation targets',
           ];
+        } else if (action === '--version' || action === '-v') {
+          output = ['Manifest Language & Rust MVM CLI v1.0.0'];
         } else if (action === 'targets') {
-          const registered = new Compiler().getSupportedTargets();
           output = [
-            'Registered Compilation Targets:',
-            ...registered.map((t: string) => `  • ${t} (${t === 'js' ? 'Active / Supported' : 'Future Target'})`),
+            'Manifest v1.0 Compiler Targets:',
+            ...COMPILER_TARGETS.map((t) => `  • ${t.id.padEnd(14)} [${t.status}] — ${t.name}`),
           ];
         } else if (action === 'check') {
-          const inspection = inspectManifest(currentSource);
-          if (!inspection.validation) {
-            isError = true;
-            output = [
-              `[CHECK FAIL] Syntax error(s) detected:`,
-              ...(inspection.diagnostics || []).map(
-                (d: any) => `  • Line ${d.line || '?'}: ${d.message}`
-              ),
-            ];
-          } else if (inspection.validation.isValid) {
-            output = ['[CHECK PASS] Syntax is valid. No semantic errors detected.'];
-          } else {
-            isError = true;
-            output = [
-              `[CHECK FAIL] ${inspection.validation.issues.length} semantic issue(s) detected:`,
-              ...inspection.validation.issues.map(
-                (iss: any) => `  • Line ${iss.line || '?'}: ${iss.message}`
-              ),
-            ];
-          }
-        } else if (action === 'run') {
-          const runRes = await executeManifest(currentSource);
-          if (runRes.validationIssues.length === 0) {
-            output = [
-              `[EXEC OK] Application executed successfully (${runRes.output.length} SHOW outputs):`,
-              ...runRes.output.map((log: string) => `  > ${log}`),
-            ];
-          } else {
-            isError = true;
-            output = [
-              `[EXEC WARNING] Execution finished with ${runRes.validationIssues.length} issue(s):`,
-              ...runRes.validationIssues.map((e: any) => `  • Line ${e.line || '?'}: ${e.message}`),
-              ...runRes.output.map((log: string) => `  > ${log}`),
-            ];
-          }
-        } else if (action === 'ir') {
-          try {
-            const ir = generateManifestIR(currentSource);
-            output = [
-              `Manifest IR for "${ir.appName || 'app'}":`,
-              JSON.stringify(ir, null, 2),
-            ];
-          } catch (e: any) {
-            isError = true;
-            output = [`[IR BUILD ERROR] ${e.message || String(e)}`];
-          }
-        } else if (action === 'build') {
-          try {
-            const compileRes = await compileManifest(currentSource, target);
-            if (compileRes.success) {
+          if (!isLegacyDomainManifestSource(currentSource)) {
+            const res = checkManifestSource(currentSource, { files: workspaceFiles });
+            if (res.ok) {
+              const reqs = res.capabilityAudit?.declaredRequires.join(', ') || 'none';
               output = [
-                `[BUILD OK] Compiled target: ${target}`,
-                `Artifacts: ${compileRes.artifacts.length} file(s)`,
-                ...compileRes.artifacts.map(
-                  (a: any) =>
-                    `  • ${a.fileName || a.filename || 'output.js'} (${a.sizeBytes ?? a.content?.length ?? 0} bytes)`
-                ),
+                `[CHECK PASS] Profile: ${res.resolvedProfile} | Functions: ${res.ast?.functions.length || 0} | Capabilities: ${reqs}`,
               ];
             } else {
               isError = true;
               output = [
-                `[BUILD ERROR] Compilation to target "${target}" failed:`,
-                ...compileRes.diagnostics.map((d: any) => `  • Line ${d.line || '?'}: ${d.message}`),
+                `[CHECK FAIL] ${res.diagnostics.length} diagnostic(s):`,
+                ...res.diagnostics.map((d) => `  • [${d.code}] Line ${d.line || 1}: ${d.message}`),
               ];
             }
-          } catch (e: any) {
+          } else {
+            const inspection = inspectManifest(currentSource);
+            const synDiags = inspection.diagnostics || [];
+            const valIssues = inspection.validation?.issues || [];
+            const allIssues = [...synDiags, ...valIssues];
+            if (allIssues.filter((i: any) => i.severity !== 'warning').length === 0) {
+              output = ['[CHECK PASS] Declarative Manifest syntax & semantics valid.'];
+            } else {
+              isError = true;
+              output = [
+                `[CHECK FAIL] ${allIssues.length} issue(s):`,
+                ...allIssues.map((iss: any) => `  • Line ${iss.line || 1}: ${iss.message}`),
+              ];
+            }
+          }
+        } else if (action === 'run') {
+          if (!isLegacyDomainManifestSource(currentSource)) {
+            const vmRun = await runManifestOnRustMvm(currentSource, { files: workspaceFiles });
+            if (vmRun.ok) {
+              output = [
+                `[RUST MVM OK] Profile: ${vmRun.resolvedProfile} | Steps: ${vmRun.stepsExecuted} | Return: ${vmRun.returnValue}`,
+                ...vmRun.stdout.map((line) => `  > ${line}`),
+              ];
+            } else {
+              isError = true;
+              output = [
+                `[RUST MVM FAIL] ${vmRun.error || ''}`,
+                ...vmRun.build.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`),
+                ...vmRun.stdout.map((line) => `  > ${line}`),
+              ];
+            }
+          } else {
+            const runRes = await executeManifest(currentSource);
+            if (runRes.validationIssues.length === 0) {
+              output = [
+                `[EXEC OK] Executed (${runRes.output.length} outputs):`,
+                ...runRes.output.map((log: string) => `  > ${log}`),
+              ];
+            } else {
+              isError = true;
+              output = [
+                `[EXEC DIAGNOSTICS] ${runRes.validationIssues.length} issue(s):`,
+                ...runRes.validationIssues.map((e: any) => `  • Line ${e.line || 1}: ${e.message}`),
+              ];
+            }
+          }
+        } else if (action === 'ir') {
+          if (!isLegacyDomainManifestSource(currentSource)) {
+            const comp = await compileManifestV1(currentSource, { target: 'mvm', files: workspaceFiles });
+            if (comp.irText) {
+              output = [comp.irText];
+            } else {
+              isError = true;
+              output = comp.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
+            }
+          } else {
+            const ir = generateManifestIR(currentSource);
+            output = [JSON.stringify(ir, null, 2)];
+          }
+        } else if (action === 'bytecode' || action === 'disassemble' || action === 'disasm') {
+          if (isLegacyDomainManifestSource(currentSource)) {
             isError = true;
-            output = [`[COMPILER FAILURE] ${e.message || String(e)}`];
+            output = ['Declarative UI apps compile to DOM JS rather than .mbc bytecode. Open a v1.0 module to inspect .mbc.'];
+          } else {
+            const comp = await compileManifestV1(currentSource, { target: 'mvm', files: workspaceFiles });
+            if (comp.success && comp.mbcBytes) {
+              output =
+                action === 'bytecode'
+                  ? [
+                      `[MBC OK] Emitted ${comp.mbcBytes.length} bytes (Magic: MBC\\0, Version 1.0)`,
+                      `Use "manifest disassemble" to inspect instructions.`,
+                    ]
+                  : [comp.disassembly || ''];
+            } else {
+              isError = true;
+              output = comp.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
+            }
+          }
+        } else if (action === 'verify') {
+          const comp = await compileManifestV1(currentSource, { target: 'mvm', files: workspaceFiles });
+          if (!comp.success || !comp.mbcBytes) {
+            isError = true;
+            output = comp.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
+          } else {
+            const ver = await verifyMbcInRustVm(comp.mbcBytes);
+            isError = !ver.ok;
+            output = [
+              ver.ok
+                ? `[VERIFY PASS] Module "${ver.moduleName || 'main'}" verified by Rust MVM (${comp.mbcBytes.length} bytes, ${ver.functions || 0} functions)`
+                : `[VERIFY FAIL] ${ver.error || 'Verification failed'}`,
+            ];
+          }
+        } else if (action === 'format') {
+          const targetProf = parts[2]?.toLowerCase() === 'beginner' ? 'beginner' : 'professional';
+          const fmt = formatManifestSource(currentSource, targetProf);
+          if (fmt.ok && fmt.formatted) {
+            output = [`Formatted (${targetProf} profile):`, fmt.formatted];
+          } else {
+            isError = true;
+            output = fmt.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
+          }
+        } else if (action === 'build') {
+          const requestedTarget = parts[2] && !parts[2].endsWith('.manifest') ? parts[2].toLowerCase() : parts[3]?.toLowerCase() || 'mvm';
+          if (!isLegacyDomainManifestSource(currentSource)) {
+            const comp = await compileManifestV1(currentSource, { target: requestedTarget, files: workspaceFiles });
+            if (comp.success) {
+              output = [
+                `[BUILD OK] Target: ${comp.target.id} (${comp.target.status})`,
+                ...comp.artifacts.map((a) => `  • ${a.filename} (${a.bytes ? a.bytes.byteLength : (a.text || '').length} bytes)`),
+              ];
+            } else {
+              isError = true;
+              output = comp.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
+            }
+          } else {
+            const compileRes = await compileManifest(currentSource, requestedTarget === 'mvm' ? 'js' : requestedTarget);
+            if (compileRes.success) {
+              output = [
+                `[BUILD OK] Target: ${requestedTarget}`,
+                ...compileRes.artifacts.map((a: any) => `  • ${a.fileName} (${a.sizeBytes || a.content?.length || 0} bytes)`),
+              ];
+            } else {
+              isError = true;
+              output = compileRes.diagnostics.map((d: any) => `  • Line ${d.line || 1}: ${d.message}`);
+            }
           }
         } else {
           isError = true;
@@ -169,7 +254,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
         }
       } else {
         isError = true;
-        output = [`Command not found: "${primary}". Type "manifest" or "help".`];
+        output = [`Command not found: "${primary}". Type "manifest help".`];
       }
     } catch (err: any) {
       isError = true;
@@ -197,12 +282,11 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
 
   return (
     <div className="flex-1 flex flex-col bg-[#1f1f1f] font-mono text-xs overflow-hidden select-text">
-      {/* Terminal Subheader (#181818) */}
       <div className="h-8 bg-[#181818] border-b border-[#2d2d2d] px-3 flex items-center justify-between text-[11px] text-[#858585] select-none">
         <div className="flex items-center gap-2">
           <Terminal className="w-3.5 h-3.5 text-[#858585]" />
           <span className="font-semibold text-[#cccccc]">Manifest CLI Terminal</span>
-          <span className="text-[10px] text-[#767676] font-mono">(Core v0.1)</span>
+          <span className="text-[10px] text-[#767676] font-mono">(v1.0 + Rust MVM)</span>
         </div>
 
         <div className="flex items-center gap-1.5">
@@ -213,16 +297,22 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
             check
           </button>
           <button
+            onClick={() => handleCommand('manifest ir')}
+            className="px-2 py-0.5 rounded bg-[#252526] hover:bg-[#2d2d2d] border border-[#2d2d2d] text-[10px] text-[#ce9178] transition cursor-pointer"
+          >
+            ir
+          </button>
+          <button
+            onClick={() => handleCommand('manifest disassemble')}
+            className="px-2 py-0.5 rounded bg-[#252526] hover:bg-[#2d2d2d] border border-[#2d2d2d] text-[10px] text-[#9cdcfe] transition cursor-pointer"
+          >
+            disasm
+          </button>
+          <button
             onClick={() => handleCommand('manifest run')}
             className="px-2 py-0.5 rounded bg-[#252526] hover:bg-[#2d2d2d] border border-[#2d2d2d] text-[10px] text-[#89d185] transition cursor-pointer"
           >
             run
-          </button>
-          <button
-            onClick={() => handleCommand('manifest build')}
-            className="px-2 py-0.5 rounded bg-[#252526] hover:bg-[#2d2d2d] border border-[#2d2d2d] text-[10px] text-[#dcdcaa] transition cursor-pointer"
-          >
-            build
           </button>
           <button
             onClick={() => setHistory([])}
@@ -234,7 +324,6 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
         </div>
       </div>
 
-      {/* Terminal Buffer (#1f1f1f) */}
       <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-[#1f1f1f] custom-scrollbar">
         {history.map((log) => (
           <div key={log.id} className="space-y-1">
@@ -254,7 +343,6 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
         <div ref={terminalEndRef} />
       </div>
 
-      {/* Interactive Input Line (#181818) */}
       <div className="h-9 border-t border-[#2d2d2d] bg-[#181818] px-3 flex items-center gap-2">
         <span className="text-[#858585] font-bold text-xs select-none">$</span>
         <input
@@ -262,7 +350,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource }) =
           value={inputVal}
           onChange={(e) => setInputVal(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="manifest run, manifest check, manifest build..."
+          placeholder="manifest check, manifest ir, manifest disassemble, manifest run..."
           className="flex-1 bg-transparent text-[#ffffff] font-mono text-xs outline-none caret-[#aeafad] placeholder:text-[#767676]"
         />
         <button

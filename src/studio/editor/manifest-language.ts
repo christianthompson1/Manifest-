@@ -10,15 +10,22 @@ import { tags } from '@lezer/highlight';
 // Control flow keywords -> tags.controlKeyword (Purple #c586c0)
 const CONTROL_KEYWORDS = new Set([
   'IF', 'ELSE', 'END', 'WHEN', 'REPEAT', 'TIMES', 'FOR', 'EACH',
-  'RETURN', 'TRY', 'FAILED', 'WHILE', 'REQUIRE'
+  'RETURN', 'TRY', 'FAILED', 'WHILE', 'REQUIRE', 'MATCH', 'BREAK', 'CONTINUE',
+  'AWAIT', 'IMPORT', 'EXPORT', 'FROM',
+  'if', 'else', 'for', 'in', 'while', 'repeat', 'match', 'break', 'continue',
+  'return', 'await', 'import', 'export', 'from'
 ]);
 
 // Structural & definition keywords -> tags.definitionKeyword (Blue #569cd6)
 const DEFINITION_KEYWORDS = new Set([
+  'MODULE', 'FUNCTION', 'RETURNS', 'LET', 'MUTABLE', 'CONSTANT',
+  'STRUCT', 'ENUM', 'TRAIT', 'REQUIRES', 'PROVIDES', 'DENIES', 'EFFECTS', 'PURE', 'ASYNC',
   'APP', 'PAGE', 'ACTION', 'COMPONENT', 'CONTAINER', 'SERVER', 'ENDPOINT',
   'USE', 'METHOD', 'ROUTE', 'CARD', 'NAV', 'HEADER', 'FOOTER', 'MODAL',
   'PROGRAM', 'ACCOUNT', 'INSTRUCTION', 'CSS', 'JS', 'RUST', 'LIBRARY',
-  'SOLANA', 'WALLET', 'DEPLOY', 'PDA', 'TOKEN', 'TRANSFER'
+  'SOLANA', 'WALLET', 'DEPLOY', 'PDA', 'TOKEN', 'TRANSFER',
+  'module', 'fn', 'let', 'mut', 'const', 'struct', 'enum', 'trait',
+  'requires', 'provides', 'denies', 'effects', 'pure', 'async', 'pub'
 ]);
 
 // Statement & action keywords -> tags.keyword (Blue #569cd6)
@@ -29,11 +36,14 @@ const STATEMENT_KEYWORDS = new Set([
 
 // Logical operators & prepositions -> tags.operatorKeyword (Blue #569cd6)
 const OPERATOR_KEYWORDS = new Set([
-  'AND', 'OR', 'NOT', 'IN', 'INTO', 'BIND', 'ALT', 'WITH', 'AS'
+  'AND', 'OR', 'NOT', 'IN', 'INTO', 'BIND', 'ALT', 'WITH', 'AS', 'IS'
 ]);
 
 // UI Primitives & Types -> tags.typeName (Teal #4ec9b0)
 const TYPE_AND_PRIMITIVE_KEYWORDS = new Set([
+  'Int', 'Float', 'Bool', 'Void', 'Array', 'Map', 'Result', 'Option',
+  'i64', 'f64', 'bool', 'str', 'void',
+  'INT', 'FLOAT', 'BOOL', 'VOID', 'ARRAY', 'MAP', 'RESULT',
   'TEXT', 'BUTTON', 'INPUT', 'IMAGE', 'FORM', 'LIST', 'LINK',
   'TEXTAREA', 'CHECKBOX', 'SELECT',
   'TABLE', 'DIALOG', 'TABS', 'MENU', 'SIDEBAR', 'AVATAR', 'BADGE',
@@ -53,7 +63,7 @@ const STYLE_PROPERTIES = new Set([
 
 // Event identifiers -> tags.special(tags.variableName) (Yellow #dcdcaa)
 const EVENT_KEYWORDS = new Set([
-  'CLICK', 'SUBMIT', 'CHANGE', 'LOAD', 'INPUT_EVENT'
+  'CLICK', 'SUBMIT', 'CHANGE', 'LOAD', 'INPUT_EVENT', 'Ok', 'Err', 'Some', 'None'
 ]);
 
 // Literal atoms -> tags.atom (Blue #569cd6)
@@ -62,13 +72,13 @@ const LITERAL_ATOMS = new Set([
 ]);
 
 interface ManifestTokenizerState {
-  inString: boolean;
-  stringQuote: string | null;
+  inBlockComment: boolean;
 }
 
 export const manifestStreamParser = {
   tokenTable: {
     lineComment: tags.lineComment,
+    blockComment: tags.blockComment,
     string: tags.string,
     number: tags.number,
     operator: tags.operator,
@@ -86,20 +96,37 @@ export const manifestStreamParser = {
 
   startState(): ManifestTokenizerState {
     return {
-      inString: false,
-      stringQuote: null,
+      inBlockComment: false,
     };
   },
 
-  token(stream: StringStream, _state: ManifestTokenizerState): string | null {
+  token(stream: StringStream, state: ManifestTokenizerState): string | null {
+    // 0. Block comments /* ... */
+    if (state.inBlockComment) {
+      if (stream.match(/.*?\*\//)) {
+        state.inBlockComment = false;
+      } else {
+        stream.skipToEnd();
+      }
+      return 'blockComment';
+    }
+
     // 1. Whitespace
     if (stream.eatSpace()) return null;
+
+    if (stream.match('/*')) {
+      if (!stream.match(/.*?\*\//)) {
+        state.inBlockComment = true;
+        stream.skipToEnd();
+      }
+      return 'blockComment';
+    }
 
     // 2. Line Comments: -- , // , # , NOTE:
     if (
       stream.match('--') ||
       stream.match('//') ||
-      stream.match('#') ||
+      (stream.peek() === '#' && !stream.match(/^#[0-9a-fA-F]{3,8}\b/, false)) ||
       stream.match(/NOTE:/i)
     ) {
       stream.skipToEnd();
@@ -122,56 +149,64 @@ export const manifestStreamParser = {
       return 'string';
     }
 
-    // 4. Numbers (integers, decimals, hex colors, percentages, px)
-    if (stream.match(/^#-?[0-9a-fA-F]{3,8}\b/)) {
+    // 4. Numbers (hex, integers, decimals, CSS units)
+    if (stream.match(/^#[0-9a-fA-F]{3,8}\b/)) {
       return 'number';
     }
-    if (stream.match(/^-?\d+(\.\d+)?(px|%|em|rem|vh|vw)?\b/)) {
+    if (stream.match(/^0x[0-9a-fA-F_]+\b/)) {
+      return 'number';
+    }
+    if (stream.match(/^-?\d[0-9_]*(\.[0-9_]+)?(px|%|em|rem|vh|vw)?\b/)) {
       return 'number';
     }
 
-    // 5. Comparison & Math Operators
+    // 5. Multi-character & single-character operators (Professional & Beginner)
     if (
-      stream.match(/^(\+|-|\*|\/|%|===|==|!==|!=|<=|>=|<|>|=|«»|«=»|«>=»)/)
+      stream.match(/^(\->|=>|::|&&|\|\||===|==|!==|!=|<=|>=|\+|-|\*|\/|%|<|>|=|!|\?)/)
     ) {
       return 'operator';
     }
 
-    // 6. Delimiters, Punctuation & Colon
-    if (stream.match(/^[:(),.[\]]/)) {
+    // 6. Delimiters, Braces, Punctuation & Colon
+    if (stream.match(/^[:(),.[\]{};]/)) {
       return 'punctuation';
     }
 
-    // 7. Words / Identifiers
+    // 7. Standard library qualified call e.g. std::math::abs or console.print
+    if (stream.match(/^std(::[a-zA-Z_][a-zA-Z0-9_]*)+/)) {
+      return 'eventIdentifier';
+    }
+
+    // 8. Words / Identifiers
     if (stream.match(/^[a-zA-Z_][a-zA-Z0-9_.]*/)) {
       const word = stream.current();
       const upper = word.toUpperCase();
 
-      if (CONTROL_KEYWORDS.has(upper)) {
+      if (CONTROL_KEYWORDS.has(word) || (word === upper && CONTROL_KEYWORDS.has(upper))) {
         return 'controlKeyword';
       }
 
-      if (DEFINITION_KEYWORDS.has(upper)) {
+      if (DEFINITION_KEYWORDS.has(word) || (word === upper && DEFINITION_KEYWORDS.has(upper))) {
         return 'definitionKeyword';
       }
 
-      if (STATEMENT_KEYWORDS.has(upper)) {
-        return 'keyword';
-      }
-
-      if (OPERATOR_KEYWORDS.has(upper)) {
-        return 'operatorKeyword';
-      }
-
-      if (TYPE_AND_PRIMITIVE_KEYWORDS.has(upper)) {
+      if (TYPE_AND_PRIMITIVE_KEYWORDS.has(word) || (word === upper && TYPE_AND_PRIMITIVE_KEYWORDS.has(upper))) {
         return 'typeName';
       }
 
-      if (STYLE_PROPERTIES.has(upper)) {
+      if (word === upper && STATEMENT_KEYWORDS.has(upper)) {
+        return 'keyword';
+      }
+
+      if (word === upper && OPERATOR_KEYWORDS.has(upper)) {
+        return 'operatorKeyword';
+      }
+
+      if (word === upper && STYLE_PROPERTIES.has(upper)) {
         return 'propertyName';
       }
 
-      if (EVENT_KEYWORDS.has(upper)) {
+      if (EVENT_KEYWORDS.has(word) || (word === upper && EVENT_KEYWORDS.has(upper))) {
         return 'eventIdentifier';
       }
 
@@ -179,8 +214,18 @@ export const manifestStreamParser = {
         return 'atom';
       }
 
-      // Check if it's an event target like app.starts or button.clicks
+      // Check if it's a stdlib / event call like console.print, fs.read, app.starts
       if (word.includes('.')) {
+        return 'eventIdentifier';
+      }
+
+      // PascalCase identifier -> likely Struct or Enum type name
+      if (/^[A-Z][a-zA-Z0-9_]*$/.test(word)) {
+        return 'typeName';
+      }
+
+      // Look ahead for '(' to highlight function invocations
+      if (stream.peek() === '(') {
         return 'eventIdentifier';
       }
 
@@ -193,9 +238,9 @@ export const manifestStreamParser = {
   },
 
   languageData: {
-    commentTokens: { line: '--' },
-    closeBrackets: { brackets: ['(', '[', '"', "'"] },
-    indentOnInput: /^\s*(END|ELSE|IF\s+FAILED)\s*$/,
+    commentTokens: { line: '//', block: { open: '/*', close: '*/' } },
+    closeBrackets: { brackets: ['(', '[', '{', '"', "'"] },
+    indentOnInput: /^\s*(END|ELSE|WHEN|IF\s+FAILED|\})\s*$/,
   },
 };
 

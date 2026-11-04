@@ -207,10 +207,22 @@ export async function runV04Tests(): Promise<{ passed: number; failed: number; t
   // Test 7: All Manifest Templates Compile Cleanly (Section 3 Regression Test)
   try {
     for (const tpl of TEMPLATES) {
-      const mf = tpl.files.find((f) => f.path.endsWith('.manifest'));
+      const mf =
+        tpl.files.find((f) => f.path === 'src/main.manifest') ||
+        tpl.files.find((f) => f.path.endsWith('.manifest'));
       if (mf) {
-        const target = tpl.id === 'solana-dapp' ? 'solana' : 'js';
-        const res = await compileManifest(mf.content, target);
+        const target =
+          tpl.id === 'solana-dapp'
+            ? 'solana'
+            : tpl.compilerTarget && tpl.compilerTarget !== 'auto'
+              ? tpl.compilerTarget
+              : 'js';
+        const tplFiles = Object.fromEntries(tpl.files.map((f) => [f.path, f.content]));
+        const res = await compileManifest(mf.content, target, {
+          entryFile: mf.path,
+          files: tplFiles,
+          profile: tpl.syntaxProfile,
+        });
         const errorCount = res.diagnostics.filter((d) => d.severity === 'error').length;
         assert(
           res.success === true && errorCount === 0,

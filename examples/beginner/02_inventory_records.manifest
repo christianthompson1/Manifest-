@@ -1,0 +1,37 @@
+MODULE inventory_records
+
+REQUIRES console
+DENIES net
+
+STRUCT Item
+    sku: Text
+    qty: Int
+    unit_price: Int
+END
+
+ENUM ReorderDecision
+    Sufficient(Int)
+    RestockNeeded(Int)
+END
+
+FUNCTION evaluate_stock(item: Item, minimum: Int) -> ReorderDecision
+    IF item.qty < minimum
+        RETURN ReorderDecision::RestockNeeded(minimum - item.qty)
+    ELSE
+        RETURN ReorderDecision::Sufficient(item.qty * item.unit_price)
+    END
+END
+
+FUNCTION main() -> Int EFFECTS console
+    LET sensor = NEW Item(sku: "HX-400", qty: 14, unit_price: 25)
+    LET decision = evaluate_stock(sensor, 10)
+
+    MATCH decision
+        WHEN ReorderDecision::Sufficient(total_value)
+            SHOW "Stock value: " + to_str(total_value)
+            RETURN total_value
+        WHEN ReorderDecision::RestockNeeded(missing)
+            SHOW "Need units: " + to_str(missing)
+            RETURN missing
+    END
+END

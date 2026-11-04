@@ -1,0 +1,20 @@
+module audit_pipeline;
+
+requires [console, fs.read, fs.write, crypto];
+denies [net];
+
+fn parse_and_digest(config_text: str) -> str effects(crypto) {
+    let clean: str = std::str::trim(config_text);
+    return std::crypto::sha256(clean);
+}
+
+fn main() -> i64 effects(console, fs.read, fs.write, crypto) {
+    let raw_cfg: str = fs.read_text("config/policy.txt");
+    let digest: str = parse_and_digest(raw_cfg);
+    let wrote: bool = fs.write_text("build/policy.sha256", digest);
+    if wrote {
+        console.print("Audit digest written: " + digest);
+        return 1;
+    }
+    return 0;
+}

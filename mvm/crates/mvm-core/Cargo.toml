@@ -1,0 +1,9 @@
+[package]
+name = "mvm-core"
+version = "1.0.0"
+edition = "2021"
+description = "Core bytecode decoder, static verifier, capability guard, and stack virtual machine for Manifest (.mbc)"
+
+[lib]
+name = "mvm_core"
+path = "src/lib.rs"

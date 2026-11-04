@@ -45,7 +45,7 @@ const BINARY_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'ico', 'webp', 'avif', 'bmp', 'tiff',
   'woff', 'woff2', 'ttf', 'otf', 'eot',
   'mp3', 'wav', 'ogg', 'mp4', 'webm',
-  'pdf', 'wasm', 'bin', 'so', 'dll', 'dylib', 'zip', 'tar', 'gz'
+  'pdf', 'wasm', 'mbc', 'bin', 'so', 'dll', 'dylib', 'zip', 'tar', 'gz'
 ]);
 
 export function isBinaryFile(path: string): boolean {
@@ -74,6 +74,7 @@ export function getMimeType(path: string): string {
     case 'mp4': return 'video/mp4';
     case 'pdf': return 'application/pdf';
     case 'wasm': return 'application/wasm';
+    case 'mbc': return 'application/x-manifest-bytecode';
     default: return 'application/octet-stream';
   }
 }

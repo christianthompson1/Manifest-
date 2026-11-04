@@ -84,11 +84,15 @@ jobs:
           solana --version
           anchor --version
 
-      # 10. Execute Manifest Compiler Tests (Unit & Language Tests)
-      - name: Run Manifest Compiler Tests
+      # 10. Build & Test Rust Manifest Virtual Machine (mvm) + Manifest Compiler Tests
+      - name: Run Rust MVM & Manifest Compiler Tests
         id: manifest_tests
         run: |
-          echo "=== Step 10: Manifest Compiler & Language Test Suite ==="
+          set -e
+          echo "=== Step 10a: Rust Manifest Virtual Machine (mvm) Cargo Tests & Release Build ==="
+          cargo test --manifest-path mvm/Cargo.toml
+          cargo build --release --manifest-path mvm/Cargo.toml
+          echo "=== Step 10b: Manifest Compiler, v1.0 Upgrade & Studio Test Suite ==="
           bun run manifest:test
 
       # 11. Synthesize Genuine Anchor Workspace from Manifest Source

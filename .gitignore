@@ -1,5 +1,8 @@
 node_modules
 dist
+mvm/target
+target
+build-report.json
 .env
 .DS_Store
 *.log

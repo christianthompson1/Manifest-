@@ -336,9 +336,125 @@ async function runBenchmark() {
     );
   }
 
+  console.log('\n4. MANIFEST v1.0 PIPELINE & RUST MVM vs TS EVALUATOR vs DIRECT WASM');
+  console.log('--------------------------------------------------------------------------------');
+
+  const {
+    checkManifestSource,
+    compileManifestV1,
+    evaluateMIRModule,
+    executeMbcInRustVm,
+  } = await import('../src/index.ts');
+  const { execFileSync } = await import('child_process');
+  const fs = await import('fs');
+  const os = await import('os');
+  const path = await import('path');
+
+  const v1NumericBenchSrc = `
+module v1_loop_bench;
+
+export fn sum_collatz_lengths(limit: i64) -> i64 {
+    let mut total_steps: i64 = 0;
+    let mut seed: i64 = 2;
+    while seed <= limit {
+        let mut n: i64 = seed;
+        while n > 1 {
+            if (n % 2) == 0 {
+                n = n / 2;
+            } else {
+                n = 3 * n + 1;
+            }
+            total_steps = total_steps + 1;
+        }
+        seed = seed + 1;
+    }
+    return total_steps;
+}
+
+export fn main() -> i64 {
+    return sum_collatz_lengths(2500);
+}
+`;
+
+  // Warm up Rust MVM WASM module compilation once
+  const warmupMbc = await compileManifestV1(`module w; fn main() -> i64 { return 1; }`, { target: 'mvm' });
+  await executeMbcInRustVm(warmupMbc.mbcBytes!);
+
+  const c0 = performance.now();
+  const checkedV1 = checkManifestSource(v1NumericBenchSrc);
+  const checkMs = performance.now() - c0;
+
+  const b0 = performance.now();
+  const mvmBuild = await compileManifestV1(v1NumericBenchSrc, { target: 'mvm' });
+  const mbcBuildMs = performance.now() - b0;
+
+  const w0 = performance.now();
+  const wasmBuild = await compileManifestV1(v1NumericBenchSrc, { target: 'wasm' });
+  const wasmBuildMs = performance.now() - w0;
+
+  // 1) TypeScript MIR Reference Evaluator
+  const te0 = performance.now();
+  const tsEvalRes = evaluateMIRModule(checkedV1.mir!, { maxSteps: 5_000_000 });
+  const tsEvalMs = performance.now() - te0;
+
+  // 2) Rust MVM (WASM in-process)
+  const rv0 = performance.now();
+  const rustWasmRes = await executeMbcInRustVm(mvmBuild.mbcBytes!, { maxSteps: 5_000_000 });
+  const rustWasmMs = performance.now() - rv0;
+
+  // 3) Native Rust MVM CLI (/mvm/target/release/mvm)
+  const mvmBinPath = path.resolve('mvm/target/release/mvm');
+  if (!fs.existsSync(mvmBinPath)) {
+    const cargoCmd = fs.existsSync('/usr/local/bin/cargo') ? '/usr/local/bin/cargo' : 'cargo';
+    execFileSync(cargoCmd, ['build', '--release', '--manifest-path', 'mvm/Cargo.toml'], { stdio: 'pipe' });
+  }
+  const tmpMbc = path.join(os.tmpdir(), 'v1_bench.mbc');
+  fs.writeFileSync(tmpMbc, mvmBuild.mbcBytes!);
+  const nc0 = performance.now();
+  const nativeCliRaw = execFileSync(
+    mvmBinPath,
+    ['run', tmpMbc, '--max-steps', '5000000'],
+    { encoding: 'utf-8' }
+  );
+  const rustNativeCliMs = performance.now() - nc0;
+  const nativeCliRet = (nativeCliRaw.match(/=>\s*([^\r\n]+)/)?.[1] || '').trim();
+  fs.rmSync(tmpMbc, { force: true });
+
+  // 4) Direct Standalone WebAssembly (.wasm)
+  const wasmInst = await WebAssembly.instantiate(wasmBuild.wasmBytes! as BufferSource, {
+    env: { print_i32: () => {}, print_f64: () => {} },
+  });
+  const dw0 = performance.now();
+  const directWasmVal = ((wasmInst.instance.exports as any).main as () => bigint)();
+  const directWasmMs = performance.now() - dw0;
+
+  console.log(
+    `✓ v1.0 Check (Parse+TypeCheck+Capability+MIR+Opt): ${checkMs.toFixed(2)}ms | .mbc Build+Verify: ${mbcBuildMs.toFixed(2)}ms (${mvmBuild.mbcBytes!.length} B) | .wasm Build: ${wasmBuildMs.toFixed(2)}ms (${wasmBuild.wasmBytes!.length} B)`
+  );
+  console.log(
+    `✓ Collatz(2..2500) [${rustWasmRes.steps.toLocaleString()} VM steps, answer=${rustWasmRes.returnValue}]:`
+  );
+  console.log(`    • TypeScript MIR Reference Evaluator : ${tsEvalMs.toFixed(2)}ms (ret=${tsEvalRes.returnValue})`);
+  console.log(`    • Rust MVM (WebAssembly embedded)    : ${rustWasmMs.toFixed(2)}ms (ret=${rustWasmRes.returnValue})`);
+  console.log(`    • Rust MVM (Native CLI + spawn)      : ${rustNativeCliMs.toFixed(2)}ms (ret=${nativeCliRet})`);
+  console.log(`    • Direct WebAssembly (.wasm target)  : ${directWasmMs.toFixed(3)}ms (ret=${String(directWasmVal)})`);
+
+  const v1Summary = {
+    checkMs: Number(checkMs.toFixed(2)),
+    mbcBuildMs: Number(mbcBuildMs.toFixed(2)),
+    mbcSizeBytes: mvmBuild.mbcBytes!.length,
+    wasmBuildMs: Number(wasmBuildMs.toFixed(2)),
+    wasmSizeBytes: wasmBuild.wasmBytes!.length,
+    vmSteps: rustWasmRes.steps,
+    tsMirEvalMs: Number(tsEvalMs.toFixed(2)),
+    rustMvmWasmMs: Number(rustWasmMs.toFixed(2)),
+    rustMvmNativeCliMs: Number(rustNativeCliMs.toFixed(2)),
+    directWasmExecMs: Number(directWasmMs.toFixed(3)),
+  };
+
   console.log('\n================================================================================');
   console.log('JSON SUMMARY:');
-  console.log(JSON.stringify({ scaling: results, pathological: pathologicalResults }, null, 2));
+  console.log(JSON.stringify({ scaling: results, pathological: pathologicalResults, v1RuntimeComparison: v1Summary }, null, 2));
 }
 
 runBenchmark().catch((err) => {

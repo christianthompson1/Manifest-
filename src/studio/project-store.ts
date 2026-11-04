@@ -29,6 +29,208 @@ const STORAGE_WORKSPACE_KEY = 'manifest_studio_workspace_projects_ls_v1';
 
 export const TEMPLATES: ProjectTemplate[] = [
   {
+    id: 'mvm-professional',
+    name: 'Manifest v1.0 — Professional (Rust MVM)',
+    description: 'Multi-module general-purpose program with structs, enums, capabilities, SHA-256, and Rust MVM (.mbc) execution.',
+    kind: 'manifest',
+    syntaxProfile: 'professional',
+    compilerTarget: 'mvm',
+    files: [
+      {
+        id: 'toml-mvm-pro',
+        name: 'manifest.toml',
+        path: 'manifest.toml',
+        language: 'toml',
+        content: `[package]
+name = "ledger-engine"
+version = "1.0.0"
+entry = "src/main.manifest"
+profile = "professional"
+target = "mvm"
+`,
+      },
+      {
+        id: 'manifest-mvm-pro-main',
+        name: 'main.manifest',
+        path: 'src/main.manifest',
+        language: 'manifest',
+        content: `module main;
+
+requires console, crypto;
+denies net;
+
+import { compute_fee } from "./math_utils";
+
+struct TransferBatch {
+    sender: str,
+    amount: i64,
+    fee: i64,
+}
+
+enum Settlement {
+    Cleared(i64),
+    Rejected(str),
+}
+
+fn settle(batch: TransferBatch) -> Settlement {
+    if batch.amount <= 0 {
+        return Settlement::Rejected("non-positive transfer");
+    }
+    return Settlement::Cleared(batch.amount - batch.fee);
+}
+
+fn main() -> i64 effects(console, crypto) {
+    let amount: i64 = 2500;
+    let fee: i64 = compute_fee(amount, 2);
+    let batch = TransferBatch {
+        sender: "vault-alpha",
+        amount: amount,
+        fee: fee,
+    };
+
+    let digest: str = std::crypto::sha256(batch.sender);
+    console.print("Vault digest: " + std::str::upper(digest));
+
+    let outcome: Settlement = settle(batch);
+    match outcome {
+        Settlement::Cleared(net_total) => {
+            console.print("Net settled: " + std::conv::to_str(net_total));
+            return net_total;
+        },
+        Settlement::Rejected(reason) => {
+            console.print("Rejected: " + reason);
+            return 0;
+        },
+    }
+}
+`,
+      },
+      {
+        id: 'manifest-mvm-pro-utils',
+        name: 'math_utils.manifest',
+        path: 'src/math_utils.manifest',
+        language: 'manifest',
+        content: `module math_utils;
+
+export fn compute_fee(amount: i64, bps_percent: i64) -> i64 {
+    return (amount * bps_percent) / 100;
+}
+`,
+      },
+    ],
+  },
+  {
+    id: 'mvm-beginner',
+    name: 'Manifest v1.0 — Beginner Profile (Rust MVM)',
+    description: 'Readable keyword-guided syntax lowering to the exact same Typed IR, .mbc bytecode, and Rust MVM as Professional Profile.',
+    kind: 'manifest',
+    syntaxProfile: 'beginner',
+    compilerTarget: 'mvm',
+    files: [
+      {
+        id: 'toml-mvm-beg',
+        name: 'manifest.toml',
+        path: 'manifest.toml',
+        language: 'toml',
+        content: `[package]
+name = "inventory-scorer"
+version = "1.0.0"
+entry = "src/main.manifest"
+profile = "beginner"
+target = "mvm"
+`,
+      },
+      {
+        id: 'manifest-mvm-beg-main',
+        name: 'main.manifest',
+        path: 'src/main.manifest',
+        language: 'manifest',
+        content: `MODULE main
+
+REQUIRES console
+DENIES net
+
+FUNCTION score_batch(units: Int, unit_value: Int) RETURNS Int
+    LET gross: Int = units * unit_value
+    IF gross >= 500
+        RETURN gross + 25
+    ELSE
+        RETURN gross
+    END
+END
+
+FUNCTION main() RETURNS Int EFFECTS console
+    LET MUTABLE total: Int = 0
+    LET batches: Array<Int> = [4, 8, 12]
+
+    FOR EACH count IN batches
+        SET total = total + score_batch(count, 50)
+    END
+
+    SHOW "Total Inventory Score:"
+    SHOW total
+    RETURN total
+END
+`,
+      },
+    ],
+  },
+  {
+    id: 'manifest-wasm-target',
+    name: 'Manifest v1.0 — Direct WebAssembly (.wasm)',
+    description: 'Compiles numeric Manifest functions directly into standalone W3C WebAssembly (.wasm + .wat) and runs in-browser.',
+    kind: 'manifest',
+    syntaxProfile: 'professional',
+    compilerTarget: 'wasm',
+    files: [
+      {
+        id: 'toml-wasm-target',
+        name: 'manifest.toml',
+        path: 'manifest.toml',
+        language: 'toml',
+        content: `[package]
+name = "fibonacci-wasm"
+version = "1.0.0"
+entry = "src/main.manifest"
+profile = "professional"
+target = "wasm"
+`,
+      },
+      {
+        id: 'manifest-wasm-main',
+        name: 'main.manifest',
+        path: 'src/main.manifest',
+        language: 'manifest',
+        content: `module fib_wasm;
+
+requires console;
+
+export fn fib(n: i64) -> i64 {
+    if n <= 1 {
+        return n;
+    }
+    let mut a: i64 = 0;
+    let mut b: i64 = 1;
+    let mut i: i64 = 2;
+    while i <= n {
+        let next: i64 = a + b;
+        a = b;
+        b = next;
+        i = i + 1;
+    }
+    return b;
+}
+
+export fn main() -> i64 effects(console) {
+    let result: i64 = fib(12);
+    console.print(result);
+    return result;
+}
+`,
+      },
+    ],
+  },
+  {
     id: 'empty',
     name: 'Blank Manifest App',
     description: 'Clean minimal starter template for building a new Manifest application.',
@@ -41,7 +243,7 @@ export const TEMPLATES: ProjectTemplate[] = [
         language: 'toml',
         content: `[app]
 name = "my-project"
-version = "0.4.0"
+version = "1.0.0"
 entry = "src/main.manifest"
 target = "js"
 `,
@@ -809,7 +1011,7 @@ This workspace contains a real compiled WebAssembly binary (\`module.wasm\`).
 
 ## Capabilities & Boundaries
 - Manifest Studio executes compiled \`.wasm\` binaries directly via the host WebAssembly VM (\`WasmExecutionProvider\`).
-- Manifest source code (\`.manifest\`) currently compiles to JavaScript; Manifest-to-WASM compilation is planned for a future milestone.
+- General-purpose Manifest v1.0 programs (\`.manifest\`) also compile directly to standalone \`.wasm\` via the **WebAssembly (.wasm)** compiler target, or to portable \`.mbc\` bytecode executed on the **Rust Manifest Virtual Machine**.
 `,
       },
     ],
@@ -871,6 +1073,8 @@ export function createDefaultProject(templateId = 'empty'): ManifestProject {
     name: tpl.name,
     description: tpl.description,
     kind: tpl.kind || 'manifest',
+    syntaxProfile: tpl.syntaxProfile,
+    compilerTarget: tpl.compilerTarget,
     entryPath: preferredActive,
     files,
     activeFilePath: preferredActive,

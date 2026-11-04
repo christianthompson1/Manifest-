@@ -1,0 +1,31 @@
+module capabilities_and_hash;
+
+requires [console, crypto];
+provides [digest_verifier];
+denies [net, fs.write];
+
+struct SignedPayload {
+    channel: str,
+    sequence: i64,
+    body: str,
+}
+
+fn format_canonical(payload: SignedPayload) -> str {
+    return payload.channel + ":" + std::conv::to_str(payload.sequence) + ":" + payload.body;
+}
+
+fn sign_payload(payload: SignedPayload) -> str effects(crypto) {
+    let canonical: str = format_canonical(payload);
+    return std::crypto::sha256(canonical);
+}
+
+fn main() -> i64 effects(console, crypto) {
+    let msg = SignedPayload {
+        channel: "telemetry",
+        sequence: 42,
+        body: "ok",
+    };
+    let digest: str = sign_payload(msg);
+    console.print("SHA256=" + digest);
+    return std::str::len(digest);
+}

@@ -1,201 +1,85 @@
-# Manifest Core v0.1 & Compiler Architecture
+# Manifest Core (`manifest-core`) — v1.0 Compiler, Bytecode & Target Toolchain
 
-> **Manifest**: A human-readable, general-purpose programming language designed for clarity, safety, and beginners.
+`manifest-core` is the compiler frontend, static semantic analyzer, Typed Intermediate Representation (MIR) optimizer, `.mbc` v1.0 bytecode emitter/verifier/disassembler, Rust MVM bridge, and multi-target backend package for the **Manifest** programming language.
 
-This repository contains the official reference implementation of **Manifest Core v0.1** and the foundational **Manifest Compiler Architecture**.
-
----
-
-## 1. What is Manifest?
-
-Manifest is designed from first principles as an intuitive, structured programming language that reads like plain instructions. It avoids esoteric punctuation (`{`, `}`, `;`, `&&`, `||`) while maintaining strict semantic correctness, modularity, and security.
-
-### Core Philosophy:
-- **Human-Readable:** `SET balance TO 100` instead of `balance = 100;`.
-- **Friendly Diagnostics:** Beginner-oriented error messages that show exactly what was expected, what was found, and how to fix it.
-- **Safety First:** Pure interpreter with sandboxed scope; zero `eval()`, zero arbitrary JavaScript escapes.
-- **Decoupled Compiler Pipeline:** Source -> Lexer -> Parser -> AST -> Semantic Analysis / Validation -> Manifest IR -> Target Compiler -> Generated Artifacts.
+For the normative specifications, see:
+- [`../docs/LANGUAGE_SPEC.md`](../docs/LANGUAGE_SPEC.md) — Language specification (Beginner & Professional syntax profiles)
+- [`../docs/BYTECODE_SPEC.md`](../docs/BYTECODE_SPEC.md) — Binary `.mbc` v1.0 format & static verification rules
+- [`../docs/VM_SPEC.md`](../docs/VM_SPEC.md) — Rust Manifest Virtual Machine (`mvm/`) architecture
+- [`../docs/COMPILER_TARGETS.md`](../docs/COMPILER_TARGETS.md) — Target matrix & honest boundaries
 
 ---
 
-## 2. Complete Compiler & Runtime Pipeline
-
-Manifest provides two execution paths: direct interpreted execution (for rapid feedback and development) and multi-target compilation (for production deployment and execution on target platforms).
+## 1. Compiler & Execution Pipeline
 
 ```
-                      Manifest Source (.manifest)
-                                  │
-                                  ▼
-                        [ 1. Lexer / Tokenizer ]
-                                  │
-                                  ▼
-                             [ 2. Parser ]
-                                  │
-                                  ▼
-                         [ 3. Abstract Syntax Tree ]
-                                  │
-                                  ▼
-                   [ 4. Semantic Validator / Analyzer ]
-                                  │
-               ┌──────────────────┴──────────────────┐
-               │                                     │
-               ▼                                     ▼
-      [ Direct Interpreter ]              [ 5. Manifest IR Builder ]
-               │                                     │
-               ▼                                     ▼
-        Runtime & Events                    [ Target-Agnostic IR ]
-               │                                     │
-               ▼                                     ▼
-       Manifest Console                   [ 6. Target Compiler ]
-                                            ├── JavaScript / Web (Active)
-                                            ├── TypeScript (Pluggable)
-                                            ├── WebAssembly (Future)
-                                            ├── Rust (Future)
-                                            └── Solana Target (Future)
-                                                     │
-                                                     ▼
-                                            [ Generated Artifacts ]
+Beginner Profile (.manifest)        Professional Profile (.manifest)
+             \                                    /
+       BeginnerParser                   ProfessionalParser
+               \                                /
+                +-----> SemanticModule AST <---+
+                                |
+                   Multi-File Module Resolver
+                                |
+                   Static TypeChecker & Inference
+                                |
+              Capability & Transitive Effect Verifier
+                                |
+                     Typed Manifest IR (MIR)
+                                |
+                 Semantics-Preserving MIR Optimizer
+                                |
+        +---------------+-------+-------+---------------+---------------+
+        |               |               |               |               |
+        v               v               v               v               v
+  .mbc Bytecode   Web / JS Target  Direct .wasm    Native Target   Solana (SBF)
+  (mbc-compiler)  (web-js-target)  (wasm-target)  (native-target) (Anchor + IDL)
+        |               |               |               |               |
+        v               v               v               v               v
+   Rust MVM VM    Sandboxed ES     W3C WASM VM    Safe Rust (.rs)  LiteSVM Sim
+ (WASM & Native)   Module / DOM                   -> host `rustc`
 ```
 
-### Simple Explanation of the Phases:
-
-1. **Lexer (`manifest-core/src/lexer/`):**
-   Reads characters one by one. Groups characters into typed tokens like `KEYWORD(SET)`, `IDENTIFIER(balance)`, `KEYWORD(TO)`, and `NUMBER(100)`.
-
-2. **Parser (`manifest-core/src/parser/`):**
-   Understands the grammar of Manifest sentences and assembles tokens into an AST.
-
-3. **AST (`manifest-core/src/ast/`):**
-   Structured, syntax-level tree reflecting program syntax.
-
-4. **Validator (`manifest-core/src/validator/`):**
-   Static semantic analyzer verifying scopes, action parameter counts, and detecting semantic issues prior to execution or IR generation.
-
-5. **Manifest IR (`manifest-core/src/ir/`):**
-   Clean, target-agnostic intermediate representation. Encapsulates pure language semantics (variables, assignments, branches, loops, actions, calls, events) independent of any specific runtime (Node, browser, WebAssembly, Rust).
-
-6. **Target Compiler (`manifest-core/src/compiler/`):**
-   Pluggable backend compilers that consume Manifest IR and emit target source code and artifacts:
-   - **`JavaScriptTargetCompiler` (`targetName: 'js'`):** Emits modern JavaScript with a lightweight runtime shim, callable actions, event dispatchers, and exported lifecycle handlers (`startApp()`).
-   - Clean abstractions allow future backends (`wasm`, `rust`, `solana`) to be implemented without modifying core parser or validation logic.
+Backward compatibility is preserved for declarative Web UI (`APP` / `PAGE`) and Solana smart-contract (`PROGRAM`) files via `manifest-core/src/parser/`, `validator/`, `runtime/`, and `compiler/`.
 
 ---
 
-## 3. CLI Commands
+## 2. Package Layout (`manifest-core/src/`)
 
-The Manifest CLI provides a comprehensive interface for checking, running, and compiling programs:
+- `core/` — `profile.ts`, `ast-v2.ts`, `beginner-parser.ts`, `professional-parser.ts`, `parse-unified.ts`, `formatter.ts` (cross-profile source formatting between Beginner and Professional profiles).
+- `semantics/` — `types.ts` (canonical types & `std::*` intrinsics), `module-resolver.ts` (multi-file `import`/`export` graph + cycle detection), `type-checker.ts` (generics, structs, enums, `Result<T, E>`, `?`, exhaustiveness), `capability-analyzer.ts` (`requires`, `provides`, `denies`, fixed-point transitive call-graph effect inference).
+- `ir/` — `typed-ir.ts`, `typed-ir-builder.ts`, `ir-optimizer.ts` (overflow-checked constant folding, algebraic simplification, dead branch & unreachable statement diagnostics).
+- `bytecode/` — `mbc-format.ts`, `mbc-compiler.ts`, `mbc-reader.ts` (binary `.mbc` v1.0 encoder, decoder, static abstract-stack/jump verifier, and disassembler).
+- `vm/` — `mvm-runner.ts` & `mvm-wasm-bytes.ts` (TypeScript/WebAssembly bridge to the compiled Rust `mvm-wasm` engine with capability-gated host handlers).
+- `targets/` — `target-registry.ts`, `wasm-target.ts` (direct W3C `.wasm` + `.wat` emitter), `web-js-target.ts` (capability-sandboxed JS codegen), `native-target.ts` (standalone Rust emitter + host `rustc` driver).
+- `runtime/` — `semantic-evaluator.ts` (deterministic MIR reference evaluator) and `runtime.ts` (legacy v0.1–v0.4 AST interpreter).
+- `pipeline.ts` & `cli.ts` — High-level `checkManifestSource`, `compileManifestV1`, `runManifestOnRustMvm`, `formatManifestSource`, and CLI entrypoint.
+
+---
+
+## 3. CLI Reference (`manifest-core/src/cli.ts`)
 
 ```bash
-# 1. Run a program directly in the interpreter:
-npx tsx manifest-core/src/cli.ts run manifest-core/examples/hello.manifest
-# (or simply)
-npx tsx manifest-core/src/cli.ts manifest-core/examples/hello.manifest
+# Validate syntax, static types, and capability/effect rules
+npx tsx manifest-core/src/cli.ts check ../examples/professional/02_capabilities_and_hash.manifest
 
-# 2. Check syntax and semantic validity without running:
-npx tsx manifest-core/src/cli.ts check manifest-core/examples/counter.manifest
+# Compile to .mbc v1.0 and execute on the Rust Manifest Virtual Machine
+npx tsx manifest-core/src/cli.ts run ../examples/professional/01_algorithms_and_enums.manifest
 
-# 3. View the generated Manifest IR:
-npx tsx manifest-core/src/cli.ts ir manifest-core/examples/hello.manifest
+# Inspect optimized Typed Manifest IR
+npx tsx manifest-core/src/cli.ts ir ../examples/beginner/01_basics_and_loops.manifest
 
-# 4. Compile to target code (defaults to JavaScript):
-npx tsx manifest-core/src/cli.ts build manifest-core/examples/hello.manifest js
+# Emit binary .mbc file and verify with the Rust MVM static verifier
+npx tsx manifest-core/src/cli.ts bytecode ../examples/beginner/01_basics_and_loops.manifest -o /tmp/basics.mbc
+npx tsx manifest-core/src/cli.ts verify /tmp/basics.mbc
 
-# 5. List all supported compilation targets:
+# Print human-readable .mbc disassembly
+npx tsx manifest-core/src/cli.ts disassemble ../examples/professional/01_algorithms_and_enums.manifest
+
+# Build for specific targets (mvm | web-js | wasm | native | solana-sbf)
+npx tsx manifest-core/src/cli.ts build ../examples/professional/01_algorithms_and_enums.manifest --target wasm -o /tmp/out.wasm
+npx tsx manifest-core/src/cli.ts build ../examples/professional/01_algorithms_and_enums.manifest --target native -o /tmp/out_bin
+
+# List all registered compiler targets and their implementation status
 npx tsx manifest-core/src/cli.ts targets
-```
-
----
-
-## 4. Manifest Core Syntax Reference
-
-### 1. App Identification
-```manifest
-APP "MyApplication"
-```
-
-### 2. Variable State & Arithmetic
-```manifest
-SET count TO 0
-SET count TO count + 1
-```
-
-### 3. Output
-```manifest
-SHOW "Hello World"
-SHOW count
-```
-
-### 4. Branching Logic (IF / ELSE / ELSE IF)
-```manifest
-IF balance >= 10
-    SHOW "You can pay"
-ELSE IF balance == 5
-    SHOW "Halfway there"
-ELSE
-    SHOW "Insufficient balance"
-END
-```
-
-### 5. Event Handling
-```manifest
-WHEN app.starts
-    SHOW "System initialized"
-END
-```
-
-### 6. Loops
-```manifest
-REPEAT 5 TIMES
-    SHOW "Repeating..."
-END
-
-SET items TO ["Apples", "Oranges", "Bananas"]
-FOR EACH fruit IN items
-    SHOW fruit
-END
-```
-
-### 7. Actions & Returns
-```manifest
-ACTION addNumbers with a, b
-    RETURN a + b
-END
-
-SET sum TO CALL addNumbers 10 20
-SHOW sum
-```
-
-### 8. Try / Catch Safety
-```manifest
-TRY
-    SET result TO 10 / 0
-IF FAILED
-    SHOW "Handled safely."
-END
-```
-
----
-
-## 5. Manifest Studio IDE
-
-Manifest Studio is a web-based integrated development environment for writing, testing, compiling, and running Manifest applications:
-
-- **Desktop 3-Panel Workspace:**
-  - **Left Panel:** Project & File Explorer (`manifest.toml`, `src/main.manifest`, `build/` artifacts).
-  - **Center Panel:** Manifest Code Editor with syntax highlighting, line numbers, automatic block indentation, keyboard shortcuts, inline diagnostic markers, and keyword autocomplete.
-  - **Right Panel:** Sandboxed, isolated Application Preview executing compiled JavaScript code with reactive state visualization and interactive action triggers.
-  - **Bottom Panel:** Tabbed Console output and structured Problems/diagnostics reporting.
-- **Mobile Responsive Design:** Dedicated tab bar (`Files`, `Editor`, `Preview`, `Console`, `Problems`) optimized for touch and mobile viewports.
-- **Reference Testbench:** Seamlessly switch between Manifest Studio IDE and the low-level Reference Testbench & Runtime Inspector.
-
----
-
-## 6. Automated Test Suite
-
-Run the full automated test suite (including core runtime tests and compiler/IR tests):
-
-```bash
-npm run manifest:test
-# or
-npx tsx manifest-core/tests/run_tests.ts
 ```

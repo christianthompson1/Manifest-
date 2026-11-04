@@ -1,0 +1,45 @@
+module algorithms_and_enums;
+
+requires [console];
+denies [net];
+
+enum SearchOutcome {
+    Found(i64),
+    Missing,
+}
+
+fn binary_search(sorted: Array<i64>, target: i64) -> SearchOutcome {
+    let mut low: i64 = 0;
+    let mut high: i64 = std::str::len(sorted) - 1;
+
+    while low <= high {
+        let mid: i64 = (low + high) / 2;
+        let current: i64 = sorted[mid];
+        if current == target {
+            return SearchOutcome::Found(mid);
+        }
+        if current < target {
+            low = mid + 1;
+        } else {
+            high = mid - 1;
+        }
+    }
+
+    return SearchOutcome::Missing;
+}
+
+fn main() -> i64 effects(console) {
+    let primes: Array<i64> = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29];
+    let outcome: SearchOutcome = binary_search(primes, 19);
+
+    match outcome {
+        SearchOutcome::Found(idx) => {
+            console.print("Found 19 at index " + std::conv::to_str(idx));
+            return idx;
+        },
+        SearchOutcome::Missing => {
+            console.print("Target missing");
+            return -1;
+        },
+    }
+}

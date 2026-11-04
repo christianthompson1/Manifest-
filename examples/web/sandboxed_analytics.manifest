@@ -1,0 +1,23 @@
+module sandboxed_analytics;
+
+requires [console];
+denies [net, fs];
+
+fn summarize_latencies(samples: Array<i64>) -> i64 {
+    let count: i64 = std::str::len(samples);
+    if count == 0 {
+        return 0;
+    }
+    let mut sum: i64 = 0;
+    for sample in samples {
+        sum = sum + sample;
+    }
+    return sum / count;
+}
+
+fn main() -> i64 effects(console) {
+    let latencies: Array<i64> = [18, 22, 15, 29, 26];
+    let mean_ms: i64 = summarize_latencies(latencies);
+    console.print("Mean latency (ms): " + std::conv::to_str(mean_ms));
+    return mean_ms;
+}

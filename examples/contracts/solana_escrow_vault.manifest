@@ -1,0 +1,23 @@
+APP "EscrowVaultContract"
+
+USE SOLANA
+
+PROGRAM EscrowVault
+    ACCOUNT EscrowState
+        balance: NUMBER
+        released: NUMBER
+        authority: ADDRESS
+    END
+
+    INSTRUCTION deposit
+        REQUIRE signer = authority
+        SET balance = balance + 100
+    END
+
+    INSTRUCTION release_half
+        REQUIRE signer = authority
+        REQUIRE balance >= 50
+        SET balance = balance - 50
+        SET released = released + 50
+    END
+END

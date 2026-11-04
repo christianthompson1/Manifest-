@@ -1,0 +1,14 @@
+module multi_module_entry;
+
+requires [console];
+denies [net];
+
+import { gcd, lcm, SCALE_FACTOR } from "./math_utils";
+
+fn main() -> i64 effects(console) {
+    let g: i64 = gcd(84, 36);
+    let l: i64 = lcm(12, 18);
+    let combined: i64 = (g * SCALE_FACTOR) + l;
+    console.print("gcd=" + std::conv::to_str(g) + " lcm=" + std::conv::to_str(l));
+    return combined;
+}

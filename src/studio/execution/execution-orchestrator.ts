@@ -218,11 +218,16 @@ export class ExecutionOrchestrator {
 
       if (
         activeFile.language === 'manifest' ||
+        activeFile.language === 'mbc' ||
         lowerPath.endsWith('.manifest') ||
+        lowerPath.endsWith('.mbc') ||
         lowerPath === 'manifest.toml' ||
         (activeFile.language === 'plaintext' &&
           activeFile.content &&
-          (activeFile.content.trimStart().startsWith('APP ') || activeFile.content.trimStart().startsWith('PAGE ')))
+          (activeFile.content.trimStart().startsWith('APP ') ||
+            activeFile.content.trimStart().startsWith('PAGE ') ||
+            activeFile.content.trimStart().startsWith('module ') ||
+            activeFile.content.trimStart().startsWith('MODULE ')))
       ) {
         return 'manifest';
       }
@@ -417,6 +422,82 @@ export class ExecutionOrchestrator {
     }
 
     return result;
+  }
+
+  /**
+   * Orchestrates project target artifact building without conflating Build with in-browser Run.
+   */
+  public async buildProject(
+    project: ManifestProject,
+    options: ExecutionOptions = {}
+  ): Promise<UnifiedExecutionResult> {
+    const startTime = performance.now();
+    this.runCounter++;
+    const currentRunId = `build-${Date.now()}-${this.runCounter}`;
+
+    const resolvedActivePath = options.activeFilePath || project.activeFilePath;
+    const activeFile = resolvedActivePath
+      ? project.files.find((f) => f.path === resolvedActivePath)
+      : undefined;
+
+    const nonExec = this.getNonExecutableInfo(activeFile);
+    if (nonExec && activeFile) {
+      const msg = `Cannot build "${activeFile.path}" (${nonExec.label}): ${nonExec.reason}`;
+      return {
+        runId: currentRunId,
+        timestamp: Date.now(),
+        success: false,
+        providerId: 'unsupported-language',
+        projectKind: nonExec.kind,
+        previewKind: 'diagnostic-error',
+        resolvedEntryPath: activeFile.path,
+        diagnostics: [
+          {
+            line: 1,
+            column: 1,
+            message: msg,
+            severity: 'error',
+            source: 'orchestrator',
+          },
+        ],
+        logs: [`[Build Orchestrator] ${msg}`],
+        durationMs: Math.round(performance.now() - startTime),
+        error: msg,
+      };
+    }
+
+    const kind = this.detectProjectKind(project, activeFile);
+    const matchingProvider = Array.from(this.providers.values()).find((p) =>
+      p.supportedKinds.includes(kind)
+    );
+
+    if (!matchingProvider) {
+      const msg = `No local build provider is registered for project kind "${kind}".`;
+      return {
+        runId: currentRunId,
+        timestamp: Date.now(),
+        success: false,
+        providerId: 'unsupported-language',
+        projectKind: kind,
+        previewKind: 'diagnostic-error',
+        resolvedEntryPath: activeFile?.path,
+        diagnostics: [{ line: 1, column: 1, message: msg, severity: 'error', source: 'orchestrator' }],
+        logs: [`[Build Orchestrator] ${msg}`],
+        durationMs: Math.round(performance.now() - startTime),
+        error: msg,
+      };
+    }
+
+    const enrichedOptions: ExecutionOptions = {
+      ...options,
+      activeFilePath: resolvedActivePath,
+      runId: currentRunId,
+    };
+
+    if (matchingProvider.build) {
+      return matchingProvider.build(project, enrichedOptions);
+    }
+    return matchingProvider.execute(project, enrichedOptions);
   }
 
   public cancelActiveRun(): void {

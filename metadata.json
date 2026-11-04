@@ -1,5 +1,5 @@
 {
-  "name": "Manifest Studio",
+  "name": "Manifest Core v0.1",
   "description": "The first working implementation and reference environment for Manifest Core v0.1, a human-readable programming language.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
