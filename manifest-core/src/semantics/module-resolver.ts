@@ -201,12 +201,44 @@ export function resolveModuleGraph(
         });
       }
     }
+    // Build a map of internal function renames for this dependency
+    const internalRenames = new Map<string, string>();
+    for (const fn of dep.functions) {
+      if (!fn.exported) {
+        internalRenames.set(fn.name, `${dep.moduleName}__${fn.name}`);
+      } else if (aliasMap.has(fn.name)) {
+        internalRenames.set(fn.name, aliasMap.get(fn.name)!);
+      }
+    }
+
+    // Helper to rewrite CallExpr callee names inside statements
+    const rewriteCallsInExpr = (expr: any): any => {
+      if (!expr || typeof expr !== 'object') return expr;
+      if (expr.kind === 'CallExpr' && internalRenames.has(expr.callee)) {
+        return {
+          ...expr,
+          callee: internalRenames.get(expr.callee)!,
+          args: (expr.args || []).map(rewriteCallsInExpr),
+        };
+      }
+      const next: any = Array.isArray(expr) ? [] : { ...expr };
+      for (const k of Object.keys(expr)) {
+        if (k !== 'callee' && typeof expr[k] === 'object' && expr[k] !== null) {
+          next[k] = rewriteCallsInExpr(expr[k]);
+        }
+      }
+      return next;
+    };
+
     for (const fn of dep.functions) {
       const targetName = fn.exported ? aliasMap.get(fn.name) || fn.name : `${dep.moduleName}__${fn.name}`;
       if (!mergedFunctions.some((x) => x.name === targetName)) {
+        // Rewrite internal calls inside function body so calls to private helpers match the new prefix
+        const rewrittenBody = fn.body.map((stmt) => rewriteCallsInExpr(stmt));
         mergedFunctions.push({
           ...fn,
           name: targetName,
+          body: rewrittenBody,
           exported: false,
         });
       }

@@ -72,10 +72,16 @@ cargo test --manifest-path mvm/Cargo.toml
 # 3. Run full Manifest v0.1–v1.0, Rust MVM, WASM, Solana LiteSVM, Orchestrator & Editor test suites
 npm run manifest:test
 
-# 4. Run compiler, TS evaluator, Direct WASM, and Rust MVM benchmarks
+# 4. Run Track A Security, Compiler Correctness & Honesty regression suite
+npx tsx manifest-core/tests/run_track_a_tests.ts
+
+# 5. Run Phase 3 Unified Compiler Pipeline & Parity test suite
+npm run manifest:test:phase3
+
+# 6. Run compiler, TS evaluator, Direct WASM, and Rust MVM benchmarks
 npm run manifest:bench
 
-# 5. Use the Manifest v1.0 CLI directly
+# 6. Use the Manifest v1.0 CLI directly
 npm run manifest:run -- check examples/professional/01_algorithms_and_enums.manifest
 npm run manifest:run -- run examples/professional/01_algorithms_and_enums.manifest
 npm run manifest:run -- disassemble examples/beginner/01_basics_and_loops.manifest

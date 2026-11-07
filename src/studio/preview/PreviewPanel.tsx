@@ -66,9 +66,14 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
-  // Listen to postMessage from the sandboxed preview iframe
+  // Listen to postMessage from the sandboxed preview iframe with source validation
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
+      // Security check: Only accept messages originating from our sandboxed iframe window
+      if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) {
+        return;
+      }
+
       const data = event.data;
       if (!data || typeof data !== 'object') return;
 

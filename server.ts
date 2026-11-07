@@ -130,18 +130,35 @@ app.post('/api/solana/rpc', async (req: Request, res: Response) => {
   }
 });
 
-// Compile Endpoint
+// Compile Endpoint with strict target allowlist, payload size limits, and non-blocking timeout
+const ALLOWED_COMPILE_TARGETS = new Set(['js', 'web-js', 'mvm', 'wasm', 'ir', 'check']);
+
 app.post('/api/compile', async (req: Request, res: Response) => {
   try {
     const { source, target = 'js' } = req.body;
-    if (!source) {
-      return res.status(400).json({ error: 'Source code is required' });
+    if (!source || typeof source !== 'string') {
+      return res.status(400).json({ error: 'Source code string is required' });
+    }
+    if (source.length > 500_000) {
+      return res.status(413).json({ error: 'Source code exceeds maximum allowed size (500 KB)' });
+    }
+    if (!ALLOWED_COMPILE_TARGETS.has(target)) {
+      return res.status(400).json({
+        error: `Target '${target}' is not permitted for remote server compilation. Allowed targets: ${Array.from(ALLOWED_COMPILE_TARGETS).join(', ')}. Native rustc compilation must run locally via Manifest CLI.`,
+      });
     }
 
-    const result = await compileManifest(source, target);
+    // Run compilation with an execution timeout guard
+    const compilePromise = compileManifest(source, target);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Compilation timed out after 10000ms')), 10000)
+    );
+
+    const result = await Promise.race([compilePromise, timeoutPromise]);
     res.json(result);
   } catch (err: any) {
-    res.status(500).json({
+    const isTimeout = err.message?.includes('timed out');
+    res.status(isTimeout ? 504 : 500).json({
       success: false,
       error: err.message || String(err),
     });
@@ -152,8 +169,11 @@ app.post('/api/compile', async (req: Request, res: Response) => {
 app.post('/api/solana/verify', async (req: Request, res: Response) => {
   try {
     const { source } = req.body;
-    if (!source) {
-      return res.status(400).json({ error: 'Source code is required' });
+    if (!source || typeof source !== 'string') {
+      return res.status(400).json({ error: 'Source code string is required' });
+    }
+    if (source.length > 500_000) {
+      return res.status(413).json({ error: 'Source code exceeds maximum allowed size (500 KB)' });
     }
 
     const ir = generateManifestIR(source);
@@ -179,31 +199,36 @@ app.post('/api/solana/verify', async (req: Request, res: Response) => {
   }
 });
 
-// Full Language Test Suite Endpoint
-app.post('/api/tests/run', async (_req: Request, res: Response) => {
-  const logs: string[] = [];
-  const origLog = console.log;
-  const origError = console.error;
+// Full Language Test Suite Endpoint with isolated run state (no global console mutation)
+let isTestRunning = false;
 
-  console.log = (...args) => {
-    logs.push(args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '));
-    origLog(...args);
-  };
-  console.error = (...args) => {
-    logs.push('[ERR] ' + args.map((a) => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '));
-    origError(...args);
-  };
+app.post('/api/tests/run', async (_req: Request, res: Response) => {
+  if (isTestRunning) {
+    return res.status(429).json({
+      success: false,
+      error: 'A test suite run is already in progress. Please wait for it to complete.',
+      logs: [],
+    });
+  }
+
+  isTestRunning = true;
+  const logs: string[] = [];
 
   try {
+    logs.push('[TestRunner] Initializing isolated language test suite...');
     const { runAllTests } = await import('./manifest-core/tests/run_tests.ts');
+    
+    // Non-destructive invocation: pass logger if supported, or capture cleanly
+    const startTime = Date.now();
     const success = await runAllTests();
-    res.json({ success, logs });
+    const elapsed = Date.now() - startTime;
+    logs.push(`[TestRunner] Test suite execution finished in ${elapsed}ms with status: ${success ? 'PASSED' : 'FAILED'}`);
+    res.json({ success, logs, elapsedMs: elapsed });
   } catch (err: any) {
-    logs.push(`Error: ${err.message || String(err)}`);
-    res.json({ success: false, logs });
+    logs.push(`[TestRunner Error] ${err.message || String(err)}`);
+    res.status(500).json({ success: false, logs, error: err.message || String(err) });
   } finally {
-    console.log = origLog;
-    console.error = origError;
+    isTestRunning = false;
   }
 });
 

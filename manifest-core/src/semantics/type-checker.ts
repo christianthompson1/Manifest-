@@ -83,6 +83,20 @@ export class TypeChecker {
       });
     }
 
+    // 1.5. Validate traits (honest diagnostic until trait dispatch and impl blocks are ready)
+    if (module.traits && module.traits.length > 0) {
+      for (const tr of module.traits) {
+        this.diagnostics.push({
+          code: 'E_UNIMPLEMENTED_FEATURE',
+          severity: 'error',
+          message: `The 'trait' construct ('${tr.name}') is not yet supported by the Manifest compiler and runtime backend. Use structs with function records or standalone functions.`,
+          line: tr.span.line,
+          column: tr.span.column,
+          hint: 'Trait dispatch and `impl` blocks are scheduled for Phase 3.',
+        });
+      }
+    }
+
     // 2. Register enum headers
     for (const en of module.enums) {
       if (this.enums.has(en.name)) {
@@ -557,6 +571,12 @@ export class TypeChecker {
       }
 
       case 'TryStmt': {
+        this.error(
+          'E_UNIMPLEMENTED_FEATURE',
+          `The 'try / catch' construct is not yet supported in the Manifest runtime pipeline. Use Result<T, E> (Ok / Err) and 'match' for explicit error handling.`,
+          stmt.span,
+          `Replace 'try { ... } catch' with a function returning 'Result<T, str>' and handle with 'match'.`
+        );
         this.checkBlock(stmt.tryBody, scopes, expectedReturn, loopDepth, inAsync, typeParams);
         const catchScope = new Map<string, SymbolEntry>();
         if (stmt.errBinding) {

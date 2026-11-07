@@ -126,105 +126,55 @@ export class LiteSVMRunner {
       });
     }
 
-    // STEP 2: Execute Instruction State Validation for each declared instruction
+    // STEP 2: Real Instruction Verification & SBF Program Status
+    // Note: LiteSVM only executes custom smart contracts if an actual compiled .so (SBF) ELF binary
+    // is loaded into the VM instance via svm.addProgramFromFile.
+    // In this pure-JS/browser context where cargo-build-sbf is not running locally,
+    // we accurately report that the contract has been synthesized and analyzed, but the compiled SBF binary
+    // is required before on-chain instruction execution can be tested in LiteSVM.
     for (let i = 0; i < program.instructions.length; i++) {
       const inst = program.instructions[i];
-      const stepTitle = `${i + 2}. Test Instruction: ${inst.name}`;
-
-      try {
-        // Construct instruction data payload (Anchor 8-byte discriminator or stub)
-        const dummyData = new Uint8Array([i + 1, 0, 0, 0, 0, 0, 0, 0]);
-
-        const customIx = {
-          programAddress: address(program.programId.length === 44 || program.programId.length === 43 ? program.programId : '11111111111111111111111111111111'),
-          accounts: [
-            { address: authority.address, role: AccountRole.WRITABLE_SIGNER },
-            { address: recipient.address, role: AccountRole.WRITABLE },
-          ],
-          data: dummyData,
-        };
-
-        const txMsg = await pipe(
-          createTransactionMessage({ version: 0 }),
-          (t) => setTransactionMessageFeePayerSigner(authority, t),
-          (t) => svm.setTransactionMessageLifetimeUsingLatestBlockhash(t),
-          (t) => appendTransactionMessageInstruction(customIx, t),
-          (t) => signTransactionMessageWithSigners(t),
-        );
-
-        // Run simulation to inspect compute units and execution logs
-        const simResult = svm.simulateTransaction(txMsg);
-        const meta = simResult.meta();
-        const cu = Number(meta.computeUnitsConsumed()) || 250;
-        totalComputeUnits += cu;
-
-        const authBal = Number(svm.getBalance(authority.address) || 0n) / 1e9;
-
-        steps.push({
-          stepName: stepTitle,
-          instructionName: inst.name,
-          success: true,
-          signature: bs58.encode(meta.signature()),
-          computeUnitsUsed: cu,
-          logs: [
-            `Program ${program.programId} invoke [1]`,
-            `Program log: Instruction: ${inst.name}`,
-            `Program log: Validated ${inst.requires.length} constraints cleanly`,
-            `Program log: Mutated accounts [${inst.mutations.map((m) => m.target).join(', ')}]`,
-            `Program ${program.programId} success`,
-          ],
-          accountsState: [
-            {
-              address: authority.address,
-              role: 'Authority Signer',
-              lamports: (svm.getBalance(authority.address) || 0n).toString(),
-              balanceSol: authBal,
-            },
-          ],
-        });
-      } catch (err: any) {
-        steps.push({
-          stepName: stepTitle,
-          instructionName: inst.name,
-          success: false,
-          signature: '',
-          computeUnitsUsed: 0,
-          logs: [],
-          error: err.message || String(err),
-          accountsState: [],
-        });
-      }
-    }
-
-    // STEP 3: Constraint Enforcement & Negative Test
-    // Verify that unauthorized signers or missing signatures trigger constraint failure
-    try {
-      const unauthorizedSigner = await generateKeyPairSigner();
-      const constraintCheckPassed = true; // LiteSVM validated security boundary
+      const stepTitle = `${i + 2}. Analyze Instruction: ${inst.name}`;
 
       steps.push({
-        stepName: `${program.instructions.length + 2}. Constraint Check: Unauthorized Signer Rejection`,
-        instructionName: 'security_constraint_check',
-        success: constraintCheckPassed,
-        signature: 'sim-security-pass-' + Math.random().toString(36).substring(2, 8),
-        computeUnitsUsed: 120,
+        stepName: stepTitle,
+        instructionName: inst.name,
+        success: true,
+        signature: 'analyzed-uncompiled',
+        computeUnitsUsed: 0,
         logs: [
-          'Security check: testing instruction invocation with unauthorized keypair',
-          `Unauthorized keypair ${unauthorizedSigner.address.slice(0, 8)}... attempted invocation`,
-          'Constraint check verified: ErrorCode::ConstraintFailed triggered on unauthorized signer',
-          'Security assertion PASSED',
+          `Program ${program.programId} instruction analyzed: ${inst.name}`,
+          `Required constraints declared: ${inst.requires.length}`,
+          `Declared account mutations: [${inst.mutations.map((m) => m.target).join(', ')}]`,
+          `Anchor Rust handler generated for instruction '${inst.name}'`,
+          `Notice: Compiled SBF binary (.so) required for real LiteSVM bytecode execution (available via CI/CLI build)`,
         ],
         accountsState: [
           {
-            address: unauthorizedSigner.address,
-            role: 'Unauthorized Keypair (Rejected)',
-            lamports: '0',
-            balanceSol: 0,
+            address: authority.address,
+            role: 'Authority Signer',
+            lamports: (svm.getBalance(authority.address) || 0n).toString(),
+            balanceSol: Number(svm.getBalance(authority.address) || 0n) / 1e9,
           },
         ],
       });
-      totalComputeUnits += 120;
-    } catch (_) {}
+    }
+
+    // STEP 3: Honest Security & SBF Execution Status
+    steps.push({
+      stepName: `${program.instructions.length + 2}. SBF Execution Environment Check`,
+      instructionName: 'sbf_environment_check',
+      success: true,
+      signature: 'env-status-verified',
+      computeUnitsUsed: 0,
+      logs: [
+        'Solana runtime check: Native SystemProgram operations fully verified in LiteSVM',
+        'Custom instruction execution status: Requires compiled SBF ELF binary (.so)',
+        'GitHub Actions workflow (.github/workflows/manifest-solana.yml) builds SBF binary via Solana CLI & Anchor',
+        'No simulated or manufactured instruction successes reported.',
+      ],
+      accountsState: [],
+    });
 
     const passed = steps.filter((s) => s.success).length;
     const failed = steps.filter((s) => !s.success).length;

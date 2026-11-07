@@ -23,8 +23,22 @@ export class SolanaTargetCompiler implements TargetCompiler {
     const diagnostics: CompilationDiagnostic[] = [];
     const artifacts: GeneratedArtifact[] = [];
 
-    // Extract or synthesize Solana program representation from IR
-    const solanaProgram = (ir as any).solanaProgram as SolanaProgramIR || this.buildDefaultSolanaProgram(ir);
+    // Extract Solana program representation from IR
+    const solanaProgram = (ir as any).solanaProgram as SolanaProgramIR | undefined;
+    if (!solanaProgram) {
+      return {
+        success: false,
+        target: 'solana',
+        artifacts: [],
+        diagnostics: [
+          {
+            severity: 'error',
+            message: `Target 'solana' requires an explicit 'PROGRAM <name> ... END' block. No smart contract program was declared in source.`,
+            hint: 'Declare USE SOLANA and PROGRAM MyContract with ACCOUNT and INSTRUCTION definitions.',
+          },
+        ],
+      };
+    }
 
     try {
       const result = AnchorGenerator.generate(solanaProgram);

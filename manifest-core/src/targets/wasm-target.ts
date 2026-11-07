@@ -218,6 +218,8 @@ export function compileMIRToWasm(mir: MIRModule): WasmTargetBuildResult {
         case 'ConstBool':
           code.push(0x41, ...encodeSLEB128BigInt(expr.value ? 1n : 0n)); // i32.const
           return WASM_I32;
+        case 'ConstVoid':
+          return 0; // void value
         case 'LoadLocal': {
           code.push(0x20, ...encodeULEB128(expr.slot)); // local.get
           const slotT =
@@ -396,8 +398,9 @@ export function compileMIRToWasm(mir: MIRModule): WasmTargetBuildResult {
             for (const a of expr.args) {
               const at = emitExpr(a);
               if (at === WASM_I64) {
-                code.push(0xa7); // i32.wrap_i64
-                code.push(0x10, ...encodeULEB128(IMPORT_PRINT_I32));
+                // Convert i64 to f64 for full numeric range without 32-bit truncation
+                code.push(0xb9); // f64.convert_i64_s
+                code.push(0x10, ...encodeULEB128(IMPORT_PRINT_F64));
               } else if (at === WASM_F64) {
                 code.push(0x10, ...encodeULEB128(IMPORT_PRINT_F64));
               } else if (at === WASM_I32) {

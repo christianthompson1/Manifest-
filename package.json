@@ -11,6 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "manifest:test": "tsx manifest-core/tests/run_tests.ts && tsx manifest-core/tests/run_solana_counter_test.ts && tsx manifest-core/tests/run_orchestrator_tests.ts && tsx manifest-core/tests/run_editor_tests.ts && tsx manifest-core/tests/run_v1_upgrade_tests.ts",
+    "manifest:test:phase3": "tsx manifest-core/tests/run_phase3_compiler_tests.ts",
     "manifest:bench": "tsx manifest-core/tests/run_benchmark.ts",
     "manifest:run": "tsx manifest-core/src/cli.ts",
     "manifest:anchor:synthesize": "tsx manifest-core/scripts/synthesize-anchor-workspace.ts",

@@ -533,9 +533,19 @@ export class ManifestExecutionProvider implements ExecutionProvider {
       if (!disassembly) {
         disassembly = disassembleMbcBytes(mbcBytes);
       }
+
+      // Separate declared capabilities from host-authorized permissions.
+      // Standard safe capabilities permitted by default for sandboxed execution:
+      const SAFE_DEFAULT_CAPS = new Set(['console']);
+      // Sensitive capabilities requiring explicit host permission policy:
+      // ('fs.read', 'fs.write', 'net.http', 'crypto', 'env', 'process', 'solana')
+      const hostPermittedCaps = new Set<string>(SAFE_DEFAULT_CAPS);
+
+      // Granted capabilities are the intersection of declared requirements and host-authorized permissions,
+      // strictly respecting any explicit denials.
       grantedCaps = Array.from(
         new Set([...decoded.requires, ...decoded.imports.map((imp) => imp.capability)])
-      ).filter((c) => !decoded.denies.includes(c));
+      ).filter((c) => hostPermittedCaps.has(c) && !decoded.denies.includes(c));
     } catch (err: any) {
       const msg = `Bytecode container decode error: ${err.message || String(err)}`;
       return {

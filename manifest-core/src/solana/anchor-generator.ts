@@ -101,12 +101,30 @@ export class AnchorGenerator {
         }
       }
 
-      // Events emission
+      // Events emission with honest field mapping
       if (inst.events && inst.events.length > 0) {
         for (const ev of inst.events) {
           lines.push(`        emit!(${this.toPascalCase(ev.name)} {`);
           for (const ef of ev.fields) {
-            lines.push(`            ${this.toSnakeCase(ef.name)}: ctx.accounts.authority.key(),`);
+            const fieldSnake = this.toSnakeCase(ef.name);
+            // Check if field matches an account name or mut target
+            const matchingAcc = inst.accounts.find((a) => this.toSnakeCase(a.name) === fieldSnake);
+            const matchingArg = inst.args?.find((arg) => this.toSnakeCase(arg.name) === fieldSnake);
+            let valExpr = 'Default::default()';
+            if (matchingArg) {
+              valExpr = fieldSnake;
+            } else if (matchingAcc) {
+              valExpr = matchingAcc.isSigner ? `ctx.accounts.${fieldSnake}.key()` : `ctx.accounts.${fieldSnake}.key()`;
+            } else if (ef.fieldType === 'pubkey') {
+              valExpr = 'ctx.accounts.authority.key()';
+            } else if (ef.fieldType === 'u64' || ef.fieldType === 'i64') {
+              valExpr = '0';
+            } else if (ef.fieldType === 'string') {
+              valExpr = 'String::new()';
+            } else if (ef.fieldType === 'bool') {
+              valExpr = 'true';
+            }
+            lines.push(`            ${fieldSnake}: ${valExpr},`);
           }
           lines.push('        });');
         }

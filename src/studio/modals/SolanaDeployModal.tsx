@@ -233,7 +233,7 @@ export const SolanaDeployModal: React.FC<SolanaDeployModalProps> = ({
           <button
             onClick={() => setActiveTab('verify')}
             className={`py-2.5 border-b-2 transition cursor-pointer ${
-              activeTab === 'verify' ? 'border-[#8b5cf6] text-[#ffffff]' : 'border-transparent text-[#858585] hover:text-[#cccccc]'
+              activeTab === 'verify' ? 'border-[#007acc] text-[#ffffff]' : 'border-transparent text-[#858585] hover:text-[#cccccc]'
             }`}
           >
             Client Verification
@@ -241,7 +241,7 @@ export const SolanaDeployModal: React.FC<SolanaDeployModalProps> = ({
           <button
             onClick={() => setActiveTab('transfer')}
             className={`py-2.5 border-b-2 transition cursor-pointer ${
-              activeTab === 'transfer' ? 'border-[#8b5cf6] text-[#ffffff]' : 'border-transparent text-[#858585] hover:text-[#cccccc]'
+              activeTab === 'transfer' ? 'border-[#007acc] text-[#ffffff]' : 'border-transparent text-[#858585] hover:text-[#cccccc]'
             }`}
           >
             Real Transaction Builder
@@ -249,7 +249,7 @@ export const SolanaDeployModal: React.FC<SolanaDeployModalProps> = ({
           <button
             onClick={() => setActiveTab('toolchain')}
             className={`py-2.5 border-b-2 transition cursor-pointer ${
-              activeTab === 'toolchain' ? 'border-[#8b5cf6] text-[#ffffff]' : 'border-transparent text-[#858585] hover:text-[#cccccc]'
+              activeTab === 'toolchain' ? 'border-[#007acc] text-[#ffffff]' : 'border-transparent text-[#858585] hover:text-[#cccccc]'
             }`}
           >
             Toolchain &amp; Build Status
@@ -406,7 +406,7 @@ export const SolanaDeployModal: React.FC<SolanaDeployModalProps> = ({
                         min="0.0001"
                         value={transferAmountSol}
                         onChange={(e) => setTransferAmountSol(e.target.value)}
-                        className="w-full bg-[#181818] border border-[#2d2d2d] rounded px-2.5 py-1.5 text-xs text-[#ffffff] font-mono outline-none focus:border-[#8b5cf6]"
+                        className="w-full bg-[#181818] border border-[#2d2d2d] rounded px-2.5 py-1.5 text-xs text-[#ffffff] font-mono outline-none focus:border-[#007acc]"
                       />
                     </div>
 
@@ -415,7 +415,7 @@ export const SolanaDeployModal: React.FC<SolanaDeployModalProps> = ({
                       <select
                         value={feeLevel}
                         onChange={(e) => setFeeLevel(e.target.value as PriorityFeeLevel)}
-                        className="w-full bg-[#181818] border border-[#2d2d2d] rounded px-2.5 py-1.5 text-xs text-[#ffffff] outline-none focus:border-[#8b5cf6]"
+                        className="w-full bg-[#181818] border border-[#2d2d2d] rounded px-2.5 py-1.5 text-xs text-[#ffffff] outline-none focus:border-[#007acc]"
                       >
                         <option value="low">Low (1,000 µLamports)</option>
                         <option value="medium">Medium (50,000 µLamports)</option>

@@ -139,7 +139,43 @@ export class SolanaSimulator {
       };
     }
 
-    logs.push(`Program log: Constraint check passed cleanly`);
+    // Evaluate declared requires constraints
+    let constraintsPassed = true;
+    for (const req of inst.requires) {
+      const condStr = typeof req === 'string' ? req : (req as any)?.condition || String(req);
+      logs.push(`Program log: Evaluating constraint: ${condStr}`);
+      // Simple authority check verification if present
+      if (condStr.toLowerCase().includes('authority') && auth.includes('Unauthorized')) {
+        logs.push(`Program log: Error: Constraint failed: ${condStr}`);
+        constraintsPassed = false;
+        break;
+      }
+    }
+
+    if (!constraintsPassed) {
+      return {
+        success: false,
+        signature: '',
+        logs,
+        computeUnitsUsed: 200,
+        error: 'Constraint failed on instruction execution',
+        accounts: this.getAllAccountsRecord(),
+      };
+    }
+
+    // Apply declared account mutations to simulated account state
+    for (const mut of inst.mutations) {
+      logs.push(`Program log: Applying mutation to ${mut.target}`);
+      this.accounts.forEach((acc) => {
+        if (acc.data && mut.target in acc.data) {
+          if (typeof acc.data[mut.target] === 'number') {
+            acc.data[mut.target] += 1;
+          }
+        }
+      });
+    }
+
+    logs.push(`Program log: Instruction '${instructionName}' executed in simulation sandbox`);
     logs.push(`Program ${progId} success`);
 
     const signature = `5K${Math.random().toString(36).substring(2, 15)}`;

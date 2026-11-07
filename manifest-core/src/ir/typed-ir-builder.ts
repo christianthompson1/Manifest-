@@ -48,7 +48,8 @@ class FunctionLoweringContext {
     private readonly structsByName: Map<string, MIRStruct>,
     private readonly enumsByName: Map<string, MIREnum>,
     private readonly fnReturnTypes: Map<string, SemanticType>,
-    private readonly exprTypes: WeakMap<SemanticExpr, SemanticType>
+    private readonly exprTypes: WeakMap<SemanticExpr, SemanticType>,
+    public readonly diagnostics: any[] = []
   ) {}
 
   public pushScope(): void {
@@ -566,10 +567,17 @@ class FunctionLoweringContext {
       }
 
       case 'TryStmt': {
-        this.pushScope();
-        const tryBlock = this.lowerBlock(stmt.tryBody);
-        this.popScope();
-        for (const s of tryBlock) out.push(s);
+        // Honest diagnostic: TryStmt catchBody cannot be dropped silently.
+        // Once MVM v1.1 exception unwinding table and Result-lowering are implemented,
+        // this will lower to an explicit try_catch block.
+        this.diagnostics.push({
+          code: 'E_UNIMPLEMENTED_FEATURE',
+          severity: 'error',
+          message: `The 'try / catch' construct is not yet supported in the Manifest IR and MVM execution pipeline. Use Result<T, E> (Ok / Err) and 'match' pattern matching for explicit, deterministic error handling.`,
+          line: stmt.span.line,
+          column: stmt.span.column,
+          hint: `Replace 'try { ... } catch' with a function returning 'Result<T, str>' and handle with 'match res { Ok(val) => ..., Err(err) => ... }'.`,
+        });
         break;
       }
     }

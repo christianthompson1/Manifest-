@@ -40,6 +40,7 @@ import {
   Sparkles,
   MoreHorizontal,
   Info,
+  List,
 } from 'lucide-react';
 import {
   ManifestProject,
@@ -145,11 +146,39 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
   // Cursor position tracking for status bar
   const [cursorPos, setCursorPos] = useState<{ line: number; col: number }>({ line: 1, col: 1 });
 
-  // Mobile specific state
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState<boolean>(false);
   const [mobileActiveView, setMobileActiveView] = useState<'editor' | 'preview' | 'terminal' | 'problems'>('editor');
   const [isMobileActionsOpen, setIsMobileActionsOpen] = useState<boolean>(false);
+  const [isDesktopMoreOpen, setIsDesktopMoreOpen] = useState<boolean>(false);
+  const [isTabsDropdownOpen, setIsTabsDropdownOpen] = useState<boolean>(false);
   const [isLanguageModalOpen, setIsLanguageModalOpen] = useState<boolean>(false);
+
+  const desktopMoreRef = useRef<HTMLDivElement>(null);
+  const tabsDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown menus on outside click or Escape key
+  useEffect(() => {
+    const handlePointerDown = (e: MouseEvent) => {
+      if (desktopMoreRef.current && !desktopMoreRef.current.contains(e.target as Node)) {
+        setIsDesktopMoreOpen(false);
+      }
+      if (tabsDropdownRef.current && !tabsDropdownRef.current.contains(e.target as Node)) {
+        setIsTabsDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsDesktopMoreOpen(false);
+        setIsTabsDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   const isHydratedRef = useRef<boolean>(false);
 
@@ -935,45 +964,15 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             <MoreHorizontal className="w-4 h-4" />
           </button>
 
-          {/* Build Button */}
+          {/* Build Button (always visible on sm and up) */}
           <button
             onClick={handleBuild}
             disabled={isCompiling}
             title="Emit target build artifacts (.mbc, .wasm, .rs, .js) into workspace build/"
-            className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer"
+            className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer min-h-[30px]"
           >
             <Hammer className="w-3 h-3 text-[#dcdcaa]" />
             <span className="hidden md:inline">Build</span>
-          </button>
-
-          {/* Projects / Welcome Button */}
-          <button
-            onClick={() => setIsWelcomeOpen(true)}
-            title="Projects & Templates"
-            className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer"
-          >
-            <FolderOpen className="w-3.5 h-3.5 text-[#569cd6]" />
-            <span className="hidden md:inline">Projects</span>
-          </button>
-
-          {/* Verification & Test Runner */}
-          <button
-            onClick={() => setIsTestRunnerOpen(true)}
-            title="Run Manifest & Solana LiteSVM Tests"
-            className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#89d185] hover:text-[#a6e3a1] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer"
-          >
-            <ShieldCheck className="w-3.5 h-3.5 text-[#89d185]" />
-            <span className="hidden xl:inline">Tests</span>
-          </button>
-
-          {/* Solana Deploy & Transaction */}
-          <button
-            onClick={() => setIsSolanaDeployOpen(true)}
-            title="Solana Deploy & Transactions"
-            className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cca700] hover:text-[#ffd700] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer"
-          >
-            <Coins className="w-3.5 h-3.5 text-[#cca700]" />
-            <span className="hidden xl:inline">Solana</span>
           </button>
 
           {/* Collapsible Preview Toggle Button */}
@@ -987,7 +986,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
               }
             }}
             title={isPreviewOpen ? 'Hide Preview panel' : 'Show Preview panel'}
-            className={`py-1 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 border transition cursor-pointer ${
+            className={`py-1 px-2.5 rounded-md text-xs font-medium flex items-center gap-1.5 border transition cursor-pointer min-h-[30px] ${
               isPreviewOpen
                 ? 'bg-[#2d2d2d] text-[#ffffff] border-[#3c3c3c]'
                 : 'bg-[#252526] text-[#858585] border-[#2d2d2d] hover:text-[#cccccc]'
@@ -997,25 +996,152 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             <span className="hidden md:inline">Preview</span>
           </button>
 
-          {/* Settings Button */}
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            title="Project & Studio Settings"
-            className="hidden sm:flex py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] hover:text-[#ffffff] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer"
-          >
-            <Settings className="w-3.5 h-3.5 text-[#9cdcfe]" />
-            <span className="hidden xl:inline">Settings</span>
-          </button>
+          {/* Desktop Toolbar Overflow Popover (sm to 2xl): groups secondary actions to prevent overflow */}
+          <div ref={desktopMoreRef} className="relative hidden sm:block 2xl:hidden">
+            <button
+              onClick={() => setIsDesktopMoreOpen((prev) => !prev)}
+              aria-label="More Studio Actions"
+              title="More Actions (Projects, Tests, Solana, Settings, Developer Mode)"
+              className={`min-h-[30px] px-2 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] text-xs font-medium flex items-center gap-1 border border-[#2d2d2d] transition cursor-pointer ${
+                isDesktopMoreOpen ? 'bg-[#2d2d2d] border-[#454545] text-white' : ''
+              }`}
+            >
+              <MoreHorizontal className="w-3.5 h-3.5 text-[#cccccc]" />
+              <ChevronDown className="w-2.5 h-2.5 text-[#858585]" />
+            </button>
 
-          {/* Developer Tools / Testbench Toggle */}
-          <button
-            onClick={onSwitchToTestbench || (() => setIsTestbenchOpen(true))}
-            title="Developer Mode: Compiler Inspector & Testbench"
-            className="py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#858585] hover:text-[#cccccc] border border-[#2d2d2d] transition cursor-pointer flex items-center gap-1.5 text-xs font-medium"
-          >
-            <Cpu className="w-3.5 h-3.5 text-[#cca700]" />
-            <span className="hidden lg:inline">Developer Mode</span>
-          </button>
+            {isDesktopMoreOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-52 bg-[#1f1f1f] border border-[#2d2d2d] rounded-lg shadow-2xl py-1.5 z-50">
+                <div className="px-3 py-1 text-[10px] font-semibold text-[#858585] uppercase tracking-wider border-b border-[#2d2d2d] mb-1">
+                  Studio Tools
+                </div>
+
+                <button
+                  onClick={() => {
+                    setIsDesktopMoreOpen(false);
+                    setIsWelcomeOpen(true);
+                  }}
+                  className="w-full px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#2a2d2e] hover:text-white flex items-center gap-2 text-left transition cursor-pointer"
+                >
+                  <FolderOpen className="w-3.5 h-3.5 text-[#569cd6]" />
+                  <span>Projects & Templates</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsDesktopMoreOpen(false);
+                    setIsTestRunnerOpen(true);
+                  }}
+                  className="w-full px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#2a2d2e] hover:text-white flex items-center gap-2 text-left transition cursor-pointer"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5 text-[#89d185]" />
+                  <span>Test Runner (LiteSVM)</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsDesktopMoreOpen(false);
+                    setIsSolanaDeployOpen(true);
+                  }}
+                  className="w-full px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#2a2d2e] hover:text-white flex items-center gap-2 text-left transition cursor-pointer"
+                >
+                  <Coins className="w-3.5 h-3.5 text-[#cca700]" />
+                  <span>Solana Tools</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setIsDesktopMoreOpen(false);
+                    setIsSettingsOpen(true);
+                  }}
+                  className="w-full px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#2a2d2e] hover:text-white flex items-center gap-2 text-left transition cursor-pointer"
+                >
+                  <Settings className="w-3.5 h-3.5 text-[#9cdcfe]" />
+                  <span>Project Settings</span>
+                </button>
+
+                <div className="h-px bg-[#2d2d2d] my-1" />
+
+                <button
+                  onClick={() => {
+                    setIsDesktopMoreOpen(false);
+                    if (onSwitchToTestbench) onSwitchToTestbench();
+                    else setIsTestbenchOpen(true);
+                  }}
+                  className="w-full px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#2a2d2e] hover:text-white flex items-center gap-2 text-left transition cursor-pointer"
+                >
+                  <Cpu className="w-3.5 h-3.5 text-[#cca700]" />
+                  <span>Developer Mode</span>
+                </button>
+
+                {activeFile.language === 'manifest' && !isLegacyDomainManifestSource(activeFile.content) && (
+                  <button
+                    onClick={() => {
+                      setIsDesktopMoreOpen(false);
+                      handleFormatManifest();
+                    }}
+                    className="w-full px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#2a2d2e] hover:text-white flex items-center gap-2 text-left transition cursor-pointer"
+                  >
+                    <Wand2 className="w-3.5 h-3.5 text-[#9cdcfe]" />
+                    <span>Format File</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* Wide-screen Secondary Buttons (Expanded on 2xl screens >= 1536px) */}
+          <div className="hidden 2xl:flex items-center space-x-1.5">
+            {/* Projects / Welcome Button */}
+            <button
+              onClick={() => setIsWelcomeOpen(true)}
+              title="Projects & Templates"
+              className="py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer min-h-[30px]"
+            >
+              <FolderOpen className="w-3.5 h-3.5 text-[#569cd6]" />
+              <span>Projects</span>
+            </button>
+
+            {/* Verification & Test Runner */}
+            <button
+              onClick={() => setIsTestRunnerOpen(true)}
+              title="Run Manifest & Solana LiteSVM Tests"
+              className="py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#89d185] hover:text-[#a6e3a1] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer min-h-[30px]"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-[#89d185]" />
+              <span>Tests</span>
+            </button>
+
+            {/* Solana Deploy & Transaction */}
+            <button
+              onClick={() => setIsSolanaDeployOpen(true)}
+              title="Solana Deploy & Transactions"
+              className="py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cca700] hover:text-[#ffd700] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer min-h-[30px]"
+            >
+              <Coins className="w-3.5 h-3.5 text-[#cca700]" />
+              <span>Solana</span>
+            </button>
+
+            {/* Settings Button */}
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              title="Project & Studio Settings"
+              className="py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#cccccc] hover:text-[#ffffff] text-xs font-medium items-center gap-1.5 border border-[#2d2d2d] transition cursor-pointer min-h-[30px]"
+            >
+              <Settings className="w-3.5 h-3.5 text-[#9cdcfe]" />
+              <span>Settings</span>
+            </button>
+
+            {/* Developer Tools / Testbench Toggle */}
+            <button
+              onClick={onSwitchToTestbench || (() => setIsTestbenchOpen(true))}
+              title="Developer Mode: Compiler Inspector & Testbench"
+              className="py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#858585] hover:text-[#cccccc] border border-[#2d2d2d] transition cursor-pointer flex items-center gap-1.5 text-xs font-medium min-h-[30px]"
+            >
+              <Cpu className="w-3.5 h-3.5 text-[#cca700]" />
+              <span>Developer Mode</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1058,10 +1184,10 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
 
         {/* Center Editor Surface (#1f1f1f VS Code Charcoal) & Bottom Panels */}
         <div className="flex-1 flex flex-col min-w-0 bg-[#1f1f1f]">
-          {/* Top Pill-Shaped Tabs Bar (#181818 background with #1f1f1f active pill tab) */}
-          <div className="h-9 border-b border-[#2d2d2d] bg-[#181818] px-3 flex items-center justify-between select-none">
-            {/* Pill Tabs strip */}
-            <div className="flex items-center gap-1.5 overflow-x-auto py-1 custom-scrollbar">
+          {/* Professional Rectangular Tabs Bar (#181818 background with #1f1f1f active tab) */}
+          <div className="h-9 border-b border-[#2d2d2d] bg-[#181818] px-1 flex items-center justify-between select-none">
+            {/* Editor Tabs strip */}
+            <div className="flex items-center gap-0.5 overflow-x-auto h-full custom-scrollbar flex-1 min-w-0 mr-1">
               {openFilePaths.map((path) => {
                 const file = project.files.find((f) => f.path === path);
                 const isSelected = activeFilePath === path;
@@ -1071,10 +1197,10 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                   <div
                     key={path}
                     onClick={() => setActiveFilePath(path)}
-                    className={`h-7 px-3 rounded-full text-xs font-sans flex items-center gap-2 transition cursor-pointer select-none ${
+                    className={`h-full px-3 text-xs font-sans flex items-center gap-2 transition cursor-pointer select-none border-r border-[#2d2d2d] shrink-0 ${
                       isSelected
-                        ? 'bg-[#1f1f1f] text-[#ffffff] border border-[#2d2d2d] font-medium shadow-xs'
-                        : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#242424] border border-transparent'
+                        ? 'bg-[#1f1f1f] text-[#ffffff] border-t-2 border-t-[#007acc] font-medium'
+                        : 'bg-[#181818] text-[#858585] hover:text-[#cccccc] hover:bg-[#1e1e1e] border-t-2 border-t-transparent'
                     }`}
                   >
                     {file ? getFileIcon(file) : <FileCode className="w-3.5 h-3.5 text-[#858585]" />}
@@ -1096,12 +1222,80 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
               })}
             </div>
 
-            {/* Split Editor Toggle & Language Indicators */}
-            <div className="hidden sm:flex items-center gap-2 pl-2">
+            {/* Tab Actions: Open Editors Dropdown Switcher & Split Editor Toggle & Indicators */}
+            <div className="flex items-center gap-1 pl-1 shrink-0">
+              {/* Open Editors Dropdown Switcher */}
+              <div ref={tabsDropdownRef} className="relative">
+                <button
+                  onClick={() => setIsTabsDropdownOpen(!isTabsDropdownOpen)}
+                  title="Open Editors list"
+                  className={`p-1 px-1.5 h-7 rounded text-[11px] flex items-center gap-1 transition cursor-pointer border ${
+                    isTabsDropdownOpen
+                      ? 'bg-[#252526] text-[#ffffff] border-[#3c3c3c]'
+                      : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#242424] border-transparent'
+                  }`}
+                >
+                  <List className="w-3.5 h-3.5" />
+                  <ChevronDown className="w-2.5 h-2.5" />
+                </button>
+
+                {isTabsDropdownOpen && (
+                  <div className="absolute right-0 top-full mt-1 w-64 max-h-72 overflow-y-auto bg-[#1f1f1f] border border-[#2d2d2d] rounded-lg shadow-2xl py-1 z-50 custom-scrollbar">
+                    <div className="px-3 py-1.5 text-[10px] font-semibold text-[#858585] uppercase tracking-wider border-b border-[#2d2d2d] flex items-center justify-between">
+                      <span>Open Editors</span>
+                      <span className="text-[9px] font-mono">{openFilePaths.length} files</span>
+                    </div>
+                    {openFilePaths.map((path) => {
+                      const f = project.files.find((file) => file.path === path);
+                      const isSelected = activeFilePath === path;
+                      const fileName = path.split('/').pop() || path;
+                      return (
+                        <div
+                          key={path}
+                          onClick={() => {
+                            setActiveFilePath(path);
+                            setIsTabsDropdownOpen(false);
+                          }}
+                          className={`w-full px-3 py-1.5 flex items-center justify-between text-left text-xs transition cursor-pointer hover:bg-[#2a2d2e] ${
+                            isSelected ? 'bg-[#252526] text-[#ffffff] font-medium' : 'text-[#cccccc]'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 truncate min-w-0 mr-2">
+                            {f ? getFileIcon(f) : <FileCode className="w-3.5 h-3.5 shrink-0" />}
+                            <span className="truncate">{fileName}</span>
+                            <span className="text-[10px] text-[#858585] truncate font-mono hidden sm:inline">
+                              {path}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            {dirtyPaths.has(path) && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-[#cca700]" title="Unsaved" />
+                            )}
+                            {openFilePaths.length > 1 && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCloseTab(path, e);
+                                }}
+                                className="hover:text-white text-[#858585] p-0.5 rounded hover:bg-[#333333]"
+                                title="Close tab"
+                              >
+                                <X className="w-2.5 h-2.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Split Editor Toggle & Language Indicators */}
               <button
                 onClick={() => setIsSplitView(!isSplitView)}
                 title={isSplitView ? 'Close Split Editor' : 'Split Editor (Side-by-Side)'}
-                className={`p-1 rounded-md transition cursor-pointer flex items-center gap-1 text-[11px] ${
+                className={`p-1 px-1.5 h-7 rounded-md transition cursor-pointer flex items-center gap-1 text-[11px] ${
                   isSplitView
                     ? 'bg-[#2d2d2d] text-[#ffffff] border border-[#3c3c3c]'
                     : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#242424]'
@@ -1111,7 +1305,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                 <span className="hidden lg:inline text-[10px]">Split</span>
               </button>
 
-              <div className="hidden lg:flex items-center gap-2 text-[10px] text-[#858585] font-mono pr-1">
+              <div className="hidden lg:flex items-center gap-2 text-[10px] text-[#858585] font-mono pr-1 pl-1">
                 <span>{activeFile.language}</span>
                 <span>UTF-8</span>
               </div>

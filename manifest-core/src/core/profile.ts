@@ -77,13 +77,14 @@ export function detectSyntaxProfile(
 
   // Unambiguous Professional markers
   if (
-    /^\s*(?:export\s+)?(?:async\s+)?fn\s+[a-zA-Z_]/m.test(stripped) ||
+    /^\s*(?:pub\s+)?mod\s+[a-zA-Z0-9_.]+\s*;/m.test(stripped) ||
+    /^\s*(?:pub\s+)?(?:export\s+)?(?:async\s+)?fn\s+[a-zA-Z_]/m.test(stripped) ||
     /^\s*let\s+(?:mut\s+)?[a-zA-Z_]/m.test(stripped) ||
     /^\s*const\s+[a-zA-Z_]/m.test(stripped) ||
     /^\s*module\s+[a-zA-Z0-9_.]+\s*;/m.test(stripped) ||
     /^\s*(?:requires|provides|denies)\s*\[/m.test(stripped) ||
-    /^\s*(?:export\s+)?struct\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:<[^>]+>)?\s*\{/m.test(stripped) ||
-    /^\s*(?:export\s+)?enum\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:<[^>]+>)?\s*\{/m.test(stripped)
+    /^\s*(?:pub\s+)?(?:export\s+)?struct\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:<[^>]+>)?\s*\{/m.test(stripped) ||
+    /^\s*(?:pub\s+)?(?:export\s+)?enum\s+[A-Za-z_][A-Za-z0-9_]*\s*(?:<[^>]+>)?\s*\{/m.test(stripped)
   ) {
     return 'professional';
   }
