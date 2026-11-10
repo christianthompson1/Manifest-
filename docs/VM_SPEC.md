@@ -33,9 +33,14 @@ The **Manifest Virtual Machine (`mvm`)** is a real, standalone virtual machine w
 
 ## 2. Execution & Memory Model
 
-### 2.1 Value Representation (`Value`)
+### 2.1 Value Representation (`Value` / `MvmValue`)
 - **Immediate Scalar Values**: `Void`, `I64(i64)`, `F64(f64)`, `Bool(bool)`, `Str(String)`.
-- **Heap Handles (`HeapId(usize)`)**: `ArrayRef(HeapId)`, `MapRef(HeapId)`, `StructRef(HeapId)`, `EnumRef(HeapId)` indexing into `ArenaHeap`.
+- **Heap Handles (`HeapId(usize)`)**:
+  - `ArrayRef(HeapId)`: mutable dynamic arrays of `Value`.
+  - `MapRef(HeapId)`: key-value dictionary structures.
+  - `StructRef(HeapId)`: typed record objects with named fields.
+  - `EnumRef(HeapId)`: tagged unions / algebraic data types with variant payloads.
+  - `BytesRef(HeapId)` (`bytes_ref`): dedicated binary byte buffers distinct from UTF-8 text strings, supporting byte slicing, indexing, and hex formatting.
 
 ### 2.2 Stack & Call Frames
 - Each `CallFrame` owns:
@@ -44,8 +49,14 @@ The **Manifest Virtual Machine (`mvm`)** is a real, standalone virtual machine w
   - `locals: Vec<Value>` initialized to `fn.local_count` slots (`args[0..param_count]` copied into `locals[0..param_count]`, remaining slots initialized to `Value::Void`)
   - `stack_base: usize` recording the `OperandStack` watermark so `RET` / `RET_VOID` cleanly truncates frame temporaries before pushing the return value to the caller.
 
-### 2.3 Bounded Arena Heap (`ArenaHeap`)
-- Composite objects (`HeapObject::Array`, `HeapObject::Map`, `HeapObject::Struct`, `HeapObject::Enum`) are allocated sequentially in `ArenaHeap` up to `VmLimits::max_heap_objects` (default `65,536`). Exceeding `max_heap_objects` raises a deterministic `VmTrapKind::HeapLimitExceeded` trap rather than triggering an uncontrolled OOM panic.
+### 2.3 Managed Heap & Mark-and-Sweep Garbage Collection (`HeapArena` / `MvmHeapArena`)
+- **Root Tracing**: Garbage collection traverses:
+  1. All active values on the operand stack (`stack`).
+  2. All global variables (`globals`).
+  3. All local variable slots across active call frames (`frames.flatMap(f => f.locals)`).
+- **Sweep & Free-List Slot Reuse**: Unmarked objects are reclaimed and returned to a `freeList` for immediate slot reuse by subsequent allocations, preventing unbounded heap growth and fragmentation.
+- **Collection Limits**: Configurable object limit (`max_heap_objects`, default `65,536`). When allocation reaches the threshold, a collection cycle is automatically triggered. If live objects cannot be brought below the limit, the VM raises a deterministic `E_MVM_MEMORY_LIMIT` / `VmTrapKind::HeapLimitExceeded` trap.
+- **Statistics**: Both Rust and TypeScript runtimes record collection counts, allocated objects, reclaimed objects, current live objects, and peak live watermark (`GcStatistics`).
 
 ---
 

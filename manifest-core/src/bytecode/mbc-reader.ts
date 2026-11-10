@@ -181,13 +181,16 @@ export function decodeMbcInstructions(
 }
 
 export function decodeMbcContainer(bytes: Uint8Array): DecodedMbcModule {
-  if (bytes.length < 16) {
-    throw new Error('Truncated .mbc file: smaller than 16-byte header');
+  if (bytes.length < 4) {
+    throw new Error('Truncated .mbc file: smaller than 4-byte magic header');
   }
   for (let i = 0; i < 4; i++) {
     if (bytes[i] !== MBC_MAGIC[i]) {
       throw new Error('Invalid .mbc magic header (expected MBC\\0)');
     }
+  }
+  if (bytes.length < 16) {
+    throw new Error('Truncated .mbc file: smaller than 16-byte header');
   }
 
   const hdr = new ByteReader(bytes.subarray(4));

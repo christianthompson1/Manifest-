@@ -1,4 +1,5 @@
 import { MVM_WASM_BASE64 } from './mvm-wasm-bytes.ts';
+import { MvmInterpreter } from './mvm-interpreter.ts';
 
 export interface MvmExecutionOptions {
   grantedCapabilities?: string[];
@@ -280,4 +281,26 @@ export async function executeMbcInRustVm(
     exports.mvm_dealloc(mbcPtr, mbcAlloc);
     exports.mvm_dealloc(cfgPtr, cfgAlloc);
   }
+}
+
+/**
+ * Executes `.mbc` bytecode using the managed MVM bytecode interpreter
+ * with full Mark-and-Sweep garbage collection, fuel limits, and capability gates.
+ */
+export function executeMbcDirect(
+  mbcBytes: Uint8Array,
+  options: MvmExecutionOptions = {}
+): MvmExecutionResponse {
+  const res = MvmInterpreter.execute(mbcBytes, options);
+  return {
+    ok: res.ok,
+    phase: res.phase,
+    returnType: res.returnType,
+    returnValue: res.returnValue,
+    stdout: res.stdout,
+    steps: res.steps,
+    heapObjects: res.heapObjects,
+    error: res.error,
+    virtualFiles: res.virtualFiles,
+  };
 }

@@ -856,15 +856,25 @@ export class ManifestExecutionProvider implements ExecutionProvider {
     const outEl = document.getElementById('manifest-root');
     const lines = [];
     try {
-      const mod = createManifestModule({
-        console: (msg) => {
-          lines.push(String(msg));
-          try { window.parent.postMessage({ type: 'manifest-output', payload: String(msg) }, '*'); } catch (_) {}
+      const runner = typeof createManifestModule === 'function' ? createManifestModule : (typeof __runManifestModule === 'function' ? __runManifestModule : null);
+      if (typeof __runManifestModule === 'function') {
+        const res = __runManifestModule();
+        if (res.stdout && res.stdout.length) {
+          lines.push(...res.stdout);
         }
-      });
-      const ret = typeof mod.main === 'function' ? mod.main() : undefined;
-      const renderedReturn = typeof ret === 'bigint' ? ret.toString() : JSON.stringify(ret);
-      outEl.innerHTML = (lines.length ? lines.join('\\n') + '\\n\\n' : '') + '<span class="ret">Return: ' + renderedReturn + '</span>';
+        const renderedReturn = res.returnValue || 'void';
+        outEl.innerHTML = (lines.length ? lines.join('\\n') + '\\n\\n' : '') + '<span class="ret">Return: ' + escapeHtml(renderedReturn) + '</span>';
+      } else if (typeof createManifestModule === 'function') {
+        const mod = createManifestModule({
+          console: (msg) => {
+            lines.push(String(msg));
+            try { window.parent.postMessage({ type: 'manifest-output', payload: String(msg) }, '*'); } catch (_) {}
+          }
+        });
+        const ret = typeof mod.main === 'function' ? mod.main() : undefined;
+        const renderedReturn = typeof ret === 'bigint' ? ret.toString() : JSON.stringify(ret);
+        outEl.innerHTML = (lines.length ? lines.join('\\n') + '\\n\\n' : '') + '<span class="ret">Return: ' + escapeHtml(renderedReturn) + '</span>';
+      }
     } catch (err) {
       outEl.style.color = '#f85149';
       outEl.textContent = 'Runtime Trap: ' + (err.message || String(err));

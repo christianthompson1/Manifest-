@@ -11,7 +11,7 @@
  *   - Settings: Quick Editor & Runtime preferences
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Folder,
   FolderOpen,
@@ -44,12 +44,21 @@ import {
   Flame,
   FolderPlus,
   FilePlus,
+  Package,
+  ShieldCheck,
+  Check,
+  AlertCircle,
+  RefreshCw,
+  BookOpen,
+  Copy,
 } from 'lucide-react';
 import { ManifestProject, ProjectFile } from '../types.ts';
 import { TEMPLATES, StudioSettings } from '../project-store.ts';
 import { SolanaWalletService, WalletState, SolanaNetwork } from '../services/solana-wallet.ts';
 import { HeliusPriorityFeeProvider, PriorityFeeEstimate, PriorityFeeLevel } from '../services/priority-fees.ts';
 import { LibraryRegistry } from '../../../manifest-core/src/libraries/library-registry.ts';
+import { PackageManager, OFFICIAL_PACKAGE_REGISTRY } from '../../../manifest-core/src/package/package-manager.ts';
+import { StdLibraryRegistry, StdModuleDef } from '../../../manifest-core/src/stdlib/std-modules.ts';
 import { ProjectTree } from '../explorer/ProjectTree.tsx';
 
 export type ActivityTab = 'explorer' | 'search' | 'solana' | 'git' | 'packages' | 'devtools' | 'settings';
@@ -64,6 +73,8 @@ interface SidebarProps {
   onCreateFile: (path: string) => void;
   onDeleteFile: (path: string) => void;
   onRenameFile?: (oldPath: string, newPath: string) => void;
+  onDuplicateFile?: (path: string) => void;
+  onWriteFile?: (path: string, content: string) => void;
   onSelectTemplate: (templateId: string) => void;
   onOpenDevTools: () => void;
   onOpenProjectMenu?: () => void;
@@ -88,6 +99,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCreateFile,
   onDeleteFile,
   onRenameFile,
+  onDuplicateFile,
+  onWriteFile,
   onSelectTemplate,
   onOpenDevTools,
   onOpenProjectMenu,
@@ -104,6 +117,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [globalSearchQuery, setGlobalSearchQuery] = useState('');
   const [createTrigger, setCreateTrigger] = useState<{ type: 'file' | 'folder'; nonce: number } | null>(null);
+
+  // Packages & Standard Library state
+  const [packageSubTab, setPackageSubTab] = useState<'dependencies' | 'stdlib'>('dependencies');
+  const [selectedCatalogPkg, setSelectedCatalogPkg] = useState('std-core');
+  const [customConstraint, setCustomConstraint] = useState('^1.0.0');
+  const [verifyStatus, setVerifyStatus] = useState<{ checked: boolean; ok: boolean; errors: string[] } | null>(null);
+  const [stdlibFilter, setStdlibFilter] = useState('');
+  const [copiedModule, setCopiedModule] = useState<string | null>(null);
 
   // Solana live state
   const walletService = SolanaWalletService.getInstance();
@@ -329,6 +350,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 onSelectFile={onSelectFile}
                 onCreateFile={onCreateFile}
                 onRenameFile={onRenameFile}
+                onDuplicateFile={onDuplicateFile}
                 onDeleteFile={onDeleteFile}
               />
 
@@ -551,27 +573,404 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )}
 
           {/* Packages & Capabilities View */}
-          {activeActivity === 'packages' && (
-            <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
-              <div className="text-[10px] font-semibold text-[#858585] uppercase mb-1">
-                Declared Libraries & Capabilities
-              </div>
-              {LibraryRegistry.getInstance().listLibraries().map((lib: any) => (
-                <div
-                  key={lib.name}
-                  className="p-2.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-1"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-semibold text-[#ffffff]">{lib.name}</span>
-                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#252526] text-[#89d185] font-mono border border-[#2d2d2d]">
-                      v{lib.version}
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-[#858585]">{lib.description}</p>
+          {activeActivity === 'packages' && (() => {
+            const manifestFile = project.files.find((f) => f.path === 'manifest.toml');
+            const lockFile = project.files.find((f) => f.path === 'manifest.lock');
+
+            let parsedConfig = null;
+            let parseError = '';
+            if (manifestFile) {
+              try {
+                parsedConfig = PackageManager.parsePackageToml(manifestFile.content);
+              } catch (err: any) {
+                parseError = err.message;
+              }
+            }
+
+            let parsedLock: any = null;
+            if (lockFile) {
+              try {
+                parsedLock = PackageManager.parseLockfile(lockFile.content);
+              } catch {
+                parsedLock = null;
+              }
+            }
+
+            const handleInitManifest = () => {
+              const defaultToml = PackageManager.initPackage(project.name || 'manifest-project');
+              if (onWriteFile) {
+                onWriteFile('manifest.toml', defaultToml);
+              } else {
+                onCreateFile('manifest.toml');
+              }
+              onSelectFile('manifest.toml');
+              onShowToast?.('Created manifest.toml');
+            };
+
+            const handleAddDep = (pkgName: string, constraint: string) => {
+              if (!manifestFile) {
+                onShowToast?.('Initialize manifest.toml first');
+                return;
+              }
+              const res = PackageManager.addDependency(manifestFile.content, pkgName, constraint);
+              if (!res.ok) {
+                const errMsg = res.result.diagnostics.map((d) => d.message).join('; ') || 'Resolution failed';
+                onShowToast?.(`Error adding ${pkgName}: ${errMsg}`);
+                return;
+              }
+              if (onWriteFile) {
+                onWriteFile('manifest.toml', res.toml);
+                if (res.lock) onWriteFile('manifest.lock', res.lock);
+              }
+              setVerifyStatus(null);
+              onShowToast?.(`Added dependency ${pkgName} ${constraint}`);
+            };
+
+            const handleRemoveDep = (pkgName: string) => {
+              if (!manifestFile) return;
+              const res = PackageManager.removeDependency(manifestFile.content, pkgName);
+              if (!res.ok) {
+                const errMsg = res.result.diagnostics.map((d) => d.message).join('; ') || 'Removal failed';
+                onShowToast?.(`Error removing ${pkgName}: ${errMsg}`);
+                return;
+              }
+              if (onWriteFile) {
+                onWriteFile('manifest.toml', res.toml);
+                if (res.lock) onWriteFile('manifest.lock', res.lock);
+              }
+              setVerifyStatus(null);
+              onShowToast?.(`Removed dependency ${pkgName}`);
+            };
+
+            const handleVerify = () => {
+              if (!manifestFile) return;
+              const res = PackageManager.verifyPackage(manifestFile.content, lockFile?.content);
+              setVerifyStatus({ checked: true, ok: res.ok, errors: res.errors });
+              if (res.ok) {
+                onShowToast?.('Package & lockfile integrity verified');
+              } else {
+                onShowToast?.(`Verification issue: ${res.errors[0] || 'Unknown'}`);
+              }
+            };
+
+            const allStdModules = StdLibraryRegistry.getInstance().listModules();
+            const filteredStdModules = allStdModules.filter((m) =>
+              m.name.toLowerCase().includes(stdlibFilter.toLowerCase()) ||
+              m.description.toLowerCase().includes(stdlibFilter.toLowerCase())
+            );
+
+            const officialPackages = Object.keys(OFFICIAL_PACKAGE_REGISTRY);
+
+            return (
+              <div className="flex-1 flex flex-col min-h-0 bg-[#181818]">
+                {/* Sub-tab Navigation */}
+                <div className="flex items-center border-b border-[#2d2d2d] bg-[#1a1a1a] px-2 py-1.5 gap-1 shrink-0">
+                  <button
+                    onClick={() => setPackageSubTab('dependencies')}
+                    className={`flex-1 py-1 px-2 text-[11px] font-medium rounded transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      packageSubTab === 'dependencies'
+                        ? 'bg-[#252526] text-[#ffffff] border border-[#3c3c3c]'
+                        : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#202020]'
+                    }`}
+                  >
+                    <Package className="w-3.5 h-3.5 text-[#569cd6]" />
+                    <span>Packages</span>
+                  </button>
+                  <button
+                    onClick={() => setPackageSubTab('stdlib')}
+                    className={`flex-1 py-1 px-2 text-[11px] font-medium rounded transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      packageSubTab === 'stdlib'
+                        ? 'bg-[#252526] text-[#ffffff] border border-[#3c3c3c]'
+                        : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#202020]'
+                    }`}
+                  >
+                    <BookOpen className="w-3.5 h-3.5 text-[#4ec9b0]" />
+                    <span>Stdlib (std::*)</span>
+                  </button>
                 </div>
-              ))}
-            </div>
-          )}
+
+                {/* Sub-tab 1: Project Dependencies */}
+                {packageSubTab === 'dependencies' && (
+                  <div className="flex-1 overflow-y-auto p-3 space-y-3 custom-scrollbar">
+                    {!manifestFile ? (
+                      <div className="p-3.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-2.5 text-center">
+                        <Package className="w-8 h-8 text-[#569cd6] mx-auto opacity-75" />
+                        <div>
+                          <div className="text-xs font-semibold text-[#ffffff]">No manifest.toml Found</div>
+                          <p className="text-[10px] text-[#858585] mt-1 leading-relaxed">
+                            Initialize a package configuration to manage versioned dependencies, SemVer constraints, and capability permissions.
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleInitManifest}
+                          className="w-full py-1.5 px-3 rounded bg-[#569cd6] hover:bg-[#4a89bd] text-[#ffffff] font-medium text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Initialize manifest.toml</span>
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        {/* Package Meta Header */}
+                        <div className="p-2.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <Package className="w-4 h-4 text-[#569cd6] shrink-0" />
+                              <span className="font-semibold text-xs text-[#ffffff] truncate">
+                                {parsedConfig?.name || 'package'}
+                              </span>
+                              <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#252526] text-[#89d185] font-mono border border-[#2d2d2d]">
+                                v{parsedConfig?.version || '0.1.0'}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={handleVerify}
+                                title="Verify package & lockfile integrity"
+                                className="p-1 rounded hover:bg-[#2a2a2a] text-[#858585] hover:text-[#4ec9b0] transition cursor-pointer"
+                              >
+                                <ShieldCheck className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => onSelectFile('manifest.toml')}
+                                title="Open manifest.toml"
+                                className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#252526] hover:bg-[#2d2d2d] text-[#9cdcfe] border border-[#2d2d2d] transition cursor-pointer"
+                              >
+                                toml
+                              </button>
+                              {lockFile && (
+                                <button
+                                  onClick={() => onSelectFile('manifest.lock')}
+                                  title="Open manifest.lock"
+                                  className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#252526] hover:bg-[#2d2d2d] text-[#ce9178] border border-[#2d2d2d] transition cursor-pointer"
+                                >
+                                  lock
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Verification Banner */}
+                          {verifyStatus && (
+                            <div
+                              className={`p-2 rounded text-[10px] flex items-start gap-1.5 ${
+                                verifyStatus.ok
+                                  ? 'bg-[#1e2a22] text-[#89d185] border border-[#2b4c33]'
+                                  : 'bg-[#2a1e1e] text-[#f48771] border border-[#4c2b2b]'
+                              }`}
+                            >
+                              {verifyStatus.ok ? (
+                                <>
+                                  <CheckCircle2 className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                                  <span>Integrity verified: all checksums match SHA-256 signatures.</span>
+                                </>
+                              ) : (
+                                <>
+                                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                                  <div>
+                                    <div className="font-semibold">Integrity Check Failed:</div>
+                                    <ul className="list-disc list-inside space-y-0.5 mt-0.5">
+                                      {verifyStatus.errors.map((err, i) => (
+                                        <li key={i}>{err}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Declared Dependencies List */}
+                        <div className="space-y-1.5">
+                          <div className="text-[10px] font-semibold text-[#858585] uppercase flex items-center justify-between">
+                            <span>Declared Dependencies</span>
+                            <span className="text-[9px] font-mono text-[#858585]">
+                              {Object.keys(parsedConfig?.dependencies || {}).length} pkgs
+                            </span>
+                          </div>
+
+                          {Object.keys(parsedConfig?.dependencies || {}).length === 0 ? (
+                            <div className="p-2.5 rounded bg-[#1f1f1f] border border-[#2d2d2d] text-[10px] text-[#858585] text-center">
+                              No dependencies declared. Add packages below.
+                            </div>
+                          ) : (
+                            Object.entries(parsedConfig?.dependencies || {}).map(([pkg, req]) => {
+                              const locked = parsedLock?.packages?.[pkg];
+                              return (
+                                <div
+                                  key={pkg}
+                                  className="p-2 rounded bg-[#1f1f1f] border border-[#2d2d2d] flex items-center justify-between gap-2"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-semibold text-xs text-[#ffffff] truncate">{pkg}</span>
+                                      <span className="text-[9px] font-mono px-1 rounded bg-[#252526] text-[#9cdcfe] border border-[#2d2d2d]">
+                                        {String(req)}
+                                      </span>
+                                    </div>
+                                    <div className="text-[9px] text-[#858585] flex items-center gap-1 mt-0.5 font-mono">
+                                      {locked ? (
+                                        <>
+                                          <span className="text-[#89d185]">v{locked.version} (locked)</span>
+                                          <span>•</span>
+                                          <span className="truncate max-w-[120px]" title={locked.integrity}>
+                                            {locked.integrity.slice(0, 15)}...
+                                          </span>
+                                        </>
+                                      ) : (
+                                        <span className="text-[#dcdcaa]">unlocked</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={() => handleRemoveDep(pkg)}
+                                    title={`Remove ${pkg}`}
+                                    className="p-1 rounded hover:bg-[#2a2a2a] text-[#858585] hover:text-[#f48771] transition cursor-pointer shrink-0"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+
+                        {/* Quick-add Official Catalog */}
+                        <div className="space-y-1.5">
+                          <div className="text-[10px] font-semibold text-[#858585] uppercase">
+                            Official Registry Packages
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {officialPackages.map((pkg) => {
+                              const isAdded = Boolean(parsedConfig?.dependencies?.[pkg]);
+                              return (
+                                <button
+                                  key={pkg}
+                                  disabled={isAdded}
+                                  onClick={() => handleAddDep(pkg, '^1.0.0')}
+                                  className={`p-1.5 rounded text-left border transition text-[10px] flex items-center justify-between cursor-pointer ${
+                                    isAdded
+                                      ? 'bg-[#1a1a1a] border-[#252526] text-[#606060] cursor-not-allowed'
+                                      : 'bg-[#1f1f1f] hover:bg-[#252526] border-[#2d2d2d] text-[#cccccc] hover:text-[#ffffff]'
+                                  }`}
+                                >
+                                  <span className="font-mono truncate">{pkg}</span>
+                                  {isAdded ? (
+                                    <Check className="w-3 h-3 text-[#89d185] shrink-0" />
+                                  ) : (
+                                    <Plus className="w-3 h-3 text-[#569cd6] shrink-0" />
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* Add Dependency Input Form */}
+                        <div className="p-2.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-2">
+                          <div className="text-[10px] font-semibold text-[#858585] uppercase">
+                            Add Custom Dependency
+                          </div>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <input
+                              type="text"
+                              placeholder="package-name"
+                              value={selectedCatalogPkg}
+                              onChange={(e) => setSelectedCatalogPkg(e.target.value)}
+                              className="w-full bg-[#181818] border border-[#2d2d2d] rounded px-2 py-1 text-xs text-[#cccccc] focus:border-[#569cd6] focus:outline-none font-mono"
+                            />
+                            <input
+                              type="text"
+                              placeholder="^1.0.0"
+                              value={customConstraint}
+                              onChange={(e) => setCustomConstraint(e.target.value)}
+                              className="w-full bg-[#181818] border border-[#2d2d2d] rounded px-2 py-1 text-xs text-[#cccccc] focus:border-[#569cd6] focus:outline-none font-mono"
+                            />
+                          </div>
+                          <button
+                            onClick={() => handleAddDep(selectedCatalogPkg, customConstraint)}
+                            className="w-full py-1 px-2.5 rounded bg-[#2d2d2d] hover:bg-[#383838] text-[#cccccc] hover:text-[#ffffff] font-medium text-xs transition cursor-pointer flex items-center justify-center gap-1.5 border border-[#3c3c3c]"
+                          >
+                            <Plus className="w-3.5 h-3.5 text-[#569cd6]" />
+                            <span>Add to Dependencies</span>
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* Sub-tab 2: Standard Library Explorer */}
+                {packageSubTab === 'stdlib' && (
+                  <div className="flex-1 overflow-y-auto p-3 space-y-2.5 custom-scrollbar">
+                    {/* Search / Filter input */}
+                    <div className="relative">
+                      <Search className="w-3.5 h-3.5 text-[#858585] absolute left-2.5 top-2" />
+                      <input
+                        type="text"
+                        placeholder="Filter std::* modules..."
+                        value={stdlibFilter}
+                        onChange={(e) => setStdlibFilter(e.target.value)}
+                        className="w-full bg-[#1f1f1f] border border-[#2d2d2d] rounded pl-8 pr-2 py-1.5 text-xs text-[#cccccc] focus:border-[#4ec9b0] focus:outline-none font-sans"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      {filteredStdModules.map((mod) => {
+                        const isPure = mod.capabilities.length === 0;
+                        const isCopied = copiedModule === mod.name;
+                        return (
+                          <div
+                            key={mod.name}
+                            className="p-2.5 rounded-lg bg-[#1f1f1f] border border-[#2d2d2d] space-y-1.5"
+                          >
+                            <div className="flex items-center justify-between gap-1.5">
+                              <span className="font-semibold text-xs text-[#ffffff] font-mono">
+                                {mod.name}
+                              </span>
+                              <div className="flex items-center gap-1">
+                                {isPure ? (
+                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#1e2a22] text-[#89d185] border border-[#2b4c33]">
+                                    pure
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-[#2a241e] text-[#dcdcaa] border border-[#4c3d2b]">
+                                    {mod.capabilities.join(', ')}
+                                  </span>
+                                )}
+                                <button
+                                  onClick={() => {
+                                    const importStmt = `import { } from "${mod.name}";\n`;
+                                    navigator.clipboard?.writeText(importStmt);
+                                    setCopiedModule(mod.name);
+                                    setTimeout(() => setCopiedModule(null), 1500);
+                                    onShowToast?.(`Copied import for ${mod.name}`);
+                                  }}
+                                  title="Copy import statement"
+                                  className="p-1 rounded hover:bg-[#2a2a2a] text-[#858585] hover:text-[#4ec9b0] transition cursor-pointer"
+                                >
+                                  {isCopied ? <Check className="w-3 h-3 text-[#89d185]" /> : <Copy className="w-3 h-3" />}
+                                </button>
+                              </div>
+                            </div>
+                            <p className="text-[10px] text-[#858585] leading-relaxed">{mod.description}</p>
+                            <div className="flex items-center gap-2 pt-1 border-t border-[#252526] text-[9px] text-[#666666] font-mono">
+                              <span>Lang: Manifest</span>
+                              <span>•</span>
+                              <span>Status: Implemented</span>
+                              <span>•</span>
+                              <span>Targets: MVM, Web-JS, WASM</span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Settings View */}
           {activeActivity === 'settings' && (

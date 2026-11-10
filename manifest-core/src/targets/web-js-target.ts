@@ -113,6 +113,8 @@ export function compileMIRToWebJS(mir: MIRModule): WebJsBuildResult {
   lines.push(`      return __m_vfs.get(args[0]);`);
   lines.push(`    }`);
   lines.push(`    case 'fs.write_text': { __m_vfs.set(args[0], __m_fmt(args[1])); return true; }`);
+  lines.push(`    case 'net.get': return JSON.stringify({ url: args[0], status: 200, data: 'ok' });`);
+  lines.push(`    case 'web.create_element': return '<' + args[0] + '>' + args[1] + '</' + args[0] + '>';`);
   lines.push(`    default: return '';`);
   lines.push(`  }`);
   lines.push(`}`);

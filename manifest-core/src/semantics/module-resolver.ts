@@ -2,6 +2,7 @@ import { FnDecl, SemanticModule } from '../core/ast-v2.ts';
 import { parseSemanticModule } from '../core/parse-unified.ts';
 import { SyntaxProfile } from '../core/profile.ts';
 import { SemanticDiagnostic } from './types.ts';
+import { StdLibraryRegistry } from '../stdlib/std-modules.ts';
 
 export interface WorkspaceFiles {
   [path: string]: string;
@@ -80,19 +81,33 @@ export function resolveModuleGraph(
     visiting.add(pathKey);
 
     for (const imp of mod.imports) {
-      const candidates = normalizeImportPath(pathKey, imp.from);
-      const foundPath = candidates.find((c) => Object.prototype.hasOwnProperty.call(files, c));
-      if (!foundPath) {
-        diagnostics.push({
-          code: 'E_MODULE_NOT_FOUND',
-          severity: 'error',
-          message: `Cannot resolve imported module '${imp.from}'`,
-          line: imp.span.line,
-          column: imp.span.column,
-          file: pathKey,
-          hint: `Ensure '${candidates[0]}' exists in the workspace.`,
-        });
-        continue;
+      // 1. Check if import is an official standard library module (std::* or std.*)
+      const stdName = imp.from.startsWith('std.') ? imp.from.replace('std.', 'std::') : imp.from;
+      const isStd = StdLibraryRegistry.getInstance().isStdModule(stdName);
+      let foundPath: string | undefined;
+      let sourceToLoad: string | undefined;
+
+      if (isStd) {
+        const stdDef = StdLibraryRegistry.getInstance().getModule(stdName)!;
+        foundPath = `stdlib/${stdName.replace('::', '/')}.manifest`;
+        sourceToLoad = stdDef.source;
+      } else {
+        const candidates = normalizeImportPath(pathKey, imp.from);
+        foundPath = candidates.find((c) => Object.prototype.hasOwnProperty.call(files, c));
+        if (foundPath) {
+          sourceToLoad = files[foundPath];
+        } else {
+          diagnostics.push({
+            code: 'E_MODULE_NOT_FOUND',
+            severity: 'error',
+            message: `Cannot resolve imported module '${imp.from}'`,
+            line: imp.span.line,
+            column: imp.span.column,
+            file: pathKey,
+            hint: `Ensure '${candidates[0]}' exists in the workspace.`,
+          });
+          continue;
+        }
       }
 
       if (visiting.has(foundPath)) {
@@ -107,7 +122,7 @@ export function resolveModuleGraph(
         continue;
       }
 
-      const depMod = loadModule(foundPath, files[foundPath], 'auto');
+      const depMod = loadModule(foundPath, sourceToLoad!, 'auto');
       visit(foundPath, depMod);
 
       // Verify visibility (`export`) for each requested symbol

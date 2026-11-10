@@ -51,6 +51,8 @@ Both profiles interoperate across multi-file `import` / `export` graphs and can 
 - **[Virtual Machine Specification (`docs/VM_SPEC.md`)](./docs/VM_SPEC.md)** — Rust MVM architecture (`mvm-core`, `mvm-cli`, `mvm-wasm`), memory model, resource bounds, and WASM host ABI.
 - **[Compiler Targets (`docs/COMPILER_TARGETS.md`)](./docs/COMPILER_TARGETS.md)** — Honest status, artifacts, and toolchain requirements for `mvm`, `web-js`, `wasm`, `native`, `solana-sbf`, and planned targets (`evm-solidity`, `move`, `ton-tact`).
 - **[Standard Library (`docs/STANDARD_LIBRARY.md`)](./docs/STANDARD_LIBRARY.md)** — `std::*` modules, signatures, and required host capabilities.
+- **[Package & Dependency Management (`docs/PACKAGES.md`)](./docs/PACKAGES.md)** — Package configuration (`manifest.toml`), deterministic lockfile (`manifest.lock`), SemVer rules, and resolution.
+- **[Contribution Guide (`CONTRIBUTING.md`)](./CONTRIBUTING.md)** — Development standards, repository layout, and verification commands.
 - **[Security & Capability Model (`docs/SECURITY_MODEL.md`)](./docs/SECURITY_MODEL.md)** — Compile-time transitive effect verification, Rust MVM runtime capability gates, and browser preview sandboxing.
 - **[System Architecture (`docs/ARCHITECTURE.md`)](./docs/ARCHITECTURE.md)** — Complete compiler, Rust VM, and Manifest Studio IDE architecture.
 - **[IDE Language Support Matrix (`docs/LANGUAGE_SUPPORT.md`)](./docs/LANGUAGE_SUPPORT.md)** — Verified editing, linting, build, and execution support across 25 file types.
@@ -66,28 +68,30 @@ Both profiles interoperate across multi-file `import` / `export` graphs and can 
 # 1. Type-check TypeScript across manifest-core and Manifest Studio
 npm run lint
 
-# 2. Run Rust MVM unit & bytecode verifier tests
-cargo test --manifest-path mvm/Cargo.toml
-
-# 3. Run full Manifest v0.1–v1.0, Rust MVM, WASM, Solana LiteSVM, Orchestrator & Editor test suites
+# 2. Run full Manifest v0.1–v1.0, Rust MVM, WASM, Solana LiteSVM, Orchestrator & Editor test suites
 npm run manifest:test
 
-# 4. Run Track A Security, Compiler Correctness & Honesty regression suite
+# 3. Run Track A Security, Compiler Correctness & Honesty regression suite
 npx tsx manifest-core/tests/run_track_a_tests.ts
 
-# 5. Run Phase 3 Unified Compiler Pipeline & Parity test suite
+# 4. Run Phase 3 Unified Compiler Pipeline & Parity test suite
 npm run manifest:test:phase3
+
+# 5. Run Phase 4 & Phase 5 MVM Runtime Maturity, Mark-and-Sweep GC & Package System test suite
+npm run manifest:test:phase45
 
 # 6. Run compiler, TS evaluator, Direct WASM, and Rust MVM benchmarks
 npm run manifest:bench
 
-# 6. Use the Manifest v1.0 CLI directly
+# 7. Use the Manifest v1.0 CLI directly
 npm run manifest:run -- check examples/professional/01_algorithms_and_enums.manifest
 npm run manifest:run -- run examples/professional/01_algorithms_and_enums.manifest
 npm run manifest:run -- disassemble examples/beginner/01_basics_and_loops.manifest
 npm run manifest:run -- targets
+npm run manifest:run -- package list
+npm run manifest:run -- package verify
 
-# 6. Start full-stack development server (Port 3000) or build production bundle
+# 8. Start full-stack development server (Port 3000) or build production bundle
 npm run dev
 npm run build
 ```

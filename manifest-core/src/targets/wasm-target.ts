@@ -105,9 +105,11 @@ export function compileMIRToWasm(mir: MIRModule): WasmTargetBuildResult {
   // Imports:
   // func 0: (import "env" "print_i32" (param i32))
   // func 1: (import "env" "print_f64" (param f64))
+  // func 2: (import "env" "print_i64" (param i64))
   const IMPORT_PRINT_I32 = 0;
   const IMPORT_PRINT_F64 = 1;
-  const IMPORT_COUNT = 2;
+  const IMPORT_PRINT_I64 = 2;
+  const IMPORT_COUNT = 3;
 
   const fnIndices = new Map<string, number>();
   mir.functions.forEach((fn, idx) => {
@@ -131,9 +133,11 @@ export function compileMIRToWasm(mir: MIRModule): WasmTargetBuildResult {
   // Type section entries
   // type 0: (i32) -> ()
   // type 1: (f64) -> ()
+  // type 2: (i64) -> ()
   const typeEntries: number[][] = [
     [0x60, 0x01, WASM_I32, 0x00],
     [0x60, 0x01, WASM_F64, 0x00],
+    [0x60, 0x01, WASM_I64, 0x00],
   ];
 
   const fnTypeIndices: number[] = [];
@@ -142,6 +146,7 @@ export function compileMIRToWasm(mir: MIRModule): WasmTargetBuildResult {
     `(module ;; Manifest Direct WebAssembly Target (${mir.moduleName})`,
     `  (import "env" "print_i32" (func $print_i32 (param i32)))`,
     `  (import "env" "print_f64" (func $print_f64 (param f64)))`,
+    `  (import "env" "print_i64" (func $print_i64 (param i64)))`,
     `  (memory (export "memory") 1)`,
   ];
 
@@ -398,9 +403,8 @@ export function compileMIRToWasm(mir: MIRModule): WasmTargetBuildResult {
             for (const a of expr.args) {
               const at = emitExpr(a);
               if (at === WASM_I64) {
-                // Convert i64 to f64 for full numeric range without 32-bit truncation
-                code.push(0xb9); // f64.convert_i64_s
-                code.push(0x10, ...encodeULEB128(IMPORT_PRINT_F64));
+                // Exact 64-bit integer output without lossy float conversion
+                code.push(0x10, ...encodeULEB128(IMPORT_PRINT_I64));
               } else if (at === WASM_F64) {
                 code.push(0x10, ...encodeULEB128(IMPORT_PRINT_F64));
               } else if (at === WASM_I32) {
@@ -609,10 +613,11 @@ export function compileMIRToWasm(mir: MIRModule): WasmTargetBuildResult {
   for (const te of typeEntries) secTypePayload.push(...te);
   out.push(...encodeSection(1, secTypePayload));
 
-  // Section 2: Import (env.print_i32, env.print_f64)
+  // Section 2: Import (env.print_i32, env.print_f64, env.print_i64)
   const importsList: number[][] = [
     [...encodeStr('env'), ...encodeStr('print_i32'), 0x00, ...encodeULEB128(0)],
     [...encodeStr('env'), ...encodeStr('print_f64'), 0x00, ...encodeULEB128(1)],
+    [...encodeStr('env'), ...encodeStr('print_i64'), 0x00, ...encodeULEB128(2)],
   ];
   const secImportPayload: number[] = [...encodeULEB128(importsList.length)];
   for (const imp of importsList) secImportPayload.push(...imp);

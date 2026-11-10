@@ -33,6 +33,7 @@ import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 
 import { getLanguageExtensions } from './language-support.ts';
 import { FileLanguage } from '../types.ts';
+import { AssetInspector } from './AssetInspector.tsx';
 
 interface CodeMirrorEditorProps {
   fileId?: string;
@@ -416,49 +417,22 @@ export const CodeMirrorEditor: React.FC<CodeMirrorEditorProps> = ({
     }
   }, [value, isBinary]);
 
-  if (isBinary) {
-    const isImage = mimeType?.startsWith('image/') && value.startsWith('data:image/');
-    const isWasm = language === 'wasm' || mimeType === 'application/wasm';
-    const isMbc = language === 'mbc' || mimeType === 'application/x-manifest-bytecode';
-    const approxBytes = value.startsWith('data:')
-      ? Math.floor(((value.split(',')[1] || '').length * 3) / 4)
-      : value.length;
+  // Inspect asset types (images, audio, video, CSV, or binary compiled modules)
+  const isImage = mimeType?.startsWith('image/') || value.startsWith('data:image/');
+  const isAudio = mimeType?.startsWith('audio/') || value.startsWith('data:audio/');
+  const isVideo = mimeType?.startsWith('video/') || value.startsWith('data:video/');
+  const isCsv = language === 'csv' || mimeType === 'text/csv';
 
+  if (isBinary || isImage || isAudio || isVideo || isCsv) {
     return (
-      <div className="w-full h-full flex flex-col items-center justify-center bg-[#1f1f1f] text-[#cccccc] p-6 select-text">
-        <div className="max-w-md w-full bg-[#181818] border border-[#2d2d2d] rounded-xl p-5 space-y-3 text-center">
-          <div className="text-xs font-semibold text-[#ffffff]">
-            {isMbc
-              ? 'Compiled Manifest Portable Bytecode (.mbc)'
-              : isWasm
-              ? 'Compiled WebAssembly Binary (.wasm)'
-              : 'Binary Workspace Asset'}
-          </div>
-          <div className="text-[11px] text-[#858585] font-mono">
-            MIME: {mimeType || (isMbc ? 'application/x-manifest-bytecode' : 'application/octet-stream')} &bull; Size: ~{approxBytes.toLocaleString()} bytes
-          </div>
-          {isImage && (
-            <div className="p-3 bg-[#1f1f1f] border border-[#2d2d2d] rounded-lg flex items-center justify-center">
-              <img src={value} alt="Binary asset preview" className="max-h-48 max-w-full object-contain" />
-            </div>
-          )}
-          <p className="text-[11px] text-[#858585]">
-            {isMbc
-              ? 'Manifest v1.0 binary bytecode container (Header + Constant Pool + Function Table + Verifiable Instructions). Click Run to verify and execute on the Rust Manifest Virtual Machine.'
-              : isWasm
-              ? 'Binary bytecode is protected from accidental text corruption. Click Run to instantiate and execute this WebAssembly module in the Preview panel.'
-              : 'Binary asset is preserved losslessly in IndexedDB and ZIP exports.'}
-          </p>
-          {(isWasm || isMbc) && onRun && (
-            <button
-              onClick={onRun}
-              className="px-3 py-1.5 rounded-md bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-medium transition cursor-pointer"
-            >
-              {isMbc ? 'Verify & Execute .mbc in Rust MVM' : 'Execute .wasm Module'}
-            </button>
-          )}
-        </div>
-      </div>
+      <AssetInspector
+        fileName={fileId.split(':').pop() || 'file'}
+        filePath={fileId.split(':').pop() || 'file'}
+        content={value}
+        mimeType={mimeType}
+        isBinary={isBinary}
+        onRun={onRun}
+      />
     );
   }
 

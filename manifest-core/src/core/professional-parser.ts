@@ -228,8 +228,8 @@ export class ProfessionalParser {
       this.eatPunct(';');
     }
 
-    // Optional `module foo.bar;`
-    if (this.checkIdent('module')) {
+    // Optional `module foo.bar;` or `mod foo.bar;`
+    if (this.checkIdent('module') || this.checkIdent('mod')) {
       this.next();
       moduleName = this.parseDottedIdent();
       this.eatPunct(';');
@@ -246,7 +246,7 @@ export class ProfessionalParser {
         continue;
       }
 
-      const isExport = this.eatIdent('export');
+      const isExport = this.eatIdent('export') || this.eatIdent('pub');
 
       if (this.checkIdent('struct')) {
         structs.push(this.parseStruct(isExport));

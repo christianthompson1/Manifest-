@@ -10,6 +10,7 @@ import {
 } from './pipeline.ts';
 import { COMPILER_TARGETS, resolveCompilerTarget } from './targets/target-registry.ts';
 import { disassembleMbcInRustVm, executeMbcInRustVm, verifyMbcInRustVm } from './vm/mvm-runner.ts';
+import { PackageManager, OFFICIAL_PACKAGE_REGISTRY } from './package/package-manager.ts';
 
 function parseFlags(args: string[]): {
   positional: string[];
@@ -89,6 +90,11 @@ Usage:
   manifest disassemble <file.manifest|file.mbc>
   manifest verify <file.mbc>
   manifest targets
+  manifest package init [name]
+  manifest package list
+  manifest package verify
+  manifest add <pkg> [version]
+  manifest remove <pkg>
 `);
 }
 
@@ -108,6 +114,9 @@ async function main(): Promise<void> {
     'disassemble',
     'verify',
     'targets',
+    'package',
+    'add',
+    'remove',
   ]);
 
   let command = rawArgs[0];
@@ -120,6 +129,106 @@ async function main(): Promise<void> {
   }
 
   const flags = parseFlags(restArgs);
+
+  if (command === 'package') {
+    const subCmd = flags.positional[0] || 'list';
+    if (subCmd === 'init') {
+      const name = flags.positional[1] || path.basename(process.cwd());
+      const toml = PackageManager.initPackage(name);
+      const tomlPath = path.resolve('manifest.toml');
+      if (fs.existsSync(tomlPath)) {
+        console.error('Error: manifest.toml already exists');
+        process.exit(1);
+      }
+      fs.writeFileSync(tomlPath, toml, 'utf-8');
+      console.log(`Created manifest.toml for package '${name}'`);
+      return;
+    }
+    if (subCmd === 'verify') {
+      const tomlPath = path.resolve('manifest.toml');
+      if (!fs.existsSync(tomlPath)) {
+        console.error('Error: manifest.toml not found');
+        process.exit(1);
+      }
+      const tomlContent = fs.readFileSync(tomlPath, 'utf-8');
+      const lockPath = path.resolve('manifest.lock');
+      const lockContent = fs.existsSync(lockPath) ? fs.readFileSync(lockPath, 'utf-8') : undefined;
+      const res = PackageManager.verifyPackage(tomlContent, lockContent);
+      if (!res.ok) {
+        console.error('Package verification failed:');
+        for (const e of res.errors) console.error(`  - ${e}`);
+        process.exit(1);
+      }
+      console.log('Package verification succeeded: manifest.toml and manifest.lock are consistent.');
+      return;
+    }
+    // Default: package list
+    const tomlPath = path.resolve('manifest.toml');
+    if (!fs.existsSync(tomlPath)) {
+      console.log('Available Official Standard Packages:');
+      for (const [pkg, versions] of Object.entries(OFFICIAL_PACKAGE_REGISTRY)) {
+        console.log(`  - ${pkg} (versions: ${versions.map((v) => v.version).join(', ')})`);
+      }
+      return;
+    }
+    const config = PackageManager.parsePackageToml(fs.readFileSync(tomlPath, 'utf-8'));
+    console.log(`Declared dependencies for '${config.name}' v${config.version}:`);
+    for (const [dep, ver] of Object.entries(config.dependencies)) {
+      console.log(`  - ${dep} = "${ver}"`);
+    }
+    return;
+  }
+
+  if (command === 'add') {
+    const pkgName = flags.positional[0];
+    const ver = flags.positional[1] || '^1.0.0';
+    if (!pkgName) {
+      console.error('Usage: manifest add <package-name> [version]');
+      process.exit(1);
+    }
+    const tomlPath = path.resolve('manifest.toml');
+    const tomlContent = fs.existsSync(tomlPath)
+      ? fs.readFileSync(tomlPath, 'utf-8')
+      : PackageManager.initPackage('app');
+    const res = PackageManager.addDependency(tomlContent, pkgName, ver);
+    if (!res.ok) {
+      console.error(`Failed to add '${pkgName}':`);
+      for (const d of res.result.diagnostics) console.error(`  [${d.code}] ${d.message}`);
+      process.exit(1);
+    }
+    fs.writeFileSync(tomlPath, res.toml, 'utf-8');
+    if (res.lock) {
+      fs.writeFileSync(path.resolve('manifest.lock'), res.lock, 'utf-8');
+    }
+    console.log(`Added dependency '${pkgName}' (${ver}) and updated manifest.lock`);
+    return;
+  }
+
+  if (command === 'remove') {
+    const pkgName = flags.positional[0];
+    if (!pkgName) {
+      console.error('Usage: manifest remove <package-name>');
+      process.exit(1);
+    }
+    const tomlPath = path.resolve('manifest.toml');
+    if (!fs.existsSync(tomlPath)) {
+      console.error('Error: manifest.toml not found');
+      process.exit(1);
+    }
+    const tomlContent = fs.readFileSync(tomlPath, 'utf-8');
+    const res = PackageManager.removeDependency(tomlContent, pkgName);
+    if (!res.ok) {
+      console.error(`Failed to remove '${pkgName}':`);
+      for (const d of res.result.diagnostics) console.error(`  [${d.code}] ${d.message}`);
+      process.exit(1);
+    }
+    fs.writeFileSync(tomlPath, res.toml, 'utf-8');
+    if (res.lock) {
+      fs.writeFileSync(path.resolve('manifest.lock'), res.lock, 'utf-8');
+    }
+    console.log(`Removed dependency '${pkgName}' and updated manifest.lock`);
+    return;
+  }
 
   if (command === 'targets') {
     const rustcBin = detectHostRustc();
@@ -309,6 +418,7 @@ async function main(): Promise<void> {
         env: {
           print_i32: (n: number) => logs.push(String(n)),
           print_f64: (n: number) => logs.push(String(n)),
+          print_i64: (n: bigint) => logs.push(String(n)),
         },
       });
       const mainFn = instance.exports.main as (() => unknown) | undefined;

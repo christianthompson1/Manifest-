@@ -672,6 +672,40 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     }
   };
 
+  // Create or overwrite file content in project
+  const handleWriteFile = (filePath: string, content: string) => {
+    const cleanPath = filePath.replace(/^\/+/, '');
+    const name = cleanPath.split('/').pop() || cleanPath;
+    setProject((prev) => {
+      const exists = prev.files.some((f) => f.path === cleanPath);
+      if (exists) {
+        return {
+          ...prev,
+          files: prev.files.map((f) => (f.path === cleanPath ? { ...f, content } : f)),
+          updatedAt: Date.now(),
+        };
+      } else {
+        const newFile: ProjectFile = {
+          id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          name,
+          path: cleanPath,
+          language: detectLanguage(cleanPath),
+          content,
+        };
+        return {
+          ...prev,
+          files: [...prev.files, newFile],
+          updatedAt: Date.now(),
+        };
+      }
+    });
+    setDirtyPaths((prev) => {
+      const next = new Set(prev);
+      next.add(cleanPath);
+      return next;
+    });
+  };
+
   // Rename file or folder in project and update entry/HTML/TOML references
   const handleRenameFile = (oldPath: string, newPath: string) => {
     const cleanNew = newPath.replace(/^\/+|\/+$/g, '');
@@ -812,6 +846,47 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
       setActiveFilePath(ensuredOpen[0]);
     }
     showToast(`Deleted ${targetPath}`);
+  };
+
+  // Duplicate an existing file (text or binary asset)
+  const handleDuplicateFile = (sourcePath: string) => {
+    const sourceFile = project.files.find((f) => f.path === sourcePath);
+    if (!sourceFile) return;
+
+    const parts = sourcePath.split('/');
+    const originalName = parts.pop() || sourcePath;
+    const parentDir = parts.join('/');
+
+    // Generate non-conflicting duplicate name: "foo_copy.ext" or "foo_copy2.ext"
+    const dotIdx = originalName.lastIndexOf('.');
+    const baseName = dotIdx !== -1 ? originalName.slice(0, dotIdx) : originalName;
+    const ext = dotIdx !== -1 ? originalName.slice(dotIdx) : '';
+
+    let candidateName = `${baseName}_copy${ext}`;
+    let counter = 2;
+    while (project.files.some((f) => f.path === (parentDir ? `${parentDir}/${candidateName}` : candidateName))) {
+      candidateName = `${baseName}_copy${counter}${ext}`;
+      counter++;
+    }
+
+    const newPath = parentDir ? `${parentDir}/${candidateName}` : candidateName;
+    const duplicatedFile: ProjectFile = {
+      ...sourceFile,
+      id: `file-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: candidateName,
+      path: newPath,
+      isEntry: false,
+    };
+
+    setProject((prev) => ({
+      ...prev,
+      files: [...prev.files, duplicatedFile],
+      updatedAt: Date.now(),
+    }));
+
+    setOpenFilePaths((prev) => [...prev, newPath]);
+    setActiveFilePath(newPath);
+    showToast(`Duplicated to ${candidateName}`);
   };
 
   const getFileIcon = (file: ProjectFile) => {
@@ -1167,6 +1242,8 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             onCreateFile={handleCreateFile}
             onDeleteFile={handleDeleteFile}
             onRenameFile={handleRenameFile}
+            onDuplicateFile={handleDuplicateFile}
+            onWriteFile={handleWriteFile}
             onSelectTemplate={handleSelectTemplate}
             onOpenDevTools={() => setIsTestbenchOpen(true)}
             onOpenProjectMenu={() => setIsProjectMenuOpen(true)}
@@ -1635,6 +1712,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
               onCreateFile={handleCreateFile}
               onDeleteFile={handleDeleteFile}
               onRenameFile={handleRenameFile}
+              onWriteFile={handleWriteFile}
               onSelectTemplate={handleSelectTemplate}
               onOpenDevTools={() => {
                 setMobileDrawerOpen(false);

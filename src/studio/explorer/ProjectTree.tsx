@@ -14,6 +14,7 @@ import {
   Plus,
   Trash2,
   Edit2,
+  Copy,
   ChevronRight,
   ChevronDown,
   Settings,
@@ -24,6 +25,12 @@ import {
   FolderPlus,
   X,
   Check,
+  Image as ImageIcon,
+  Music,
+  Video as VideoIcon,
+  Table,
+  Layers,
+  Archive,
 } from 'lucide-react';
 import { ProjectFile, FileLanguage, ManifestProject } from '../types.ts';
 import { detectLanguage } from '../editor/language-support.ts';
@@ -45,6 +52,7 @@ interface ProjectTreeProps {
   onCreateFile: (path: string) => void;
   onCreateFolder?: (folderPath: string) => void;
   onRenameFile?: (oldPath: string, newPath: string) => void;
+  onDuplicateFile?: (path: string) => void;
   onDeleteFile: (path: string) => void;
 }
 
@@ -129,6 +137,7 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
   onSelectFile,
   onCreateFile,
   onRenameFile,
+  onDuplicateFile,
   onDeleteFile,
 }) => {
   const [collapsedPaths, setCollapsedPaths] = useState<Set<string>>(new Set());
@@ -210,6 +219,32 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
   };
 
   const getFileIcon = (file?: ProjectFile, fileName?: string) => {
+    const fn = (fileName || file?.path || '').toLowerCase();
+    const ext = fn.split('.').pop() || '';
+    const mime = file?.mimeType?.toLowerCase() || '';
+
+    if (mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico'].includes(ext)) {
+      return <ImageIcon className="w-3.5 h-3.5 text-[#4ec9b0] shrink-0" />;
+    }
+    if (mime.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'm4a', 'flac'].includes(ext)) {
+      return <Music className="w-3.5 h-3.5 text-[#dcdcaa] shrink-0" />;
+    }
+    if (mime.startsWith('video/') || ['mp4', 'webm', 'ogv', 'mov'].includes(ext)) {
+      return <VideoIcon className="w-3.5 h-3.5 text-[#569cd6] shrink-0" />;
+    }
+    if (ext === 'csv' || mime === 'text/csv') {
+      return <Table className="w-3.5 h-3.5 text-[#4ec9b0] shrink-0" />;
+    }
+    if (ext === 'mbc' || mime === 'application/x-manifest-bytecode') {
+      return <Cpu className="w-3.5 h-3.5 text-[#4ec9b0] shrink-0" />;
+    }
+    if (ext === 'wasm' || mime === 'application/wasm') {
+      return <Layers className="w-3.5 h-3.5 text-[#dea584] shrink-0" />;
+    }
+    if (['zip', 'tar', 'gz'].includes(ext)) {
+      return <Archive className="w-3.5 h-3.5 text-[#dcb67a] shrink-0" />;
+    }
+
     const lang = file?.language || detectLanguage(fileName || '');
 
     switch (lang) {
@@ -441,6 +476,11 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
           ) : (
             <span className="truncate">{node.name}</span>
           )}
+          {node.path.startsWith('build/') && (
+            <span className="text-[9px] px-1 py-0.2 rounded bg-[#252526] text-[#858585] font-mono border border-[#333333] shrink-0">
+              artifact
+            </span>
+          )}
         </div>
 
         {/* File Actions */}
@@ -465,7 +505,19 @@ export const ProjectTree: React.FC<ProjectTreeProps> = ({
             </button>
           </div>
         ) : (
-          <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1">
+          <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5">
+            {onDuplicateFile && (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDuplicateFile(node.path);
+                }}
+                title="Duplicate file"
+                className="p-0.5 rounded hover:bg-[#333333] text-[#858585] hover:text-white"
+              >
+                <Copy className="w-3 h-3" />
+              </button>
+            )}
             <button
               onClick={(e) => startRename(node.path, node.name, e)}
               title="Rename file"

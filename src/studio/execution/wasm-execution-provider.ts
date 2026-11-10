@@ -302,6 +302,7 @@ export class WasmExecutionProvider implements ExecutionProvider {
           memory: fallbackMemory,
           print_i32: (val: number) => pushLog(`${val}`),
           print_f64: (val: number) => pushLog(`${val}`),
+          print_i64: (val: bigint) => pushLog(`${val.toString()}`),
           log: (val: number) => pushLog(`${val}`),
           abort: (_msg: number, _file: number, line: number, col: number) => {
             throw new Error(`WASM abort() trapped at ${line}:${col}`);
