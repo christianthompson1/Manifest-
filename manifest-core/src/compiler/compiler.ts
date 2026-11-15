@@ -25,7 +25,9 @@ export class CompilerRegistry {
   }
 
   public static get(targetName: string): TargetCompiler | undefined {
-    return this.compilers.get(targetName.toLowerCase());
+    const key = targetName.toLowerCase();
+    if (key === 'web-js') return this.compilers.get('js');
+    return this.compilers.get(key);
   }
 
   public static has(targetName: string): boolean {

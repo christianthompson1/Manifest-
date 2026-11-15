@@ -40,6 +40,128 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;');
 }
 
+const KNOWN_BRAND_ASSETS = new Set([
+  'assets/brand/manifest-symbol.svg',
+  'assets/brand/manifest-wordmark.svg',
+  'assets/brand/manifest-logo-dark.svg',
+  'assets/brand/manifest-logo-light.svg',
+  'assets/brand/manifest-icon.svg',
+  'assets/brand/favicon.svg',
+  'assets/brand/manifest-brand-reference.png',
+]);
+
+const MIME_BY_EXT: Record<string, string> = {
+  svg: 'image/svg+xml',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  ico: 'image/x-icon',
+  mp3: 'audio/mpeg',
+  wav: 'audio/wav',
+  ogg: 'audio/ogg',
+  m4a: 'audio/mp4',
+  mp4: 'video/mp4',
+  webm: 'video/webm',
+  woff: 'font/woff',
+  woff2: 'font/woff2',
+  ttf: 'font/ttf',
+  otf: 'font/otf',
+  json: 'application/json',
+  csv: 'text/csv',
+  xml: 'application/xml',
+  txt: 'text/plain',
+  css: 'text/css',
+  wasm: 'application/wasm',
+  mbc: 'application/x-manifest-bytecode',
+};
+
+const brandAssetCache = new Map<string, string>();
+
+export function sanitizeAssetPath(rawPath: string): { valid: boolean; normalized: string; reason?: string } {
+  if (!rawPath || typeof rawPath !== 'string') {
+    return { valid: false, normalized: '', reason: 'Asset path must be a non-empty string.' };
+  }
+  if (rawPath.includes('\0')) {
+    return { valid: false, normalized: '', reason: 'Asset path contains invalid null byte.' };
+  }
+  const slashNormalized = rawPath.trim().replace(/\\/g, '/').replace(/^\.\//, '');
+  if (slashNormalized.startsWith('/')) {
+    return { valid: false, normalized: '', reason: `Absolute asset path "${rawPath}" is not permitted; use workspace-relative "assets/..." paths.` };
+  }
+  const segments = slashNormalized.split('/').filter((s) => s.length > 0 && s !== '.');
+  if (segments.some((s) => s === '..')) {
+    return { valid: false, normalized: '', reason: `Path traversal ("..") in asset path "${rawPath}" is rejected.` };
+  }
+  const normalized = segments.join('/');
+  return { valid: true, normalized };
+}
+
+function inferMimeType(path: string, explicitMime?: string): string {
+  if (explicitMime && explicitMime.trim()) return explicitMime;
+  const ext = path.split('.').pop()?.toLowerCase() || '';
+  return MIME_BY_EXT[ext] || 'application/octet-stream';
+}
+
+function utf8ToBase64(text: string): string {
+  if (typeof Buffer !== 'undefined') {
+    return Buffer.from(text, 'utf8').toString('base64');
+  }
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function encodeAssetDataUrl(file: ProjectFile): string {
+  if (file.content.startsWith('data:')) {
+    return file.content;
+  }
+  const mime = inferMimeType(file.path, file.mimeType);
+  return `data:${mime};base64,${utf8ToBase64(file.content)}`;
+}
+
+function extractAssetReferences(source: string): Array<{ path: string; line: number }> {
+  const refs: Array<{ path: string; line: number }> = [];
+  const seen = new Set<string>();
+  const lines = source.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const lineText = lines[i];
+    const candidates: string[] = [];
+
+    // 1. String literals containing assets/
+    for (const m of lineText.matchAll(/["']([^"'\n]*(?:\.\.\/|\/)?assets\/[^"'\n]+)["']/g)) {
+      candidates.push(m[1]);
+    }
+    // 2. Explicit IMAGE path literals (catches ../outside/... or /etc/... traversal attempts too)
+    for (const m of lineText.matchAll(/\bIMAGE\s+(?:src\s*:\s*)?["']([^"'\n]+)["']/gi)) {
+      candidates.push(m[1]);
+    }
+
+    for (const ref of candidates) {
+      if (/^(?:https?:|data:|blob:)/i.test(ref)) continue;
+      if (ref.includes('\\n')) continue;
+      const key = `${i + 1}:${ref}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        refs.push({ path: ref, line: i + 1 });
+      }
+    }
+  }
+  return refs;
+}
+
+export interface CollectedAssetEntry {
+  file: ProjectFile;
+  normalizedPath: string;
+  dataUrl: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 export class ManifestExecutionProvider implements ExecutionProvider {
   public readonly id = 'manifest-provider';
   public readonly name = 'Manifest Language & Rust MVM Runtime';
@@ -73,6 +195,129 @@ export class ManifestExecutionProvider implements ExecutionProvider {
       }
     }
     return map;
+  }
+
+  public collectWorkspaceAssets(project: ManifestProject): CollectedAssetEntry[] {
+    const entries: CollectedAssetEntry[] = [];
+    for (const f of project.files) {
+      if (f.path.endsWith('/.gitkeep')) continue;
+      if (f.path.startsWith('build/') || f.path.startsWith('dist/')) continue;
+      const isAsset =
+        f.path.startsWith('assets/') ||
+        f.path.startsWith('public/assets/') ||
+        Boolean(f.isBinary && !f.path.endsWith('.mbc') && !f.path.endsWith('.wasm'));
+      if (!isAsset) continue;
+
+      const check = sanitizeAssetPath(f.path.replace(/^public\//, ''));
+      if (!check.valid) continue;
+
+      const mimeType = inferMimeType(check.normalized, f.mimeType);
+      const dataUrl = encodeAssetDataUrl(f);
+      const sizeBytes = f.isBinary
+        ? (f.content.startsWith('data:') ? Math.floor(((f.content.split(',')[1] || '').length * 3) / 4) : f.content.length)
+        : new TextEncoder().encode(f.content).byteLength;
+
+      entries.push({
+        file: f,
+        normalizedPath: check.normalized,
+        dataUrl,
+        mimeType,
+        sizeBytes,
+      });
+    }
+    return entries;
+  }
+
+  public auditAssetReferences(source: string, project: ManifestProject): StudioDiagnostic[] {
+    const diagnostics: StudioDiagnostic[] = [];
+    const workspaceAssets = new Set(this.collectWorkspaceAssets(project).map((a) => a.normalizedPath));
+    const allProjectPaths = new Set(project.files.map((f) => f.path.replace(/^\.\//, '')));
+    const refs = extractAssetReferences(source);
+
+    for (const ref of refs) {
+      const check = sanitizeAssetPath(ref.path);
+      if (!check.valid) {
+        diagnostics.push({
+          line: ref.line,
+          column: 1,
+          severity: 'warning',
+          source: 'compiler',
+          code: 'W_ASSET_UNSAFE_PATH',
+          message: check.reason || `Unsafe asset reference "${ref.path}" rejected.`,
+          hint: 'Use a project-relative path under "assets/" without ".." segments.',
+        });
+        continue;
+      }
+
+      if (
+        !workspaceAssets.has(check.normalized) &&
+        !allProjectPaths.has(check.normalized) &&
+        !KNOWN_BRAND_ASSETS.has(check.normalized)
+      ) {
+        diagnostics.push({
+          line: ref.line,
+          column: 1,
+          severity: 'warning',
+          source: 'compiler',
+          code: 'W_ASSET_MISSING',
+          message: `Referenced asset "${ref.path}" was not found in workspace files.`,
+          hint: 'Import the file using the Asset Manager panel so it resolves in preview and builds.',
+        });
+      }
+    }
+
+    return diagnostics;
+  }
+
+  private async resolvePreviewAssetMap(source: string, project: ManifestProject): Promise<Record<string, string>> {
+    const assetMap: Record<string, string> = {};
+    for (const entry of this.collectWorkspaceAssets(project)) {
+      assetMap[entry.normalizedPath] = entry.dataUrl;
+    }
+
+    // In browser environments, eagerly inline referenced built-in brand SVGs into data URLs
+    // so sandbox="allow-scripts" srcDoc previews render brand graphics without cross-origin hurdles.
+    if (typeof window !== 'undefined' && typeof fetch === 'function') {
+      const origin = window.location.origin;
+      const refs = extractAssetReferences(source);
+      const brandPathsToFetch = new Set<string>();
+      for (const r of refs) {
+        const chk = sanitizeAssetPath(r.path);
+        if (chk.valid && KNOWN_BRAND_ASSETS.has(chk.normalized) && !assetMap[chk.normalized]) {
+          brandPathsToFetch.add(chk.normalized);
+        }
+      }
+      // Also always warm up logo-dark and wordmark if any brand asset is used or landing app runs
+      for (const bp of KNOWN_BRAND_ASSETS) {
+        if (!assetMap[bp] && bp.endsWith('.svg')) {
+          brandPathsToFetch.add(bp);
+        }
+      }
+
+      await Promise.all(
+        Array.from(brandPathsToFetch).map(async (bp) => {
+          if (brandAssetCache.has(bp)) {
+            assetMap[bp] = brandAssetCache.get(bp)!;
+            return;
+          }
+          try {
+            const resp = await fetch(`${origin}/${bp}`);
+            if (resp.ok) {
+              const svgText = await resp.text();
+              if (svgText.includes('<svg')) {
+                const dataUrl = `data:image/svg+xml;base64,${utf8ToBase64(svgText)}`;
+                brandAssetCache.set(bp, dataUrl);
+                assetMap[bp] = dataUrl;
+              }
+            }
+          } catch {
+            // Fallback to origin URL inside preview bootstrap if offline/test
+          }
+        })
+      );
+    }
+
+    return assetMap;
   }
 
   private determineEffectiveTarget(
@@ -407,9 +652,18 @@ export class ManifestExecutionProvider implements ExecutionProvider {
     // ------------------------------------------------------------------------
     const durationMs = Math.round(performance.now() - startTime);
     const isLegacyUi = isLegacyDomainManifestSource(entryFile.content);
+    const assetWarnings = this.auditAssetReferences(entryFile.content, project);
+    const assetMap = isLegacyUi ? await this.resolvePreviewAssetMap(entryFile.content, project) : {};
+    const brandOrigin = typeof window !== 'undefined' ? window.location.origin : '';
     const previewHtml = isLegacyUi
-      ? this.generateCanvasHtml(entryFile.name, pipelineRes.outputCode || '', pipelineRes.ir)
+      ? this.generateCanvasHtml(entryFile.name, pipelineRes.outputCode || '', pipelineRes.ir, assetMap, brandOrigin)
       : this.generateV1WebModuleHtml(entryFile.path, pipelineRes.outputCode || '', pipelineRes.capabilityAudit);
+
+    const combinedDiagnostics = [...pipelineRes.diagnostics, ...assetWarnings];
+    const logs = [
+      `Program "${entryFile.path}" compiled to JavaScript / Web and mounted in ${durationMs}ms`,
+      ...assetWarnings.map((w) => `[WARNING] line ${w.line}: ${w.message}`),
+    ];
 
     return {
       runId,
@@ -424,8 +678,8 @@ export class ManifestExecutionProvider implements ExecutionProvider {
       syntaxProfile: pipelineRes.syntaxProfile,
       previewHtml,
       outputCode: pipelineRes.outputCode,
-      diagnostics: pipelineRes.diagnostics,
-      logs: [`Program "${entryFile.path}" compiled to JavaScript / Web and mounted in ${durationMs}ms`],
+      diagnostics: combinedDiagnostics,
+      logs,
       durationMs,
       ir: pipelineRes.ir,
       irText: pipelineRes.irText,
@@ -469,18 +723,71 @@ export class ManifestExecutionProvider implements ExecutionProvider {
       files: this.collectWorkspaceTextFiles(project),
     });
 
+    const assetWarnings = this.auditAssetReferences(entryFile.content, project);
+    const allDiagnostics = [...pipelineRes.diagnostics, ...assetWarnings];
+    const outputArtifacts = [...pipelineRes.artifacts];
+
+    // For JavaScript / Web targets, bundle workspace assets into build/assets/... + build/asset-manifest.json
+    const resolvedTarget = pipelineRes.targetId || effectiveTarget;
+    if (pipelineRes.success && (resolvedTarget === 'web-js' || resolvedTarget === 'js')) {
+      const workspaceAssets = this.collectWorkspaceAssets(project);
+      const manifestEntries: Record<string, { outputPath: string; mimeType: string; sizeBytes: number; isBinary: boolean }> = {};
+
+      for (const asset of workspaceAssets) {
+        const relSubPath = asset.normalizedPath.startsWith('assets/')
+          ? asset.normalizedPath.slice('assets/'.length)
+          : asset.normalizedPath;
+        const outputPath = `build/assets/${relSubPath}`;
+        outputArtifacts.push({
+          fileName: outputPath,
+          fileType: asset.file.isBinary ? 'binary' : asset.normalizedPath.split('.').pop() || 'asset',
+          content: asset.file.content,
+          sizeBytes: asset.sizeBytes,
+          isBinary: asset.file.isBinary,
+          mimeType: asset.mimeType,
+        });
+        manifestEntries[asset.normalizedPath] = {
+          outputPath,
+          mimeType: asset.mimeType,
+          sizeBytes: asset.sizeBytes,
+          isBinary: Boolean(asset.file.isBinary),
+        };
+      }
+
+      const assetManifestJson = JSON.stringify(
+        {
+          version: 1,
+          entry: entryFile.path,
+          target: resolvedTarget,
+          assets: manifestEntries,
+          warnings: assetWarnings.map((w) => ({ line: w.line, code: w.code, message: w.message })),
+        },
+        null,
+        2
+      );
+      outputArtifacts.push({
+        fileName: 'build/asset-manifest.json',
+        fileType: 'json',
+        content: assetManifestJson,
+        sizeBytes: new TextEncoder().encode(assetManifestJson).byteLength,
+      });
+    }
+
     const durationMs = Math.round(performance.now() - startTime);
-    const artifactSummary = pipelineRes.artifacts
+    const artifactSummary = outputArtifacts
       .map((a) => `${a.fileName} (${a.sizeBytes} B)`)
       .join(', ');
 
     const logs: string[] = [];
     if (pipelineRes.success) {
       logs.push(
-        `[Build OK] Target "${pipelineRes.targetId || effectiveTarget}" (${pipelineRes.syntaxProfile || 'auto'} profile) completed in ${durationMs}ms`
+        `[Build OK] Target "${resolvedTarget}" (${pipelineRes.syntaxProfile || 'auto'} profile) completed in ${durationMs}ms`
       );
       if (artifactSummary) {
         logs.push(`[Artifacts] ${artifactSummary}`);
+      }
+      for (const w of assetWarnings) {
+        logs.push(`[WARNING] line ${w.line}: ${w.message}`);
       }
       if (effectiveTarget === 'native') {
         logs.push(
@@ -488,7 +795,7 @@ export class ManifestExecutionProvider implements ExecutionProvider {
         );
       }
     } else {
-      for (const d of pipelineRes.diagnostics) {
+      for (const d of allDiagnostics) {
         logs.push(`[${d.severity.toUpperCase()}] line ${d.line}: ${d.message}`);
       }
     }
@@ -501,7 +808,7 @@ export class ManifestExecutionProvider implements ExecutionProvider {
       projectKind: 'manifest',
       previewKind: pipelineRes.success ? 'terminal-output' : 'diagnostic-error',
       resolvedEntryPath: entryFile.path,
-      targetId: pipelineRes.targetId || effectiveTarget,
+      targetId: resolvedTarget,
       targetStatus: pipelineRes.targetStatus,
       syntaxProfile: pipelineRes.syntaxProfile,
       outputCode: pipelineRes.outputCode,
@@ -509,11 +816,11 @@ export class ManifestExecutionProvider implements ExecutionProvider {
       irText: pipelineRes.irText,
       disassembly: pipelineRes.disassembly,
       capabilityAudit: pipelineRes.capabilityAudit,
-      artifacts: pipelineRes.artifacts,
-      diagnostics: pipelineRes.diagnostics,
+      artifacts: outputArtifacts,
+      diagnostics: allDiagnostics,
       logs,
       durationMs,
-      error: pipelineRes.success ? undefined : pipelineRes.diagnostics[0]?.message || 'Build failed',
+      error: pipelineRes.success ? undefined : allDiagnostics[0]?.message || 'Build failed',
     };
   }
 
@@ -927,8 +1234,16 @@ export class ManifestExecutionProvider implements ExecutionProvider {
 </html>`;
   }
 
-  private generateCanvasHtml(title: string, compiledJs: string, ir?: any): string {
+  private generateCanvasHtml(
+    title: string,
+    compiledJs: string,
+    ir?: any,
+    assetMap: Record<string, string> = {},
+    brandOrigin = ''
+  ): string {
     const appName = ir?.appName || title || 'Manifest Application';
+    const serializedAssets = JSON.stringify(assetMap).replace(/<\//g, '<\\/');
+    const serializedBrandOrigin = JSON.stringify(brandOrigin);
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -960,6 +1275,42 @@ export class ManifestExecutionProvider implements ExecutionProvider {
 </head>
 <body>
   <div id="manifest-root"></div>
+
+  <script>
+    (function() {
+      const __assets = ${serializedAssets};
+      const __brandBase = ${serializedBrandOrigin};
+      window.__MANIFEST_ASSETS__ = __assets;
+      window.__manifestResolveAsset = function(rawPath) {
+        if (!rawPath || typeof rawPath !== 'string') return rawPath;
+        if (rawPath.startsWith('data:') || rawPath.startsWith('blob:') || /^https?:\\/\\//i.test(rawPath)) {
+          return rawPath;
+        }
+        const clean = rawPath.replace(/\\\\/g, '/').replace(/^\\.\\//, '').replace(/^\\/+/, '');
+        if (clean.split('/').includes('..')) return '';
+        if (Object.prototype.hasOwnProperty.call(__assets, clean)) {
+          return __assets[clean];
+        }
+        if (clean.startsWith('assets/brand/') && __brandBase) {
+          return __brandBase + '/' + clean;
+        }
+        return rawPath;
+      };
+      if (typeof HTMLImageElement !== 'undefined') {
+        const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+        if (desc && desc.set) {
+          Object.defineProperty(HTMLImageElement.prototype, 'src', {
+            configurable: true,
+            enumerable: true,
+            get: desc.get,
+            set: function(val) {
+              return desc.set.call(this, window.__manifestResolveAsset(String(val || '')));
+            }
+          });
+        }
+      }
+    })();
+  </script>
 
   <script type="module">
     ${compiledJs}

@@ -51,6 +51,8 @@ import {
   RefreshCw,
   BookOpen,
   Copy,
+  Image as ImageIcon,
+  Compass,
 } from 'lucide-react';
 import { ManifestProject, ProjectFile } from '../types.ts';
 import { TEMPLATES, StudioSettings } from '../project-store.ts';
@@ -60,8 +62,11 @@ import { LibraryRegistry } from '../../../manifest-core/src/libraries/library-re
 import { PackageManager, OFFICIAL_PACKAGE_REGISTRY } from '../../../manifest-core/src/package/package-manager.ts';
 import { StdLibraryRegistry, StdModuleDef } from '../../../manifest-core/src/stdlib/std-modules.ts';
 import { ProjectTree } from '../explorer/ProjectTree.tsx';
+import { AssetManagerPanel } from '../assets/AssetManagerPanel.tsx';
+import { EcosystemPanel } from '../ecosystem/EcosystemPanel.tsx';
+import { StudioDocsPanel } from '../docs/StudioDocsPanel.tsx';
 
-export type ActivityTab = 'explorer' | 'search' | 'solana' | 'git' | 'packages' | 'devtools' | 'settings';
+export type ActivityTab = 'explorer' | 'search' | 'assets' | 'ecosystem' | 'solana' | 'git' | 'packages' | 'docs' | 'devtools' | 'settings';
 
 interface SidebarProps {
   project: ManifestProject;
@@ -83,6 +88,7 @@ interface SidebarProps {
   onOpenMainnetWarning?: () => void;
   onOpenSettings?: () => void;
   onShowToast?: (msg: string) => void;
+  onLoadExample?: (code: string, targetPath?: string) => void;
   settings: StudioSettings;
   onUpdateSettings: (settings: StudioSettings) => void;
   isCollapsed: boolean;
@@ -109,6 +115,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenMainnetWarning,
   onOpenSettings,
   onShowToast,
+  onLoadExample,
   settings,
   onUpdateSettings,
   isCollapsed,
@@ -194,6 +201,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <Search className="w-4 h-4" />
           </button>
 
+          {/* Asset Manager */}
+          <button
+            onClick={() => {
+              if (activeActivity === 'assets' && !isCollapsed) onToggleCollapse();
+              else {
+                onSelectActivity('assets');
+                if (isCollapsed) onToggleCollapse();
+              }
+            }}
+            title="Asset Manager"
+            className={`w-9 h-9 rounded flex items-center justify-center transition cursor-pointer relative ${
+              activeActivity === 'assets' && !isCollapsed ? 'text-[#ffffff]' : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#242424]'
+            }`}
+          >
+            {activeActivity === 'assets' && !isCollapsed && (
+              <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-[#ffffff] rounded-r" />
+            )}
+            <ImageIcon className="w-4 h-4" />
+          </button>
+
+          {/* Language Ecosystem & Target Matrix */}
+          <button
+            onClick={() => {
+              if (activeActivity === 'ecosystem' && !isCollapsed) onToggleCollapse();
+              else {
+                onSelectActivity('ecosystem');
+                if (isCollapsed) onToggleCollapse();
+              }
+            }}
+            title="Ecosystem & Compilation Targets"
+            className={`w-9 h-9 rounded flex items-center justify-center transition cursor-pointer relative ${
+              activeActivity === 'ecosystem' && !isCollapsed ? 'text-[#ffffff]' : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#242424]'
+            }`}
+          >
+            {activeActivity === 'ecosystem' && !isCollapsed && (
+              <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-[#ffffff] rounded-r" />
+            )}
+            <Compass className="w-4 h-4" />
+          </button>
+
           {/* Solana Program Manager */}
           <button
             onClick={() => {
@@ -253,6 +300,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
             )}
             <Boxes className="w-4 h-4" />
           </button>
+
+          {/* Documentation */}
+          <button
+            onClick={() => {
+              if (activeActivity === 'docs' && !isCollapsed) onToggleCollapse();
+              else {
+                onSelectActivity('docs');
+                if (isCollapsed) onToggleCollapse();
+              }
+            }}
+            title="Manifest Language Documentation"
+            className={`w-9 h-9 rounded flex items-center justify-center transition cursor-pointer relative ${
+              activeActivity === 'docs' && !isCollapsed ? 'text-[#ffffff]' : 'text-[#858585] hover:text-[#cccccc] hover:bg-[#242424]'
+            }`}
+          >
+            {activeActivity === 'docs' && !isCollapsed && (
+              <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-[#ffffff] rounded-r" />
+            )}
+            <BookOpen className="w-4 h-4" />
+          </button>
         </div>
 
         {/* Bottom Rail Controls */}
@@ -285,15 +352,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* 2. Secondary Sidebar Surface */}
       {!isCollapsed && (
-        <div className="w-64 bg-[#181818] flex flex-col h-full border-r border-[#2d2d2d] overflow-hidden">
+        <div className={`${['assets', 'ecosystem', 'docs'].includes(activeActivity) ? 'w-80' : 'w-64'} bg-[#181818] flex flex-col h-full border-r border-[#2d2d2d] overflow-hidden transition-all duration-150`}>
           {/* Header */}
           <div className="h-9 px-3 border-b border-[#2d2d2d] flex items-center justify-between text-[11px] font-semibold tracking-wider text-[#858585] uppercase">
             <span>
               {activeActivity === 'explorer' && 'Explorer'}
               {activeActivity === 'search' && 'Search'}
+              {activeActivity === 'assets' && 'Asset Manager'}
+              {activeActivity === 'ecosystem' && 'Language Ecosystem'}
               {activeActivity === 'solana' && 'Solana Development'}
               {activeActivity === 'git' && 'Source Control'}
               {activeActivity === 'packages' && 'Manifest Libraries'}
+              {activeActivity === 'docs' && 'Documentation'}
               {activeActivity === 'settings' && 'Settings'}
             </span>
 
@@ -407,6 +477,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 ))}
               </div>
             </div>
+          )}
+
+          {/* Asset Manager View */}
+          {activeActivity === 'assets' && (
+            <AssetManagerPanel
+              project={project}
+              activeFilePath={activeFilePath}
+              onSelectFile={onSelectFile}
+              onCreateFile={onCreateFile}
+              onDeleteFile={onDeleteFile}
+              onRenameFile={onRenameFile}
+              onWriteFile={onWriteFile}
+              onShowToast={onShowToast}
+            />
+          )}
+
+          {/* Ecosystem View */}
+          {activeActivity === 'ecosystem' && (
+            <EcosystemPanel
+              project={project}
+              onLoadExample={onLoadExample}
+              onShowToast={onShowToast}
+            />
+          )}
+
+          {/* Documentation View */}
+          {activeActivity === 'docs' && (
+            <StudioDocsPanel
+              onLoadExample={onLoadExample}
+              onShowToast={onShowToast}
+            />
           )}
 
           {/* Solana Development View */}

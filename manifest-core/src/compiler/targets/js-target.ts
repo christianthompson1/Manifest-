@@ -692,6 +692,12 @@ export class JSTargetCompiler implements TargetCompiler {
           if (node.bindVariable) {
             const bv = JSON.stringify(node.bindVariable);
             lines.push(`  ${nodeVar}.value = __manifest.state[${bv}] || '';`);
+            lines.push(`  const updateSelect_${nodeVar} = () => {`);
+            lines.push(`    if (__manifest.state[${bv}] !== undefined && ${nodeVar}.value !== String(__manifest.state[${bv}])) {`);
+            lines.push(`      ${nodeVar}.value = String(__manifest.state[${bv}]);`);
+            lines.push(`    }`);
+            lines.push(`  };`);
+            lines.push(`  __manifest.listeners.push(updateSelect_${nodeVar});`);
             lines.push(`  ${nodeVar}.onchange = (e) => {`);
             lines.push(`    __manifest.state[${bv}] = e.target.value;`);
             lines.push(`    __manifest.notifyState();`);
@@ -735,7 +741,13 @@ export class JSTargetCompiler implements TargetCompiler {
           if (node.placeholder) lines.push(`  ${nodeVar}.placeholder = String(${this.exprToJs(node.placeholder, false, false)});`);
           if (node.bindVariable) {
             const bv = JSON.stringify(node.bindVariable);
-            lines.push(`  ${nodeVar}.value = __manifest.state[${bv}] || '';`);
+            lines.push(`  ${nodeVar}.value = __manifest.state[${bv}] !== undefined ? __manifest.state[${bv}] : '';`);
+            lines.push(`  const updateTextarea_${nodeVar} = () => {`);
+            lines.push(`    if (typeof document !== 'undefined' && document.activeElement !== ${nodeVar}) {`);
+            lines.push(`      ${nodeVar}.value = __manifest.state[${bv}] !== undefined ? __manifest.state[${bv}] : '';`);
+            lines.push(`    }`);
+            lines.push(`  };`);
+            lines.push(`  __manifest.listeners.push(updateTextarea_${nodeVar});`);
             lines.push(`  ${nodeVar}.oninput = (e) => {`);
             lines.push(`    __manifest.state[${bv}] = e.target.value;`);
             lines.push(`    __manifest.notifyState();`);
@@ -808,9 +820,17 @@ export class JSTargetCompiler implements TargetCompiler {
   private applyStyles(elementVar: string, styles: Record<string, string | number> | undefined, lines: string[]): void {
     if (!styles) return;
     for (const [rawKey, val] of Object.entries(styles)) {
+      const safeVal = String(val).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      if (rawKey === 'class' || rawKey === 'className') {
+        lines.push(`  if (${elementVar}) ${elementVar}.className += (${elementVar}.className ? ' ' : '') + "${safeVal}";`);
+        continue;
+      }
+      if (rawKey === 'id') {
+        lines.push(`  if (${elementVar}) ${elementVar}.id = "${safeVal}";`);
+        continue;
+      }
       const kebab = rawKey.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`).replace(/_/g, '-').toLowerCase();
       const camel = kebab.replace(/-([a-z])/g, (_, g) => g.toUpperCase());
-      const safeVal = String(val).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       lines.push(`  if (${elementVar} && ${elementVar}.style) {`);
       lines.push(`    try { ${elementVar}.style.setProperty("${kebab}", "${safeVal}"); } catch (_) {}`);
       lines.push(`    try { ${elementVar}.style["${camel}"] = "${safeVal}"; } catch (_) {}`);

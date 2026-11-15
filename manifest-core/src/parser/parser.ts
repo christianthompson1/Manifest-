@@ -224,6 +224,20 @@ export class Parser {
     }
 
     const valUpper = this.peek().value?.toUpperCase();
+    if (valUpper === 'NAVIGATE') {
+      const tok = this.advance();
+      if (this.peek().value?.toUpperCase() === 'TO') {
+        this.advance();
+      }
+      const target = this.parseExpression();
+      return {
+        type: 'NavigateStatement',
+        target,
+        line: tok.line,
+        column: tok.column,
+      } as any;
+    }
+
     if (['LAYOUT', 'DIRECTION', 'GAP', 'ALIGN', 'PADDING', 'JUSTIFY', 'BORDER', 'RADIUS'].includes(valUpper)) {
       this.advance();
       while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.END) && !this.isAtEnd()) {
@@ -256,10 +270,41 @@ export class Parser {
       };
     }
 
+    if (valUpper === 'IMAGE') {
+      const tok = this.advance();
+      if (this.peek().value === 'src' && this.tokens[this.current + 1]?.type === TokenType.COLON) {
+        this.advance();
+        this.advance();
+      }
+      const srcExpr = this.parseExpression();
+      let altExpr: any = undefined;
+      if (this.peek().value === 'alt' && this.tokens[this.current + 1]?.type === TokenType.COLON) {
+        this.advance();
+        this.advance();
+        altExpr = this.parseExpression();
+      }
+      return {
+        type: 'Image',
+        src: srcExpr,
+        alt: altExpr,
+        line: tok.line,
+        column: tok.column,
+      };
+    }
+
     if (valUpper === 'HEADING') {
       const tok = this.advance();
       const content = this.parseExpression();
       let styles: Record<string, string> = { fontSize: '24px', fontWeight: '700' };
+      while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.END) && !this.isAtEnd()) {
+        const key = this.advance().value;
+        if (this.match(TokenType.COLON)) {
+          if (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
+            const valTok = this.advance();
+            styles[key] = (valTok.value || '').replace(/['"]/g, '');
+          }
+        }
+      }
       this.skipNewlines();
       if (this.match(TokenType.STYLE)) {
         styles = { ...styles, ...this.parseStyleBlock() };
@@ -516,7 +561,10 @@ export class Parser {
 
   private parseReturnStatement(): ReturnStatementNode {
     const tok = this.previous();
-    const expression = this.parseExpression();
+    let expression: ExpressionNode | undefined;
+    if (!this.check(TokenType.NEWLINE) && !this.check(TokenType.END) && !this.isAtEnd()) {
+      expression = this.parseExpression();
+    }
     return {
       type: 'ReturnStatement',
       expression,
@@ -719,9 +767,20 @@ export class Parser {
     const content = this.parseExpression();
     let styles: Record<string, string> | undefined;
 
+    while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.END) && !this.isAtEnd()) {
+      const key = this.advance().value;
+      if (this.match(TokenType.COLON)) {
+        if (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
+          const valTok = this.advance();
+          if (!styles) styles = {};
+          styles[key] = (valTok.value || '').replace(/['"]/g, '');
+        }
+      }
+    }
+
     this.skipNewlines();
     if (this.match(TokenType.STYLE)) {
-      styles = this.parseStyleBlock();
+      styles = { ...(styles || {}), ...this.parseStyleBlock() };
       this.skipNewlines();
     }
 
@@ -738,6 +797,17 @@ export class Parser {
     const tok = this.previous();
     const label = this.parseExpression();
     let styles: Record<string, string> | undefined;
+    while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.END) && !this.isAtEnd()) {
+      const key = this.advance().value;
+      if (this.match(TokenType.COLON)) {
+        if (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
+          const valTok = this.advance();
+          const cleanVal = (valTok.value || '').replace(/['"]/g, '');
+          if (!styles) styles = {};
+          styles[key] = cleanVal;
+        }
+      }
+    }
     let onClick: StatementNode[] | undefined;
     let hasBlock = false;
 
@@ -865,14 +935,21 @@ export class Parser {
       const word = this.peek().value.toUpperCase();
       if (word === 'PLACEHOLDER') {
         this.advance();
+        this.match(TokenType.COLON);
         placeholder = this.advance().value.replace(/['"]/g, '');
       } else if (word === 'BIND' || word === 'INTO') {
         this.advance();
+        this.match(TokenType.COLON);
         bindVariable = this.advance().value;
       } else if (this.match(TokenType.STYLE)) {
-        styles = this.parseStyleBlock();
+        styles = { ...(styles || {}), ...this.parseStyleBlock() };
       } else {
-        this.advance();
+        const key = this.advance().value;
+        if (this.match(TokenType.COLON) && !this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
+          const valTok = this.advance();
+          if (!styles) styles = {};
+          styles[key] = (valTok.value || '').replace(/['"]/g, '');
+        }
       }
     }
 
@@ -957,6 +1034,16 @@ export class Parser {
   private parseContainerNode(): ContainerNode {
     const tok = this.previous();
     const styles: Record<string, string> = {};
+    while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.END) && !this.isAtEnd()) {
+      const key = this.advance().value;
+      if (this.match(TokenType.COLON)) {
+        if (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
+          const valTok = this.advance();
+          const cleanVal = (valTok.value || '').replace(/['"]/g, '');
+          styles[key] = cleanVal;
+        }
+      }
+    }
     this.skipNewlines();
 
     if (this.match(TokenType.STYLE)) {
@@ -1074,11 +1161,22 @@ export class Parser {
     let bindVariable: string | undefined;
     const options: Array<{ value: string; label: string }> = [];
 
+    let styles: Record<string, string> | undefined;
     while (!this.check(TokenType.NEWLINE) && !this.check(TokenType.END) && !this.isAtEnd()) {
-      const valUp = this.peek().value?.toUpperCase();
+      const word = this.peek().value;
+      const valUp = word?.toUpperCase();
       if (valUp === 'INTO' || valUp === 'BIND') {
         this.advance();
+        this.match(TokenType.COLON);
         bindVariable = this.advance().value;
+      } else if (valUp === 'CLASS' || valUp === 'ID') {
+        this.advance();
+        this.match(TokenType.COLON);
+        if (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
+          const valTok = this.advance();
+          if (!styles) styles = {};
+          styles[word.toLowerCase()] = (valTok.value || '').replace(/['"]/g, '');
+        }
       } else {
         this.advance();
       }
@@ -1107,6 +1205,7 @@ export class Parser {
       type: 'Select',
       bindVariable,
       options,
+      styles,
       line: tok.line,
       column: tok.column,
     };
@@ -1140,15 +1239,27 @@ export class Parser {
     const tok = this.previous();
     let bindVariable: string | undefined;
     let placeholder: string | undefined;
+    let styles: Record<string, string> | undefined;
 
     while (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
-      const valUp = this.peek().value?.toUpperCase();
+      const word = this.peek().value;
+      const valUp = word?.toUpperCase();
       if (valUp === 'BIND' || valUp === 'INTO') {
         this.advance();
+        this.match(TokenType.COLON);
         bindVariable = this.advance().value;
       } else if (valUp === 'PLACEHOLDER') {
         this.advance();
+        this.match(TokenType.COLON);
         placeholder = this.advance().value.replace(/['"]/g, '');
+      } else if (valUp === 'CLASS' || valUp === 'ID') {
+        this.advance();
+        this.match(TokenType.COLON);
+        if (!this.check(TokenType.NEWLINE) && !this.isAtEnd()) {
+          const valTok = this.advance();
+          if (!styles) styles = {};
+          styles[word.toLowerCase()] = (valTok.value || '').replace(/['"]/g, '');
+        }
       } else {
         placeholder = (placeholder ? placeholder + ' ' : '') + this.advance().value.replace(/['"]/g, '');
       }
@@ -1158,6 +1269,7 @@ export class Parser {
       type: 'Textarea',
       placeholder: placeholder ? placeholder.trim() : undefined,
       bindVariable,
+      styles,
       line: tok.line,
       column: tok.column,
     };

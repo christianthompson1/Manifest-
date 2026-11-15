@@ -171,9 +171,11 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
         {/* Header Bar */}
         <div className="h-12 border-b border-[#2d2d2d] px-6 flex items-center justify-between bg-[#1f1f1f]">
           <div className="flex items-center gap-3">
-            <div className="w-6 h-6 rounded bg-[#252526] border border-[#2d2d2d] flex items-center justify-center text-[#569cd6] font-mono font-bold text-xs">
-              M
-            </div>
+            <img
+              src="/assets/brand/manifest-symbol.svg"
+              alt="Manifest"
+              className="w-6 h-6 object-contain"
+            />
             <div className="flex items-center gap-2">
               <span className="font-semibold text-sm text-[#ffffff] tracking-tight">Manifest Studio</span>
               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#252526] text-[#4ec9b0] border border-[#2d2d2d]">

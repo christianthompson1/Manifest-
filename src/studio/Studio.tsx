@@ -706,6 +706,17 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
     });
   };
 
+  // Load a code example into the workspace and open it
+  const handleLoadExample = (code: string, targetPath?: string) => {
+    const dest = targetPath || activeFilePath;
+    handleWriteFile(dest, code);
+    setActiveFilePath(dest);
+    if (!openFilePaths.includes(dest)) {
+      setOpenFilePaths((prev) => [...prev, dest]);
+    }
+    showToast(`Loaded example into ${dest}`);
+  };
+
   // Rename file or folder in project and update entry/HTML/TOML references
   const handleRenameFile = (oldPath: string, newPath: string) => {
     const cleanNew = newPath.replace(/^\/+|\/+$/g, '');
@@ -924,11 +935,13 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             <Menu className="w-4 h-4" />
           </button>
 
-          {/* Logo badge - clean VS Code style */}
+          {/* Official Manifest Brand Logo */}
           <div className="flex items-center space-x-2">
-            <div className="w-5 h-5 rounded bg-[#252526] border border-[#2d2d2d] flex items-center justify-center text-[#ffffff] font-mono font-bold text-[11px]">
-              M
-            </div>
+            <img
+              src="/assets/brand/manifest-symbol.svg"
+              alt="Manifest"
+              className="w-5 h-5 object-contain"
+            />
             <span className="font-semibold text-[#ffffff] text-xs tracking-tight hidden sm:inline">
               Manifest Studio
             </span>
@@ -1252,6 +1265,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
             onOpenMainnetWarning={() => setIsMainnetWarningOpen(true)}
             onOpenSettings={() => setIsSettingsOpen(true)}
             onShowToast={showToast}
+            onLoadExample={handleLoadExample}
             settings={settings}
             onUpdateSettings={setSettings}
             isCollapsed={isSidebarCollapsed}
@@ -1725,6 +1739,23 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
               onOpenGitHubImport={() => {
                 setMobileDrawerOpen(false);
                 setIsGitHubImportOpen(true);
+              }}
+              onOpenSolanaDeploy={() => {
+                setMobileDrawerOpen(false);
+                setIsSolanaDeployOpen(true);
+              }}
+              onOpenMainnetWarning={() => {
+                setMobileDrawerOpen(false);
+                setIsMainnetWarningOpen(true);
+              }}
+              onOpenSettings={() => {
+                setMobileDrawerOpen(false);
+                setIsSettingsOpen(true);
+              }}
+              onShowToast={showToast}
+              onLoadExample={(code, targetPath) => {
+                setMobileDrawerOpen(false);
+                handleLoadExample(code, targetPath);
               }}
               settings={settings}
               onUpdateSettings={setSettings}

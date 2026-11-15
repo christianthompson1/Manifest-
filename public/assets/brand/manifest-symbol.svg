@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="facet-left" x1="12" y1="14" x2="24" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#E6EDF3"/>
+      <stop offset="100%" stop-color="#8B949E"/>
+    </linearGradient>
+    <linearGradient id="facet-center-left" x1="24" y1="26" x2="32" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8B949E"/>
+      <stop offset="100%" stop-color="#484F58"/>
+    </linearGradient>
+    <linearGradient id="facet-center-right" x1="32" y1="26" x2="40" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#58A6FF"/>
+      <stop offset="100%" stop-color="#1F6FEB"/>
+    </linearGradient>
+    <linearGradient id="facet-right" x1="40" y1="14" x2="52" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F0F6FC"/>
+      <stop offset="100%" stop-color="#C9D1D9"/>
+    </linearGradient>
+    <linearGradient id="facet-top" x1="12" y1="14" x2="52" y2="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="50%" stop-color="#C9D1D9"/>
+      <stop offset="100%" stop-color="#58A6FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Left Outer Pillar -->
+  <polygon points="12,50 12,20 22,27 22,50" fill="url(#facet-left)" />
+
+  <!-- Center Left Vertex -->
+  <polygon points="22,27 32,34 32,50 22,50" fill="url(#facet-center-left)" />
+
+  <!-- Center Right Vertex (Accent) -->
+  <polygon points="32,34 42,27 42,50 32,50" fill="url(#facet-center-right)" />
+
+  <!-- Right Outer Pillar -->
+  <polygon points="42,27 52,20 52,50 42,50" fill="url(#facet-right)" />
+
+  <!-- Isometric Chevron Crown -->
+  <polygon points="12,20 32,34 52,20 45,15 32,24 19,15" fill="url(#facet-top)" />
+</svg>

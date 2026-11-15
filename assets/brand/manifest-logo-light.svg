@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 48" width="280" height="48" fill="none">
+  <defs>
+    <linearGradient id="light-facet-left" x1="12" y1="14" x2="24" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#24292F"/>
+      <stop offset="100%" stop-color="#57606A"/>
+    </linearGradient>
+    <linearGradient id="light-facet-center-left" x1="24" y1="26" x2="32" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#57606A"/>
+      <stop offset="100%" stop-color="#8C959F"/>
+    </linearGradient>
+    <linearGradient id="light-facet-center-right" x1="32" y1="26" x2="40" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0969DA"/>
+      <stop offset="100%" stop-color="#0550AE"/>
+    </linearGradient>
+    <linearGradient id="light-facet-right" x1="40" y1="14" x2="52" y2="50" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#24292F"/>
+      <stop offset="100%" stop-color="#32383F"/>
+    </linearGradient>
+    <linearGradient id="light-facet-top" x1="12" y1="14" x2="52" y2="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#24292F"/>
+      <stop offset="50%" stop-color="#57606A"/>
+      <stop offset="100%" stop-color="#0969DA"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Scaled Manifest Symbol -->
+  <g transform="translate(2, 4) scale(0.625)">
+    <polygon points="12,50 12,20 22,27 22,50" fill="url(#light-facet-left)" />
+    <polygon points="22,27 32,34 32,50 22,50" fill="url(#light-facet-center-left)" />
+    <polygon points="32,34 42,27 42,50 32,50" fill="url(#light-facet-center-right)" />
+    <polygon points="42,27 52,20 52,50 42,50" fill="url(#light-facet-right)" />
+    <polygon points="12,20 32,34 52,20 45,15 32,24 19,15" fill="url(#light-facet-top)" />
+  </g>
+
+  <!-- Wordmark -->
+  <text x="52" y="31" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="20" font-weight="700" letter-spacing="5" fill="#24292F">
+    MANIFEST
+  </text>
+  <text x="216" y="31" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="10" font-weight="600" letter-spacing="1.5" fill="#0969DA">
+    v1.0
+  </text>
+</svg>

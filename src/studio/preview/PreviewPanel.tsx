@@ -32,6 +32,8 @@ import {
 } from 'lucide-react';
 import { BuildResult } from '../types.ts';
 import { UnifiedExecutionResult } from '../execution/execution-types.ts';
+import { runManifestPipeline, decodeMbcFileContent } from '../compiler-service.ts';
+import { executeMbcInRustVm } from '../../../manifest-core/src/index.ts';
 import { AnchorGenerator } from '../../../manifest-core/src/solana/anchor-generator.ts';
 import { SolanaSimulator } from '../../../manifest-core/src/solana/solana-simulator.ts';
 
@@ -68,9 +70,20 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
 
   // Listen to postMessage from the sandboxed preview iframe with source validation
   useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      // Security check: Only accept messages originating from our sandboxed iframe window
-      if (!iframeRef.current || event.source !== iframeRef.current.contentWindow) {
+    const ALLOWED_PLAYGROUND_TARGETS = new Set([
+      'mvm',
+      'web-js',
+      'js',
+      'wasm',
+      'solana-sbf',
+      'solana',
+      'native',
+    ]);
+
+    const handleMessage = async (event: MessageEvent) => {
+      // Security check: Only accept messages originating from our active sandboxed iframe window
+      const activeWin = iframeRef.current?.contentWindow;
+      if (!activeWin || event.source !== activeWin) {
         return;
       }
 
@@ -94,6 +107,163 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
           ...prev,
           { name: String(data.payload || 'event'), timestamp: Date.now() },
         ]);
+      } else if (data.type === 'manifest-playground-compile') {
+        const reqId = String(data.id || '');
+        const rawSource = typeof data.source === 'string' ? data.source : '';
+        const rawTarget = String(data.target || 'mvm').toLowerCase();
+        const t0 = performance.now();
+
+        if (!rawSource.trim() || rawSource.length > 100_000) {
+          activeWin.postMessage(
+            {
+              type: 'manifest-playground-result',
+              id: reqId,
+              success: false,
+              target: rawTarget,
+              output: '[Error] Source code must be non-empty and under 100 KB.',
+              durationMs: 0,
+            },
+            '*'
+          );
+          return;
+        }
+
+        if (!ALLOWED_PLAYGROUND_TARGETS.has(rawTarget)) {
+          activeWin.postMessage(
+            {
+              type: 'manifest-playground-result',
+              id: reqId,
+              success: false,
+              target: rawTarget,
+              output: `[Error] Unsupported playground target "${rawTarget}".`,
+              durationMs: 0,
+            },
+            '*'
+          );
+          return;
+        }
+
+        const effectiveTarget =
+          rawTarget === 'solana' ? 'solana-sbf' : rawTarget === 'js' ? 'web-js' : rawTarget;
+
+        try {
+          const res = await runManifestPipeline(rawSource, effectiveTarget);
+          const lines: string[] = [];
+
+          if (!res.success) {
+            lines.push(`[Compilation Halted] Target: ${effectiveTarget} (${res.durationMs}ms)`);
+            for (const d of res.diagnostics || []) {
+              lines.push(`• Line ${d.line || 1}: [${d.severity.toUpperCase()}] ${d.message}`);
+              if (d.hint) lines.push(`  Hint: ${d.hint}`);
+            }
+          } else if (effectiveTarget === 'mvm' && res.mbcBytes) {
+            const vmRes = await executeMbcInRustVm(res.mbcBytes, {
+              entryFunction: 'main',
+              grantedCapabilities: ['console'],
+              maxSteps: 200_000,
+            });
+            const totalMs = Math.round(performance.now() - t0);
+            lines.push(`[Manifest Compiler + Rust MVM] Target: mvm (.mbc v1.0)`);
+            lines.push(`Bytecode Container: ${res.mbcBytes.length} bytes (verified)`);
+            lines.push(`Syntax Profile: ${res.syntaxProfile || 'auto'} | VM Steps: ${vmRes.steps}`);
+            if (vmRes.stdout.length > 0) {
+              lines.push('--- stdout ---');
+              lines.push(...vmRes.stdout);
+            }
+            lines.push(vmRes.ok ? `Return Value: ${vmRes.returnValue}` : `Runtime Trap: ${vmRes.error}`);
+            lines.push(`Completed in ${totalMs}ms`);
+          } else if (effectiveTarget === 'wasm') {
+            const wasmArt = res.artifacts.find((a) => a.fileName.endsWith('.wasm'));
+            lines.push(`[Manifest WASM Compiler] Target: wasm (.wasm binary)`);
+            if (wasmArt) {
+              lines.push(`Artifact: ${wasmArt.fileName} (${wasmArt.sizeBytes} bytes)`);
+              const rawBytes = decodeMbcFileContent(wasmArt.content);
+              if (rawBytes && typeof WebAssembly !== 'undefined') {
+                const printed: string[] = [];
+                const ab = new ArrayBuffer(rawBytes.byteLength);
+                new Uint8Array(ab).set(rawBytes);
+                const inst = await WebAssembly.instantiate(ab, {
+                  env: {
+                    print_i32: (v: number) => printed.push(String(v)),
+                    print_i64: (v: bigint) => printed.push(String(v)),
+                    print_f64: (v: number) => printed.push(String(v)),
+                  },
+                });
+                const fnMain = (inst.instance.exports as any).main;
+                if (typeof fnMain === 'function') {
+                  const ret = fnMain();
+                  if (printed.length) {
+                    lines.push('--- stdout ---');
+                    lines.push(...printed);
+                  }
+                  lines.push(`main() returned: ${typeof ret === 'bigint' ? ret.toString() : String(ret)}`);
+                }
+              }
+            }
+            lines.push(`Completed in ${Math.round(performance.now() - t0)}ms`);
+          } else if (effectiveTarget === 'solana-sbf') {
+            lines.push(`[Manifest Solana Backend] Target: solana-sbf (Anchor Rust + IDL)`);
+            lines.push(
+              `Artifacts: ${res.artifacts.map((a) => `${a.fileName} (${a.sizeBytes} B)`).join(', ')}`
+            );
+            if (res.ir?.solanaProgram) {
+              const sim = new SolanaSimulator(res.ir.solanaProgram);
+              sim.initializeDefaultAccounts();
+              const ix0 = res.ir.solanaProgram.instructions?.[0];
+              if (ix0) {
+                const tx = sim.executeInstruction(ix0.name, 'Authority1111111111111111111111111111111111');
+                lines.push(
+                  `Simulated instruction "${ix0.name}": ${tx.success ? `OK (${tx.computeUnitsUsed} CU)` : tx.error}`
+                );
+              }
+            }
+            lines.push(`Generated Rust preview (${(res.outputCode || '').split('\n').length} lines):`);
+            lines.push((res.outputCode || '').split('\n').slice(0, 14).join('\n'));
+          } else if (effectiveTarget === 'native') {
+            lines.push(`[Manifest Native Backend] Target: native (Safe Rust emission; host rustc required for OS binary)`);
+            lines.push(
+              `Artifacts: ${res.artifacts.map((a) => `${a.fileName} (${a.sizeBytes} B)`).join(', ')}`
+            );
+            lines.push('Note: Browser sandbox emits verified Rust source; run `manifest build --target native` locally for native ELF/Mach-O.');
+            lines.push((res.outputCode || '').split('\n').slice(0, 16).join('\n'));
+          } else {
+            lines.push(`[Manifest Web-JS Compiler] Target: web-js`);
+            lines.push(
+              `Artifacts: ${res.artifacts.map((a) => `${a.fileName} (${a.sizeBytes} B)`).join(', ')}`
+            );
+            lines.push(`Compiled JS size: ${(res.outputCode || '').length} chars | Diagnostics: ${(res.diagnostics || []).length}`);
+            lines.push(`Compilation succeeded cleanly in ${res.durationMs}ms.`);
+          }
+
+          if (iframeRef.current?.contentWindow === activeWin) {
+            activeWin.postMessage(
+              {
+                type: 'manifest-playground-result',
+                id: reqId,
+                success: res.success,
+                target: effectiveTarget,
+                output: lines.join('\n'),
+                diagnostics: res.diagnostics,
+                durationMs: Math.round(performance.now() - t0),
+              },
+              '*'
+            );
+          }
+        } catch (err: any) {
+          if (iframeRef.current?.contentWindow === activeWin) {
+            activeWin.postMessage(
+              {
+                type: 'manifest-playground-result',
+                id: reqId,
+                success: false,
+                target: effectiveTarget,
+                output: `[Runtime Bridge Error] ${err?.message || String(err)}`,
+                durationMs: Math.round(performance.now() - t0),
+              },
+              '*'
+            );
+          }
+        }
       }
     };
 

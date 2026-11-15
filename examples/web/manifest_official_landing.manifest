@@ -1,0 +1,544 @@
+APP "Manifest — Multi-Target Programming Language"
+
+ROUTE "/" TO Home
+ROUTE "/docs" TO Docs
+
+// Reactive application state managed natively in Manifest
+STATE selected_snippet TO "hello"
+STATE playground_target TO "mvm"
+STATE playground_code TO "module hello;\nrequires console;\n\nfn main() -> i64 effects(console) {\n    console.print(\"Welcome to Manifest v1.0!\");\n    return 0;\n}"
+STATE playground_output TO "Click \"Compile & Run\" to execute this Manifest source through the real compiler pipeline and Rust MVM runtime."
+STATE playground_status TO "Ready"
+
+STATE active_domain TO "web"
+STATE domain_heading TO "Web Applications (Declarative UI + Web-JS Runtime)"
+STATE domain_summary TO "Build reactive single-file or multi-page web apps using APP, PAGE, ROUTE, STATE, and ACTION blocks, or compile v1.0 modules to capability-restricted JavaScript. Workspace assets under assets/ resolve in preview and bundle to build/assets/ with asset-manifest.json."
+STATE domain_status TO "Status: Implemented (DOM Runtime & Reactive Compiler)"
+
+STATE feedback_email TO ""
+STATE feedback_status TO ""
+
+ACTION select_snippet_hello
+    SET selected_snippet TO "hello"
+    SET playground_target TO "mvm"
+    SET playground_code TO "module hello;\nrequires console;\n\nfn main() -> i64 effects(console) {\n    console.print(\"Welcome to Manifest v1.0!\");\n    return 0;\n}"
+    SET playground_output TO "Loaded Hello World (MVM). Click \"Compile & Run\" to compile to .mbc bytecode and run in Rust MVM."
+    SET playground_status TO "Ready"
+END
+
+ACTION select_snippet_wasm
+    SET selected_snippet TO "wasm"
+    SET playground_target TO "wasm"
+    SET playground_code TO "module fib_wasm;\nrequires console;\n\nexport fn fib(n: i64) -> i64 {\n    if n <= 1 { return n; }\n    let mut a: i64 = 0;\n    let mut b: i64 = 1;\n    let mut i: i64 = 2;\n    while i <= n {\n        let next: i64 = a + b;\n        a = b;\n        b = next;\n        i = i + 1;\n    }\n    return b;\n}\n\nexport fn main() -> i64 effects(console) {\n    let result: i64 = fib(10);\n    console.print(result);\n    return result;\n}"
+    SET playground_output TO "Loaded Fibonacci (WASM). Click \"Compile & Run\" to emit standalone .wasm binary and execute main()."
+    SET playground_status TO "Ready"
+END
+
+ACTION select_snippet_beginner
+    SET selected_snippet TO "beginner"
+    SET playground_target TO "mvm"
+    SET playground_code TO "MODULE inventory\nREQUIRES console\n\nFUNCTION main() RETURNS Int EFFECTS console\n    LET base: Int = 250\n    LET bonus: Int = 50\n    SHOW \"Inventory batch total:\"\n    SHOW base + bonus\n    RETURN base + bonus\nEND"
+    SET playground_output TO "Loaded Beginner Profile (MVM). Compiles through the identical Typed IR and Rust MVM bytecode pipeline."
+    SET playground_status TO "Ready"
+END
+
+ACTION select_snippet_web
+    SET selected_snippet TO "web"
+    SET playground_target TO "web-js"
+    SET playground_code TO "APP \"MetricCounter\"\nSTATE visits TO 1024\n\nACTION track_visit\n    SET visits TO visits + 1\nEND\n\nPAGE Home\n    CONTAINER\n        HEADING \"Visits: \" + visits\n        BUTTON \"Increment\"\n            WHEN CLICK\n                CALL track_visit\n            END\n        END\n    END\nEND"
+    SET playground_output TO "Loaded Declarative Web App. Click \"Compile & Run\" to verify real Web-JS target compilation."
+    SET playground_status TO "Ready"
+END
+
+ACTION select_snippet_solana
+    SET selected_snippet TO "solana"
+    SET playground_target TO "solana-sbf"
+    SET playground_code TO "APP \"TokenVault\"\nUSE SOLANA\n\nPROGRAM TokenVault\n    ACCOUNT VaultState\n        balance: NUMBER\n        authority: ADDRESS\n    END\n\n    INSTRUCTION deposit\n        REQUIRE signer = authority\n        SET balance = balance + 100\n    END\nEND"
+    SET playground_output TO "Loaded Solana Program. Click \"Compile & Run\" to emit Anchor Rust + IDL JSON and run deterministic simulation."
+    SET playground_status TO "Ready"
+END
+
+ACTION reset_playground
+    IF selected_snippet == "wasm" THEN
+        CALL select_snippet_wasm
+        RETURN
+    END
+    IF selected_snippet == "beginner" THEN
+        CALL select_snippet_beginner
+        RETURN
+    END
+    IF selected_snippet == "web" THEN
+        CALL select_snippet_web
+        RETURN
+    END
+    IF selected_snippet == "solana" THEN
+        CALL select_snippet_solana
+        RETURN
+    END
+    CALL select_snippet_hello
+END
+
+ACTION run_playground
+    SET playground_status TO "Compiling..."
+    SET playground_output TO "Compiling and executing via Studio runtime bridge..."
+END
+
+ACTION set_domain_web
+    SET active_domain TO "web"
+    SET domain_heading TO "Web Applications (Declarative UI + Web-JS Runtime)"
+    SET domain_summary TO "Build reactive single-file or multi-page web apps using APP, PAGE, ROUTE, STATE, and ACTION blocks, or compile v1.0 modules to capability-restricted JavaScript. Workspace assets under assets/ resolve in preview and bundle to build/assets/ with asset-manifest.json."
+    SET domain_status TO "Status: Implemented (DOM Runtime & Reactive Compiler)"
+END
+
+ACTION set_domain_backend
+    SET active_domain TO "backend"
+    SET domain_heading TO "Backend, CLI Services & Systems Tooling"
+    SET domain_summary TO "Write structured services and compute modules with structs, enums, pattern matching, explicit requires/denies capabilities, and stdlib modules (std::fs, std::http, std::json, std::crypto). Native target emits standalone safe Rust source ready for host rustc compilation."
+    SET domain_status TO "Status: Implemented (MVM + Native Rust Codegen; Host rustc for ELF/Mach-O)"
+END
+
+ACTION set_domain_solana
+    SET active_domain TO "solana"
+    SET domain_heading TO "Solana Smart Contracts (Anchor Codegen -> SBF Roadmap)"
+    SET domain_summary TO "Declare PROGRAM, ACCOUNT, and signer REQUIRE constraints in Manifest source. Today the Solana backend validates program IR, emits Anchor Rust (lib.rs) + IDL JSON, and simulates instructions locally. Direct native SBF bytecode emission is a long-term toolchain milestone."
+    SET domain_status TO "Status: Toolchain-Assisted (Anchor Rust + IDL + Local Sim Implemented; Direct SBF Planned)"
+END
+
+ACTION set_domain_mvm
+    SET active_domain TO "mvm"
+    SET domain_heading TO "Manifest Virtual Machine (Rust MVM & .mbc v1.0 Bytecode)"
+    SET domain_summary TO "Deterministic register/stack bytecode VM written in Rust and compiled to WASM for sandboxed execution. Enforces magic/version header verification, bounds checks, HeapArena safety, step budgets, and host capability grants (defaulting sensitive net/fs/crypto/solana to explicit host policy)."
+    SET domain_status TO "Status: Implemented (.mbc Container Verifier + Rust MVM Interpreter)"
+END
+
+ACTION set_domain_ecosystem
+    SET active_domain TO "ecosystem"
+    SET domain_heading TO "Language, Standard Library, Libraries & Frameworks"
+    SET domain_summary TO "Manifest cleanly separates core syntax (Professional & Beginner profiles -> Unified MIR), the built-in Stdlib Registry (std::io, std::str, std::math, std::crypto, std::time, std::json, std::http, std::fs, std::net, std::solana), application frameworks (Web UI & Anchor Adapter), and external SDKs."
+    SET domain_status TO "Status: Implemented (Core + 12 Stdlib Modules; Registry Packages In Progress)"
+END
+
+ACTION submit_feedback
+    IF feedback_email == "" THEN
+        SET feedback_status TO "Please enter a valid email address."
+    ELSE
+        SET feedback_status TO "Recorded locally for release notes preview: " + feedback_email
+    END
+END
+
+PAGE Home ROUTE "/"
+    CSS
+      * { box-sizing: border-box; }
+      body, html { margin: 0; padding: 0; background-color: #121212; color: #cccccc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; line-height: 1.55; }
+      .landing-wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px 80px 24px; }
+      .nav-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 0; border-bottom: 1px solid #2d2d2d; position: sticky; top: 0; background: rgba(18,18,18,0.96); backdrop-filter: blur(8px); z-index: 100; flex-wrap: wrap; }
+      .nav-brand img { height: 28px; width: auto; display: block; }
+      .nav-links { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+      .nav-btn { background: transparent; border: 1px solid transparent; color: #9a9a9a; padding: 6px 11px; border-radius: 5px; font-size: 13px; font-weight: 500; cursor: pointer; }
+      .nav-btn:hover { color: #ffffff; background: #1f1f1f; border-color: #2d2d2d; }
+      .hero-section { text-align: center; padding: 64px 0 48px 0; border-bottom: 1px solid #242424; }
+      .hero-tag { display: inline-block; background: #181818; border: 1px solid #2d2d2d; padding: 4px 12px; border-radius: 4px; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #89d185; margin-bottom: 20px; }
+      .hero-title { font-size: 40px; font-weight: 700; color: #ffffff; letter-spacing: -0.025em; margin: 0 0 14px 0; line-height: 1.18; }
+      .hero-sub { font-size: 16px; color: #a0a0a0; max-width: 760px; margin: 0 auto 28px auto; }
+      .hero-actions { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin-bottom: 36px; }
+      .btn-primary { background: #569cd6; color: #ffffff; border: 1px solid #569cd6; padding: 9px 18px; border-radius: 5px; font-weight: 600; font-size: 13px; cursor: pointer; }
+      .btn-primary:hover { background: #478ac2; }
+      .btn-secondary { background: #1f1f1f; color: #cccccc; border: 1px solid #2d2d2d; padding: 9px 18px; border-radius: 5px; font-weight: 500; font-size: 13px; cursor: pointer; }
+      .btn-secondary:hover { background: #262626; color: #ffffff; border-color: #3d3d3d; }
+      .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; text-align: left; }
+      .metric-card { background: #181818; border: 1px solid #2d2d2d; border-radius: 6px; padding: 14px 16px; }
+      .metric-title { font-size: 13px; font-weight: 600; color: #ffffff; margin-bottom: 4px; font-family: ui-monospace, monospace; }
+      .metric-desc { font-size: 12px; color: #8c8c8c; }
+      .section-box { padding: 52px 0; border-bottom: 1px solid #242424; }
+      .section-title { font-size: 24px; font-weight: 600; color: #ffffff; margin: 0 0 8px 0; letter-spacing: -0.015em; }
+      .section-lead { font-size: 14px; color: #9a9a9a; margin: 0 0 22px 0; max-width: 780px; }
+      .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+      .feature-card { background: #181818; border: 1px solid #2d2d2d; border-radius: 6px; padding: 18px; }
+      .card-title { font-size: 15px; font-weight: 600; color: #ffffff; margin-bottom: 6px; }
+      .card-meta { font-size: 12px; font-family: ui-monospace, monospace; color: #89d185; margin-bottom: 10px; }
+      .code-block { background: #141414; border: 1px solid #2a2a2a; border-radius: 5px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #d4d4d4; white-space: pre-wrap; margin-top: 10px; overflow-x: auto; }
+      .tab-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+      .tab-btn { background: #181818; border: 1px solid #2d2d2d; color: #9a9a9a; padding: 7px 14px; border-radius: 5px; font-size: 12px; font-weight: 500; cursor: pointer; }
+      .tab-btn:hover { color: #ffffff; border-color: #404040; background: #1f1f1f; }
+      .playground-panel { background: #181818; border: 1px solid #2d2d2d; border-radius: 6px; overflow: hidden; }
+      .playground-bar { background: #1f1f1f; border-bottom: 1px solid #2d2d2d; padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+      .playground-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .target-select { background: #141414; color: #cccccc; border: 1px solid #2d2d2d; border-radius: 4px; padding: 6px 10px; font-size: 12px; font-family: ui-monospace, monospace; }
+      .status-text { font-size: 12px; font-family: ui-monospace, monospace; color: #9cdcfe; }
+      .playground-body { display: grid; grid-template-columns: 1fr 1fr; min-height: 270px; }
+      @media(max-width: 768px) {
+        .playground-body { grid-template-columns: 1fr; }
+        .hero-title { font-size: 28px; }
+      }
+      .playground-textarea { width: 100%; min-height: 270px; background: #141414; color: #d4d4d4; border: none; border-right: 1px solid #2d2d2d; padding: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; resize: vertical; outline: none; }
+      .output-pane { background: #101010; padding: 14px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; color: #89d185; overflow-x: auto; white-space: pre-wrap; min-height: 270px; }
+      .feedback-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+      .email-input { background: #141414; color: #ffffff; border: 1px solid #2d2d2d; border-radius: 5px; padding: 9px 12px; font-size: 13px; min-width: 260px; }
+      .footer-wrap { padding: 42px 0 16px 0; text-align: center; font-size: 12px; color: #777777; }
+      .footer-logo img { height: 22px; width: auto; margin: 0 auto 10px auto; display: block; }
+    END
+
+    CONTAINER class: "landing-wrap"
+        // 1. Sticky Navigation Bar
+        CONTAINER class: "nav-bar"
+            CONTAINER class: "nav-brand"
+                IMAGE src: "assets/brand/manifest-logo-dark.svg" alt: "Manifest Programming Language"
+            END
+            CONTAINER class: "nav-links"
+                BUTTON "Overview" class: "nav-btn" id: "nav-overview"
+                BUTTON "Language" class: "nav-btn" id: "nav-language"
+                BUTTON "Targets" class: "nav-btn" id: "nav-targets"
+                BUTTON "Playground" class: "nav-btn" id: "nav-playground"
+                BUTTON "Studio" class: "nav-btn" id: "nav-studio"
+                BUTTON "Docs" class: "nav-btn"
+                    WHEN CLICK
+                        NAVIGATE "/docs"
+                    END
+                END
+            END
+        END
+
+        // 2. Hero Section
+        CONTAINER class: "hero-section" id: "sec-overview"
+            CONTAINER class: "hero-tag"
+                TEXT "Manifest v0.4 / v1.0 Spec • Unified AST, Typed MIR, MVM & Multi-Target Backends"
+            END
+            HEADING "Human-Readable Code. Deterministic Execution." class: "hero-title"
+            TEXT "Manifest is a general-purpose programming language with Beginner and Professional syntax profiles compiling through one semantic checker, capability/effect analyzer, and typed intermediate representation into Rust MVM bytecode (.mbc), Web-JS, WebAssembly (.wasm), Rust native codegen, and Solana Anchor programs." class: "hero-sub"
+            CONTAINER class: "hero-actions"
+                BUTTON "Open Live Playground" class: "btn-primary" id: "hero-playground-btn"
+                BUTTON "Run Hello World (MVM)" class: "btn-secondary"
+                    WHEN CLICK
+                        CALL select_snippet_hello
+                        CALL run_playground
+                    END
+                END
+                BUTTON "Read Language Docs" class: "btn-secondary"
+                    WHEN CLICK
+                        NAVIGATE "/docs"
+                    END
+                END
+            END
+
+            CONTAINER class: "metric-grid"
+                CONTAINER class: "metric-card"
+                    TEXT "1 Canonical Pipeline" class: "metric-title"
+                    TEXT "Beginner and Professional profiles lower to one AST, TypeChecker, Effect Audit & Typed MIR." class: "metric-desc"
+                END
+                CONTAINER class: "metric-card"
+                    TEXT "Rust MVM (.mbc v1.0)" class: "metric-title"
+                    TEXT "Verified bytecode container with HeapArena, instruction gas steps & host capability policies." class: "metric-desc"
+                END
+                CONTAINER class: "metric-card"
+                    TEXT "Web-JS & Direct WASM" class: "metric-title"
+                    TEXT "Reactive DOM UI runtime (APP/PAGE) and standalone numeric W3C .wasm binary emission." class: "metric-desc"
+                END
+                CONTAINER class: "metric-card"
+                    TEXT "Solana Anchor Codegen" class: "metric-title"
+                    TEXT "Translates PROGRAM/ACCOUNT/REQUIRE blocks into Anchor Rust, IDL JSON & local simulation." class: "metric-desc"
+                END
+            END
+        END
+
+        // 3. Language & Dual Syntax Profiles Section
+        CONTAINER class: "section-box" id: "sec-language"
+            HEADING "One Language Semantics, Two Syntax Profiles" class: "section-title"
+            TEXT "Learners and production engineers share one compiler, type system, and runtime behavior. Every module explicitly declares its capabilities (requires / denies) and effect signatures." class: "section-lead"
+            CONTAINER class: "grid-2"
+                CONTAINER class: "feature-card"
+                    TEXT "Professional Profile (Canonical Primary Syntax)" class: "card-title"
+                    TEXT "Static types, structs, enums, match, transitive effect checking & explicit module imports." class: "metric-desc"
+                    TEXT "module settlement;\nrequires console, crypto;\ndenies net;\n\nstruct Batch { id: str, total: i64 }\n\nfn main() -> i64 effects(console, crypto) {\n    let b = Batch { id: \"vault-1\", total: 420 };\n    console.print(std::crypto::sha256(b.id));\n    return b.total;\n}" class: "code-block"
+                END
+                CONTAINER class: "feature-card"
+                    TEXT "Beginner Profile (Structured Educational Syntax)" class: "card-title"
+                    TEXT "Readable keyword syntax lowering to the exact same Typed MIR, verifier, and .mbc bytecode." class: "metric-desc"
+                    TEXT "MODULE settlement\nREQUIRES console\nDENIES net\n\nFUNCTION score(units: Int) RETURNS Int\n    IF units >= 10\n        RETURN units * 2\n    END\n    RETURN units\nEND" class: "code-block"
+                END
+            END
+        END
+
+        // 4. Ecosystem Architecture & Honest Maturity Matrix
+        CONTAINER class: "section-box" id: "sec-targets"
+            HEADING "Ecosystem Architecture & Honest Maturity Status" class: "section-title"
+            TEXT "Manifest distinguishes language semantics, the built-in 12-module standard library, application frameworks (Web UI & Anchor), and concrete platform runtimes." class: "section-lead"
+            CONTAINER class: "tab-row"
+                BUTTON "Web Framework" class: "tab-btn"
+                    WHEN CLICK
+                        CALL set_domain_web
+                    END
+                END
+                BUTTON "Backend & Systems" class: "tab-btn"
+                    WHEN CLICK
+                        CALL set_domain_backend
+                    END
+                END
+                BUTTON "Solana Contracts" class: "tab-btn"
+                    WHEN CLICK
+                        CALL set_domain_solana
+                    END
+                END
+                BUTTON "Rust MVM Runtime" class: "tab-btn"
+                    WHEN CLICK
+                        CALL set_domain_mvm
+                    END
+                END
+                BUTTON "Stdlib & Libraries" class: "tab-btn"
+                    WHEN CLICK
+                        CALL set_domain_ecosystem
+                    END
+                END
+            END
+
+            CONTAINER class: "grid-2"
+                CONTAINER class: "feature-card"
+                    TEXT domain_heading class: "card-title"
+                    TEXT domain_status class: "card-meta"
+                    TEXT domain_summary class: "metric-desc"
+                END
+                CONTAINER class: "feature-card"
+                    TEXT "Verification Matrix (Current Build)" class: "card-title"
+                    TEXT "• Rust MVM (.mbc): Implemented (Compiler -> Verifier -> WASM VM)\n• Web Reactive DOM (web-js): Implemented (APP/PAGE + Asset Bundling)\n• WebAssembly (.wasm): Implemented (Numeric MVP Binary Emitter)\n• Solana SBF: Toolchain-Assisted (Anchor Rust + IDL + Local Sim)\n• Native OS Binary: Toolchain-Assisted (Safe Rust Codegen -> Host rustc)\n• LLVM IR / EVM / Move / TON: Planned (Not yet implemented)" class: "code-block"
+                END
+            END
+        END
+
+        // 5. Real Interactive Playground
+        CONTAINER class: "section-box" id: "sec-playground"
+            HEADING "Live Compiler & Runtime Playground" class: "section-title"
+            TEXT "Edit any Manifest source below, pick a target backend, and execute through the real compiler pipeline and Rust MVM / WebAssembly / Solana runtime bridge." class: "section-lead"
+            CONTAINER class: "tab-row"
+                BUTTON "Hello World (MVM)" class: "tab-btn"
+                    WHEN CLICK
+                        CALL select_snippet_hello
+                    END
+                END
+                BUTTON "Fibonacci (WASM)" class: "tab-btn"
+                    WHEN CLICK
+                        CALL select_snippet_wasm
+                    END
+                END
+                BUTTON "Beginner Profile (MVM)" class: "tab-btn"
+                    WHEN CLICK
+                        CALL select_snippet_beginner
+                    END
+                END
+                BUTTON "Web Counter (Web-JS)" class: "tab-btn"
+                    WHEN CLICK
+                        CALL select_snippet_web
+                    END
+                END
+                BUTTON "Solana Vault (Anchor)" class: "tab-btn"
+                    WHEN CLICK
+                        CALL select_snippet_solana
+                    END
+                END
+            END
+
+            CONTAINER class: "playground-panel"
+                CONTAINER class: "playground-bar"
+                    CONTAINER class: "playground-controls"
+                        TEXT "Status: " + playground_status class: "status-text"
+                        SELECT INTO playground_target class: "target-select"
+                            OPTION "mvm" "Manifest VM (.mbc)"
+                            OPTION "wasm" "WebAssembly (.wasm)"
+                            OPTION "web-js" "Web Reactive (JS)"
+                            OPTION "solana-sbf" "Solana (Anchor + Sim)"
+                            OPTION "native" "Native (Rust Source)"
+                        END
+                    END
+                    CONTAINER class: "playground-controls"
+                        BUTTON "Reset" class: "btn-secondary"
+                            WHEN CLICK
+                                CALL reset_playground
+                            END
+                        END
+                        BUTTON "Compile & Run" class: "btn-primary"
+                            WHEN CLICK
+                                CALL run_playground
+                            END
+                        END
+                    END
+                END
+                CONTAINER class: "playground-body"
+                    TEXTAREA INTO playground_code PLACEHOLDER "Write Manifest code..." class: "playground-textarea"
+                    TEXT playground_output class: "output-pane"
+                END
+            END
+        END
+
+        // 6. Manifest Studio IDE Section
+        CONTAINER class: "section-box" id: "sec-studio"
+            HEADING "Manifest Studio — Integrated Developer Environment" class: "section-title"
+            TEXT "Built on CodeMirror 6 with matte charcoal panels (#181818 / #1f1f1f / #2d2d2d), separating editing, live previews, diagnostics, asset management, and ecosystem inspection cleanly across desktop and mobile." class: "section-lead"
+            CONTAINER class: "grid-2"
+                CONTAINER class: "feature-card"
+                    TEXT "Asset Manager & Build Bundling" class: "card-title"
+                    TEXT "Import images, sanitized SVGs, audio, video, fonts, and datasets under assets/. Paths resolve cleanly inside the sandboxed preview iframe and copy into build/assets/ with build/asset-manifest.json on Web builds." class: "metric-desc"
+                END
+                CONTAINER class: "feature-card"
+                    TEXT "Ecosystem, Docs & Solana Cluster Tools" class: "card-title"
+                    TEXT "Inspect the 12 built-in stdlib modules and target matrix, browse live language reference docs, and verify Solana Anchor artifacts with deterministic instruction simulation and server-proxied RPC." class: "metric-desc"
+                END
+            END
+        END
+
+        // 7. Release Notes & Feedback
+        CONTAINER class: "section-box"
+            HEADING "Follow Manifest Engineering Milestones" class: "section-title"
+            TEXT "Track compiler targets, standard library additions, and Solana SBF pipeline updates." class: "section-lead"
+            CONTAINER class: "feedback-row"
+                INPUT placeholder: "developer@domain.org" bind: feedback_email class: "email-input"
+                BUTTON "Request Updates" class: "btn-primary"
+                    WHEN CLICK
+                        CALL submit_feedback
+                    END
+                END
+            END
+            TEXT feedback_status class: "status-text"
+        END
+
+        // 8. Footer
+        CONTAINER class: "footer-wrap"
+            CONTAINER class: "footer-logo"
+                IMAGE src: "assets/brand/manifest-wordmark.svg" alt: "Manifest"
+            END
+            TEXT "Manifest Programming Language Ecosystem — Built with real compiler & runtime verification."
+            TEXT "Web • Backend & Systems • MVM Bytecode • WebAssembly • Solana Smart Contracts"
+        END
+    END
+
+    JS
+      // Smooth anchor navigation bindings inside rendered document
+      const bindScroll = (btnId, secId) => {
+        const el = document.getElementById(btnId);
+        if (el) {
+          el.addEventListener('click', () => {
+            const target = document.getElementById(secId);
+            if (target && target.scrollIntoView) {
+              target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+          });
+        }
+      };
+      bindScroll('nav-overview', 'sec-overview');
+      bindScroll('nav-language', 'sec-language');
+      bindScroll('nav-targets', 'sec-targets');
+      bindScroll('nav-playground', 'sec-playground');
+      bindScroll('hero-playground-btn', 'sec-playground');
+      bindScroll('nav-studio', 'sec-studio');
+
+      // Real compiler & Rust MVM / WASM / Solana bridge for the Interactive Playground
+      const runRealPlaygroundCompile = async () => {
+        const src = String(__manifest.state.playground_code || '');
+        const tgt = String(__manifest.state.playground_target || 'mvm');
+        __manifest.state.playground_status = 'Compiling...';
+        __manifest.state.playground_output = 'Compiling and executing target "' + tgt + '"...';
+        __manifest.notifyState();
+
+        // 1. Inside Studio PreviewPanel sandboxed iframe -> use validated postMessage bridge
+        if (typeof window !== 'undefined' && window.parent && window.parent !== window) {
+          const reqId = 'pg-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+          try {
+            const res = await new Promise((resolve, reject) => {
+              const timer = setTimeout(() => {
+                window.removeEventListener('message', onReply);
+                reject(new Error('Compiler bridge timed out after 8000ms'));
+              }, 8000);
+              const onReply = (ev) => {
+                if (!ev.data || ev.data.type !== 'manifest-playground-result' || ev.data.id !== reqId) {
+                  return;
+                }
+                clearTimeout(timer);
+                window.removeEventListener('message', onReply);
+                resolve(ev.data);
+              };
+              window.addEventListener('message', onReply);
+              window.parent.postMessage(
+                { type: 'manifest-playground-compile', id: reqId, source: src, target: tgt },
+                '*'
+              );
+            });
+            __manifest.state.playground_status = res.success ? 'Executed (' + (res.durationMs || 0) + 'ms)' : 'Halted';
+            __manifest.state.playground_output = String(res.output || '');
+            __manifest.notifyState();
+            return;
+          } catch (bridgeErr) {
+            __manifest.state.playground_status = 'Bridge Unavailable';
+            __manifest.state.playground_output = 'Bridge Error: ' + (bridgeErr && bridgeErr.message ? bridgeErr.message : String(bridgeErr));
+            __manifest.notifyState();
+            return;
+          }
+        }
+
+        // 2. Standalone browser page served by Express server -> call POST /api/compile
+        try {
+          const resp = await fetch('/api/compile', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ source: src, target: tgt === 'solana-sbf' ? 'js' : tgt })
+          });
+          const data = await resp.json();
+          if (data.success) {
+            __manifest.state.playground_status = 'Compiled';
+            __manifest.state.playground_output = data.outputCode || data.disassembly || JSON.stringify(data, null, 2);
+          } else {
+            __manifest.state.playground_status = 'Error';
+            __manifest.state.playground_output = data.error || JSON.stringify(data.diagnostics || data, null, 2);
+          }
+          __manifest.notifyState();
+        } catch (err) {
+          __manifest.state.playground_status = 'Error';
+          __manifest.state.playground_output = 'Request failed: ' + (err && err.message ? err.message : String(err));
+          __manifest.notifyState();
+        }
+      };
+
+      __manifest.registerAction('run_playground', runRealPlaygroundCompile);
+    END
+END
+
+PAGE Docs ROUTE "/docs"
+    CONTAINER class: "landing-wrap"
+        CONTAINER class: "nav-bar"
+            CONTAINER class: "nav-brand"
+                IMAGE src: "assets/brand/manifest-logo-dark.svg" alt: "Manifest Documentation"
+            END
+            CONTAINER class: "nav-links"
+                BUTTON "Back to Overview" class: "btn-secondary"
+                    WHEN CLICK
+                        NAVIGATE "/"
+                    END
+                END
+            END
+        END
+
+        CONTAINER class: "section-box"
+            HEADING "Manifest Language Reference (v0.4 / v1.0)" class: "section-title"
+            TEXT "Canonical language reference matching current parser, semantic checker, MIR, and runtime behavior." class: "section-lead"
+
+            CONTAINER class: "grid-2"
+                CONTAINER class: "feature-card"
+                    TEXT "Module Structure & Capabilities" class: "card-title"
+                    TEXT "module app_name;\nrequires console, crypto;\ndenies net, fs;\n\nfn main() -> i64 effects(console) {\n    console.print(\"Deterministic start\");\n    return 0;\n}" class: "code-block"
+                END
+                CONTAINER class: "feature-card"
+                    TEXT "Data Types & Control Flow" class: "card-title"
+                    TEXT "struct Order { id: i64, active: bool }\nenum Outcome { Ok(i64), Err(str) }\n\nmatch result {\n    Outcome::Ok(v) => v,\n    Outcome::Err(msg) => 0,\n}" class: "code-block"
+                END
+                CONTAINER class: "feature-card"
+                    TEXT "Declarative Web Applications" class: "card-title"
+                    TEXT "APP \"MyApp\"\nROUTE \"/\" TO Home\nSTATE count TO 0\n\nPAGE Home ROUTE \"/\"\n    HEADING \"Count: \" + count\n    BUTTON \"Add\"\n        WHEN CLICK\n            SET count TO count + 1\n        END\n    END\nEND" class: "code-block"
+                END
+                CONTAINER class: "feature-card"
+                    TEXT "Solana Program Declarations" class: "card-title"
+                    TEXT "APP \"VaultDApp\"\nUSE SOLANA\n\nPROGRAM Vault\n    ACCOUNT State\n        balance: NUMBER\n        authority: ADDRESS\n    END\n    INSTRUCTION deposit\n        REQUIRE signer = authority\n        SET balance = balance + 10\n    END\nEND" class: "code-block"
+                END
+            END
+        END
+
+        CONTAINER class: "footer-wrap"
+            TEXT "Manifest Reference • For interactive inspection, open the Docs and Ecosystem panels in Manifest Studio."
+        END
+    END
+END

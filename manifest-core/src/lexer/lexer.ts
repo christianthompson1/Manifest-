@@ -353,8 +353,18 @@ export class Lexer {
     this.column++;
 
     let val = '';
-    while (this.position < this.source.length && this.source[this.position] !== quote) {
-      if (this.source[this.position] === '\n') {
+    while (this.position < this.source.length) {
+      const ch = this.source[this.position];
+      if (ch === '\\' && this.position + 1 < this.source.length) {
+        val += this.source[this.position + 1];
+        this.position += 2;
+        this.column += 2;
+        continue;
+      }
+      if (ch === quote) {
+        break;
+      }
+      if (ch === '\n') {
         throw new ManifestError(
           'Unclosed string literal: string was never closed before the line ended',
           startLine,
@@ -362,7 +372,7 @@ export class Lexer {
           'Make sure every string is closed on the same line with matching quotes.'
         );
       }
-      val += this.source[this.position];
+      val += ch;
       this.position++;
       this.column++;
     }
