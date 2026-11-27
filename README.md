@@ -1,24 +1,25 @@
-# Manifest & Manifest Studio
-
-**Manifest** is a high-level, general-purpose programming language designed around readable syntax, explicit capabilities, verifiable effects, portable execution, and multiple compilation targets.
-
-**Manifest Studio** is an offline-capable integrated development environment for writing, statically checking, compiling, inspecting, and executing Manifest programs—alongside multi-file static web projects, standalone WebAssembly (`.wasm`) modules, and Solana smart-contract simulation.
-
----
 
 ## 1. Core Identity & Domains
 
-Manifest is a general-purpose programming language with its own formal semantics, static type system, capability/effect verifier, Typed Intermediate Representation (MIR), portable binary bytecode format (`.mbc` v1.0), and memory-safe Rust Virtual Machine (`mvm`). It is designed to span:
+# Manifest & Manifest Studio
 
-1. **General-purpose software development** — structs, algebraic enums, pattern matching, generics, modules, and deterministic resource bounds.
-2. **Backend, CLI, and automation/scripting** — explicit `fs.read`, `fs.write`, `net`, `db`, `time`, `crypto`, and `console` capabilities enforced at both compile time and runtime.
-3. **Data processing & algorithmic workloads** — checked 64-bit integer arithmetic (`i64`), IEEE-754 floats (`f64`), typed arrays, maps, and pure effect-verified pipelines.
-4. **Systems & portable execution** — lowering to `.mbc` bytecode on the Rust Manifest Virtual Machine (`mvm`), standalone W3C WebAssembly (`.wasm`), or standalone memory-safe Rust source for native host compilation (`rustc`).
-5. **Web application development** — capability-restricted ES JavaScript modules (`web-js`) mounted inside a strict `<iframe sandbox="allow-scripts">` preview, alongside multi-file static web projects (`index.html`, CSS, JS).
-6. **Smart-contract development** — standalone Solana smart contracts (`PROGRAM ... END`) compiled to Anchor Rust + IDL with deterministic LiteSVM and account/invariant simulation.
-7. **Desktop & game logic foundations** — embeddable `#![forbid(unsafe_code)]` Rust VM (`mvm-core`) with deterministic step budgets and host FFI capability gates.
+**Manifest** is a capability-secure, deterministic programming language and `#![forbid(unsafe_code)]` Rust Virtual Machine (`mvm`) built for running untrusted plugins, AI agent sandboxes, and verifiable programs with bounded resources.
+
+**Manifest Studio** is a zero-install, offline-capable browser IDE for writing, statically verifying, compiling, and inspecting Manifest programs with support for `.mbc` bytecode, WebAssembly, and inspectable Solana Anchor Rust + IDL generation.
 
 ---
+
+## Why Manifest?
+
+Modern scripting runtimes (JS, Python, Lua) grant scripts ambient authority by default. Manifest enforces **explicit, verifiable capabilities** from source code down to the VM:
+
+1. **Compile-Time & Runtime Capability Gates** — Scripts must explicitly declare `requires` / `denies` (`console`, `fs.read`, `fs.write`, `net`, `crypto`, `db`). Permissions are verified statically, embedded in the `.mbc` binary header, and enforced by the Rust VM at runtime.
+2. **Deterministic Resource Bounds** — `mvm-core` (`#![forbid(unsafe_code)]`) executes bytecode with strict step budgets and explicit host FFI boundaries—ideal for embedding untrusted plugins or AI-generated code inside Rust applications.
+3. **Two Interchangeable Syntax Profiles** — Write in concise **Professional** syntax (`fn`, `{}`) or readable **Beginner** syntax (`FUNCTION ... END`). Both normalize to the exact same AST, Typed IR, and `.mbc` bytecode.
+4. **Zero-Install Browser IDE & Solana Anchor Lowering** — Author and inspect bytecode, Typed IR, or generated Anchor Rust + IDL directly in **Manifest Studio** without heavy local toolchains.
+
+---
+
 
 ## 2. Two Syntax Profiles, One Language
 
@@ -96,5 +97,3 @@ npm run dev
 npm run build
 ```
 
-### Server-Side Solana RPC Proxy Note
-Solana Devnet/Mainnet RPC requests from the optional Studio deploy modal route through `/api/solana/rpc` in `server.ts`. Configure `HELIUS_API_KEY` only in server-side `.env` (see `.env.example`, never prefixed with `VITE_`); when unset, `server.ts` falls back to public Solana RPC endpoints.
