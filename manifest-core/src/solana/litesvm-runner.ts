@@ -30,6 +30,7 @@ import bs58 from 'bs58';
 import { SolanaProgramIR } from './solana-ir.ts';
 import { AnchorGenerator } from './anchor-generator.ts';
 import { LiteSVMStepResult, LiteSVMTestSuiteResult } from './litesvm-types.ts';
+import { computeAggregateCounts } from '../verification/result-model.ts';
 
 export type { LiteSVMStepResult, LiteSVMTestSuiteResult };
 
@@ -85,6 +86,10 @@ export class LiteSVMRunner {
           stepName: '1. Fund and Transfer SOL',
           instructionName: 'system_transfer',
           success: false,
+          status: 'failed',
+          compilation: 'not-attempted',
+          execution: 'executed',
+          backend: 'litesvm',
           signature: '',
           computeUnitsUsed: 0,
           logs: [],
@@ -103,6 +108,10 @@ export class LiteSVMRunner {
           stepName: '1. Fund and Transfer SOL',
           instructionName: 'system_transfer',
           success: true,
+          status: 'passed',
+          compilation: 'not-attempted',
+          execution: 'executed',
+          backend: 'litesvm',
           signature: sig1,
           computeUnitsUsed: cu1,
           logs: res1.logs(),
@@ -127,6 +136,10 @@ export class LiteSVMRunner {
         stepName: '1. Fund and Transfer SOL',
         instructionName: 'system_transfer',
         success: false,
+        status: 'failed',
+        compilation: 'not-attempted',
+        execution: 'executed',
+        backend: 'litesvm',
         signature: '',
         computeUnitsUsed: 0,
         logs: [],
@@ -165,6 +178,10 @@ export class LiteSVMRunner {
         stepName: '2. Security Constraint Check: Unauthorized Signer Rejection',
         instructionName: 'security_signer_check',
         success: isRejected,
+        status: isRejected ? 'passed' : 'failed',
+        compilation: 'not-attempted',
+        execution: 'executed',
+        backend: 'litesvm',
         signature: isRejected ? 'rejected-correctly' : 'security-breach',
         computeUnitsUsed: 0,
         logs: isRejected
@@ -179,6 +196,10 @@ export class LiteSVMRunner {
         stepName: '2. Security Constraint Check: Unauthorized Signer Rejection',
         instructionName: 'security_signer_check',
         success: true,
+        status: 'passed',
+        compilation: 'not-attempted',
+        execution: 'executed',
+        backend: 'litesvm',
         signature: 'rejected-with-exception',
         computeUnitsUsed: 0,
         logs: [`Transaction creation/submission threw as expected: ${err.message}`],
@@ -212,6 +233,10 @@ export class LiteSVMRunner {
         stepName: '3. Security Constraint Check: Insufficient Balance Rejection',
         instructionName: 'security_balance_check',
         success: isUnderflowRejected,
+        status: isUnderflowRejected ? 'passed' : 'failed',
+        compilation: 'not-attempted',
+        execution: 'executed',
+        backend: 'litesvm',
         signature: isUnderflowRejected ? 'rejected-correctly' : 'underflow-failure',
         computeUnitsUsed: 0,
         logs: isUnderflowRejected
@@ -225,6 +250,10 @@ export class LiteSVMRunner {
         stepName: '3. Security Constraint Check: Insufficient Balance Rejection',
         instructionName: 'security_balance_check',
         success: true,
+        status: 'passed',
+        compilation: 'not-attempted',
+        execution: 'executed',
+        backend: 'litesvm',
         signature: 'rejected-with-exception',
         computeUnitsUsed: 0,
         logs: [`Overdraft transaction threw as expected: ${err.message}`],
@@ -232,7 +261,7 @@ export class LiteSVMRunner {
       });
     }
 
-    // STEP 4: Real Instruction Constraint Verification
+    // STEP 4: Custom Instruction Static Analysis (NOT executed on SBF VM without compiled .so)
     for (let i = 0; i < program.instructions.length; i++) {
       const inst = program.instructions[i];
       const stepTitle = `${i + 4}. Analyze Instruction: ${inst.name}`;
@@ -240,15 +269,20 @@ export class LiteSVMRunner {
       steps.push({
         stepName: stepTitle,
         instructionName: inst.name,
-        success: true,
+        success: false,
+        status: 'skipped',
+        compilation: compilation.rustCode ? 'generated-source-only' : 'failed',
+        execution: 'analyzed-only',
+        backend: 'static-analysis',
+        reason: 'Compiled SBF ELF binary (.so) required for real LiteSVM instruction execution',
         signature: 'analyzed-uncompiled',
         computeUnitsUsed: 0,
         logs: [
-          `Program ${program.programId} instruction analyzed: ${inst.name}`,
+          `Program ${program.programId} instruction analyzed statically: ${inst.name}`,
           `Required constraints declared: ${inst.requires.length}`,
           `Declared account mutations: [${inst.mutations.map((m) => m.target).join(', ')}]`,
           `Anchor Rust handler generated for instruction '${inst.name}'`,
-          `Notice: Compiled SBF binary (.so) required for real LiteSVM bytecode execution (available via CI/CLI build)`,
+          `Execution status: SKIPPED (compiled SBF binary .so required for real LiteSVM bytecode execution)`,
         ],
         accountsState: [
           {
@@ -261,34 +295,45 @@ export class LiteSVMRunner {
       });
     }
 
-    // STEP 5: Honest Security & SBF Execution Status
+    // STEP 5: Honest Security & SBF Execution Status (metadata check, not counted as passed VM test)
     steps.push({
       stepName: `${program.instructions.length + 4}. SBF Execution Environment Check`,
       instructionName: 'sbf_environment_check',
-      success: true,
+      success: false,
+      status: 'skipped',
+      compilation: compilation.rustCode ? 'generated-source-only' : 'not-attempted',
+      execution: 'not-run',
+      backend: 'static-analysis',
+      reason: 'Custom SBF binary (.so) compilation and on-chain execution require local/CI Solana CLI & Anchor',
       signature: 'env-status-verified',
       computeUnitsUsed: 0,
       logs: [
-        'Solana runtime check: Native SystemProgram operations fully verified in LiteSVM',
-        'Negative security checks passed: Unauthorized signers and balance underflows successfully rejected',
-        'Custom instruction execution status: Requires compiled SBF ELF binary (.so)',
+        'Solana runtime check: Built-in SystemProgram operations executed in LiteSVM',
+        'Negative security checks executed: Unauthorized signers and balance underflows rejected by LiteSVM',
+        'Custom instruction execution status: NOT EXECUTED (requires compiled SBF ELF binary .so)',
         'GitHub Actions workflow (.github/workflows/solana-sbf-build.yml) builds SBF binary via Solana CLI & Anchor',
-        'Zero fake or simulated execution reported.',
       ],
       accountsState: [],
     });
 
-    const passed = steps.filter((s) => s.success).length;
-    const failed = steps.filter((s) => !s.success).length;
+    const counts = computeAggregateCounts(steps);
+    const hasExecutionFailure = counts.failed > 0;
+    const allExecutedPassed = !hasExecutionFailure && counts.passed > 0;
 
     return {
-      success: failed === 0,
+      success: allExecutedPassed,
+      status: hasExecutionFailure ? 'failed' : allExecutedPassed ? 'passed' : 'not-run',
+      execution: 'executed',
+      backend: 'litesvm',
       programName: program.programName,
       programId: program.programId,
       durationMs: Math.round(performance.now() - startTime),
-      stepsCount: steps.length,
-      passedCount: passed,
-      failedCount: failed,
+      stepsCount: counts.total,
+      passedCount: counts.passed,
+      failedCount: counts.failed,
+      skippedCount: counts.skipped,
+      unsupportedCount: counts.unsupported,
+      notRunCount: counts.notRun,
       totalComputeUnits,
       steps,
       idl: compilation.idl,

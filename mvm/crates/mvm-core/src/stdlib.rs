@@ -9,13 +9,14 @@ pub fn try_invoke_pure(
 ) -> Result<Option<Value>, MvmError> {
     match symbol {
         "std::math::abs" | "math.abs" | "abs" => match args.first() {
-            Some(Value::I64(n)) => n
-                .checked_abs()
-                .map(|v| Some(Value::I64(v)))
-                .ok_or(MvmError::IntegerOverflow {
-                    op: "abs",
-                    line: None,
-                }),
+            Some(Value::I64(n)) => {
+                n.checked_abs()
+                    .map(|v| Some(Value::I64(v)))
+                    .ok_or(MvmError::IntegerOverflow {
+                        op: "abs",
+                        line: None,
+                    })
+            }
             Some(Value::F64(n)) => Ok(Some(Value::F64(n.abs()))),
             _ => Err(MvmError::TypeMismatch {
                 expected: "i64 or f64",
@@ -123,7 +124,7 @@ pub fn try_invoke_pure(
         },
         "to_i64" | "std::conv::to_i64" => match args.first() {
             Some(Value::I64(n)) => Ok(Some(Value::I64(*n))),
-            Some(Value::F64(n)) => Ok(Some(Value::I64(*n as i64))),
+            Some(Value::F64(n)) => Ok(Some(Value::I64(checked_f64_to_i64(*n, None)?))),
             _ => Err(MvmError::TypeMismatch {
                 expected: "i64 or f64",
                 actual: args.first().map(|v| v.type_name()).unwrap_or("none"),
@@ -132,6 +133,31 @@ pub fn try_invoke_pure(
         },
         _ => Ok(None),
     }
+}
+
+/// Converts finite `f64` to `i64` by truncating toward zero, matching IEEE-754 / W3C WASM
+/// `i64.trunc_f64_s` semantics: valid truncated values satisfy `-2^63 <= trunc < 2^63`.
+/// Traps on NaN, ±Infinity, and out-of-range values.
+pub fn checked_f64_to_i64(n: f64, line: Option<u32>) -> Result<i64, MvmError> {
+    if !n.is_finite() {
+        return Err(MvmError::NumericConversionTrap {
+            from: "f64",
+            to: "i64",
+            value: n.to_string(),
+            line,
+        });
+    }
+    let truncated = n.trunc();
+    if truncated < -9223372036854775808.0_f64 || truncated >= 9223372036854775808.0_f64 {
+        return Err(MvmError::NumericConversionTrap {
+            from: "f64",
+            to: "i64",
+            value: n.to_string(),
+            line,
+        });
+    }
+    let normalized = if truncated == 0.0 { 0.0 } else { truncated };
+    Ok(normalized as i64)
 }
 
 /// Real SHA-256 implementation (FIPS 180-4) in pure safe Rust with zero external crates.
@@ -162,7 +188,8 @@ pub fn deterministic_hash_hex(data: &[u8]) -> String {
     }
     msg.extend_from_slice(&bit_len.to_be_bytes());
 
-    for chunk in msg.chunks_exact(64) {
+    for chunk_start in (0..msg.len()).step_by(64) {
+        let chunk = &msg[chunk_start..chunk_start + 64];
         let mut w = [0u32; 64];
         for i in 0..16 {
             let mut b = [0u8; 4];

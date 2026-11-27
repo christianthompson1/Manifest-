@@ -29,16 +29,18 @@ export interface CapabilityAuditReport {
   diagnostics: SemanticDiagnostic[];
 }
 
+export function capabilityCovers(declaredOrDenied: string, actualEffect: string): boolean {
+  if (!declaredOrDenied || !actualEffect) return false;
+  if (declaredOrDenied === actualEffect) return true;
+  return actualEffect.startsWith(`${declaredOrDenied}.`);
+}
+
 function capabilityMatches(declaredOrDenied: string, actualEffect: string): boolean {
-  return (
-    declaredOrDenied === actualEffect ||
-    actualEffect.startsWith(`${declaredOrDenied}.`) ||
-    declaredOrDenied.startsWith(`${actualEffect}.`)
-  );
+  return capabilityCovers(declaredOrDenied, actualEffect);
 }
 
 function isDeniedBy(denied: string, actualEffect: string): boolean {
-  return denied === actualEffect || actualEffect.startsWith(`${denied}.`);
+  return capabilityCovers(denied, actualEffect);
 }
 
 /**

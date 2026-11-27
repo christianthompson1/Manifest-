@@ -3,6 +3,8 @@ import {
   AssignTarget,
   BinaryOp,
   CapabilitySummaryDecl,
+  CommentNode,
+  CommentStyle,
   ConstDecl,
   EnumDecl,
   EnumVariantDecl,
@@ -41,11 +43,36 @@ const TWO_CHAR_OPS = new Set(['==', '!=', '<=', '>=', '&&', '||', '->', '=>', ':
 const SINGLE_OPS = new Set(['+', '-', '*', '/', '%', '<', '>', '!', '=', '?']);
 const PUNCTS = new Set(['{', '}', '(', ')', '[', ']', ';', ',', ':', '.']);
 
-function tokenizeProfessional(source: string): PToken[] {
+function decodeEscape(source: string, indexRef: { i: number }, advance: (n?: number) => void): string {
+  const esc = source[indexRef.i];
+  if (esc === 'n') { advance(1); return '\n'; }
+  if (esc === 't') { advance(1); return '\t'; }
+  if (esc === 'r') { advance(1); return '\r'; }
+  if (esc === '0') { advance(1); return '\0'; }
+  if (esc === '\\') { advance(1); return '\\'; }
+  if (esc === '"') { advance(1); return '"'; }
+  if (esc === "'") { advance(1); return "'"; }
+  if (esc === 'x' && /^[0-9a-fA-F]{2}/.test(source.slice(indexRef.i + 1, indexRef.i + 3))) {
+    const code = parseInt(source.slice(indexRef.i + 1, indexRef.i + 3), 16);
+    advance(3);
+    return String.fromCharCode(code);
+  }
+  if (esc === 'u' && /^[0-9a-fA-F]{4}/.test(source.slice(indexRef.i + 1, indexRef.i + 5))) {
+    const code = parseInt(source.slice(indexRef.i + 1, indexRef.i + 5), 16);
+    advance(5);
+    return String.fromCharCode(code);
+  }
+  advance(1);
+  return esc;
+}
+
+function tokenizeProfessional(source: string): { tokens: PToken[]; comments: CommentNode[] } {
   const tokens: PToken[] = [];
+  const comments: CommentNode[] = [];
   let i = 0;
   let line = 1;
   let col = 1;
+  let lastCodeLine = 0;
 
   const advance = (n = 1) => {
     for (let k = 0; k < n; k++) {
@@ -59,6 +86,11 @@ function tokenizeProfessional(source: string): PToken[] {
     }
   };
 
+  const pushToken = (tok: PToken) => {
+    tokens.push(tok);
+    lastCodeLine = tok.line;
+  };
+
   while (i < source.length) {
     const ch = source[i];
 
@@ -68,9 +100,32 @@ function tokenizeProfessional(source: string): PToken[] {
       continue;
     }
 
-    // Line comments // or --
+    // Line comments //, ///, or --
     if ((ch === '/' && source[i + 1] === '/') || (ch === '-' && source[i + 1] === '-')) {
-      while (i < source.length && source[i] !== '\n') advance(1);
+      const startLine = line;
+      const startCol = col;
+      let style: CommentStyle = ch === '-' ? '--' : '//';
+      if (style === '//' && source[i + 2] === '/') {
+        style = '///';
+        advance(3);
+      } else {
+        advance(2);
+      }
+      let body = '';
+      while (i < source.length && source[i] !== '\n') {
+        if (source[i] !== '\r') body += source[i];
+        advance(1);
+      }
+      comments.push({
+        kind: 'line',
+        style,
+        body,
+        line: startLine,
+        column: startCol,
+        endLine: startLine,
+        endColumn: col,
+        trailing: lastCodeLine === startLine,
+      });
       continue;
     }
 
@@ -79,13 +134,25 @@ function tokenizeProfessional(source: string): PToken[] {
       const startLine = line;
       const startCol = col;
       advance(2);
+      let body = '';
       while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) {
+        if (source[i] !== '\r') body += source[i];
         advance(1);
       }
       if (i >= source.length) {
         throw new ManifestError('Unterminated block comment', startLine, startCol, 'lexer');
       }
       advance(2);
+      comments.push({
+        kind: 'block',
+        style: 'block',
+        body,
+        line: startLine,
+        column: startCol,
+        endLine: line,
+        endColumn: col,
+        trailing: lastCodeLine === startLine,
+      });
       continue;
     }
 
@@ -100,15 +167,8 @@ function tokenizeProfessional(source: string): PToken[] {
         if (source[i] === '\\') {
           advance(1);
           if (i >= source.length) break;
-          const esc = source[i];
-          if (esc === 'n') str += '\n';
-          else if (esc === 't') str += '\t';
-          else if (esc === 'r') str += '\r';
-          else if (esc === '\\') str += '\\';
-          else if (esc === '"') str += '"';
-          else if (esc === "'") str += "'";
-          else str += esc;
-          advance(1);
+          const idxRef = { i };
+          str += decodeEscape(source, idxRef, advance);
         } else {
           str += source[i];
           advance(1);
@@ -118,7 +178,7 @@ function tokenizeProfessional(source: string): PToken[] {
         throw new ManifestError('Unterminated string literal', startLine, startCol, 'lexer');
       }
       advance(1);
-      tokens.push({ kind: 'string', value: str, line: startLine, col: startCol });
+      pushToken({ kind: 'string', value: str, line: startLine, col: startCol });
       continue;
     }
 
@@ -141,7 +201,7 @@ function tokenizeProfessional(source: string): PToken[] {
           advance(1);
         }
       }
-      tokens.push({
+      pushToken({
         kind: isFloat ? 'float' : 'int',
         value: num,
         line: startLine,
@@ -153,21 +213,21 @@ function tokenizeProfessional(source: string): PToken[] {
     // Two-character operators
     const two = source.slice(i, i + 2);
     if (TWO_CHAR_OPS.has(two)) {
-      tokens.push({ kind: 'op', value: two, line, col });
+      pushToken({ kind: 'op', value: two, line, col });
       advance(2);
       continue;
     }
 
     // Single-character operators
     if (SINGLE_OPS.has(ch)) {
-      tokens.push({ kind: 'op', value: ch, line, col });
+      pushToken({ kind: 'op', value: ch, line, col });
       advance(1);
       continue;
     }
 
     // Punctuation
     if (PUNCTS.has(ch)) {
-      tokens.push({ kind: 'punct', value: ch, line, col });
+      pushToken({ kind: 'punct', value: ch, line, col });
       advance(1);
       continue;
     }
@@ -187,7 +247,7 @@ function tokenizeProfessional(source: string): PToken[] {
         id += source[i];
         advance(1);
       }
-      tokens.push({ kind: 'ident', value: id, line: startLine, col: startCol });
+      pushToken({ kind: 'ident', value: id, line: startLine, col: startCol });
       continue;
     }
 
@@ -195,22 +255,26 @@ function tokenizeProfessional(source: string): PToken[] {
   }
 
   tokens.push({ kind: 'eof', value: '', line, col });
-  return tokens;
+  return { tokens, comments };
 }
 
 export class ProfessionalParser {
   private tokens: PToken[];
+  private comments: CommentNode[];
   private pos = 0;
   private file?: string;
 
   constructor(source: string, file?: string) {
-    this.tokens = tokenizeProfessional(source);
+    const lexed = tokenizeProfessional(source);
+    this.tokens = lexed.tokens;
+    this.comments = lexed.comments;
     this.file = file;
   }
 
   public parseModule(): SemanticModule {
     const first = this.peek();
     let moduleName = 'main';
+    let headerSpan: SourceSpan | undefined;
     const imports: ImportDecl[] = [];
     const capabilities: CapabilitySummaryDecl = { requires: [], provides: [], denies: [] };
     const structs: StructDecl[] = [];
@@ -230,9 +294,10 @@ export class ProfessionalParser {
 
     // Optional `module foo.bar;` or `mod foo.bar;`
     if (this.checkIdent('module') || this.checkIdent('mod')) {
-      this.next();
+      const modStart = this.next();
       moduleName = this.parseDottedIdent();
-      this.eatPunct(';');
+      const modEnd = this.eatPunct(';') || this.prev();
+      headerSpan = this.makeSpan(modStart, modEnd);
     }
 
     while (!this.isEof()) {
@@ -288,13 +353,14 @@ export class ProfessionalParser {
       topLevelStmts.push(this.parseStmt());
     }
 
-    const last = this.peek();
+    const last = this.prev();
     return {
       kind: 'SemanticModule',
       profile: 'professional',
       moduleName,
-      isLegacyApp: false,
-      hasDomainExtensions: { webUI: false, solanaContract: false },
+      headerSpan,
+      comments: this.comments,
+      isSolanaContract: false,
       imports,
       capabilities,
       structs,
@@ -1035,9 +1101,16 @@ export class ProfessionalParser {
       return { kind: 'BoolLiteral', value: false, span: this.makeSpan(tok, tok) };
     }
 
-    // Parenthesized expression
+    // Parenthesized expression (re-enables struct literals safely inside parens)
     if (this.eatPunct('(')) {
-      const inner = this.parseExpr();
+      const prevAllow = this.allowStructLit;
+      this.allowStructLit = true;
+      let inner: SemanticExpr;
+      try {
+        inner = this.parseExpr();
+      } finally {
+        this.allowStructLit = prevAllow;
+      }
       this.expectPunct(')');
       return inner;
     }

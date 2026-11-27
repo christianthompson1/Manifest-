@@ -55,8 +55,8 @@ Manifest defines **two concrete surface syntaxes** that parse into a **single ca
 - **Imports**:
   - Professional: `import { sym1, sym2 as alias } from "./other_module";`
   - Beginner: `IMPORT sym1, sym2 AS alias FROM "./other_module"`
-- **Visibility**: Declarations are module-private by default. Prefixing `export` / `EXPORT` on `fn`/`FUNCTION`, `struct`/`STRUCT`, `enum`/`ENUM`, `trait`/`TRAIT`, or `const`/`CONSTANT` exposes the symbol to importing modules.
-- **Module Graph Resolution (`module-resolver.ts`)**: Resolves relative paths (`.manifest` optional), verifies that every imported symbol exists and is marked `export`, rejects circular module dependencies (`E_CIRCULAR_IMPORT`), and merges verified definitions in topological dependency order.
+- **Visibility**: Declarations are module-private by default. Prefixing `export` / `EXPORT` on `fn`/`FUNCTION`, `struct`/`STRUCT`, `enum`/`ENUM`, `const`/`CONSTANT`, or module-level `let`/`LET`/`MUTABLE` exposes the symbol to importing modules.
+- **Module Graph Resolution (`module-resolver.ts`)**: Resolves relative paths (`.manifest` optional), verifies that every imported symbol exists and is marked `export`, rejects circular module dependencies (`E_CIRCULAR_IMPORT`), isolates private module symbols/globals per module environment, and merges verified dependencies in post-order topological dependency order so shared dependencies initialize once.
 
 ---
 
@@ -67,11 +67,11 @@ A `SemanticModule` contains:
 2. Module imports (`import` / `IMPORT`)
 3. Struct definitions (`struct` / `STRUCT`)
 4. Algebraic enum definitions (`enum` / `ENUM`)
-5. Trait interface declarations (`trait` / `TRAIT`)
+5. Trait interface syntax (`trait` / `TRAIT` — parsed into AST, currently rejected at type checking with `E_UNSUPPORTED_FEATURE`)
 6. Compile-time constants (`const` / `CONSTANT`)
 7. Global bindings (`let` / `LET`, `let mut` / `MUTABLE`)
 8. Function declarations (`fn` / `FUNCTION`)
-9. Optional top-level script statements (compiled into synthetic `__top_level` / `main` entry if no explicit `fn main()` is declared).
+9. Optional top-level script statements (compiled into `__init__` initialization when `main` exists, or `__script__` entry if no explicit `fn main()` is declared).
 
 ---
 
@@ -107,9 +107,10 @@ Implicit coercions between `i64`, `f64`, `bool`, and `str` are **forbidden** (`E
 
 ## 8. Mutability Model
 
-- **Immutable by Default**: `let x = 10;` / `LET x = 10` creates an immutable binding. Reassigning `x` produces compile-time error `E_IMMUTABLE_ASSIGN`.
-- **Explicit Mutability**: `let mut x = 10;` / `MUTABLE x = 10` (or `LET MUTABLE x = 10`) permits reassignment (`x = 20;` / `SET x TO 20`), field mutation (`item.qty = 5`), and index mutation (`arr[0] = 9`).
-- **Constants**: `const MAX: i64 = 100;` / `CONSTANT MAX: Int = 100` is permanently immutable (`E_CONST_ASSIGN`).
+- **Local Variables (Immutable by Default)**: Inside functions and nested blocks, `let x = 10;` / `LET x = 10` creates an immutable local binding. Reassigning `x` produces compile-time error `E_ASSIGN_IMMUTABLE`.
+- **Module-Level Globals (`let` / `let mut` / `LET` / `MUTABLE`)**: Module-level `let` bindings (`let counter = 0;`, `let mut counter = 0;`, `LET counter = 0`, `MUTABLE counter = 0`) represent mutable module environment state initialized in topological declaration order before `main()` (via `__init__` or `__script__`) and accessed/mutated via `LoadGlobal`/`StoreGlobal`.
+- **Explicit Local Mutability**: `let mut x = 10;` / `MUTABLE x = 10` (or `LET MUTABLE x = 10`) permits reassignment (`x = 20;` / `SET x TO 20`), field mutation (`item.qty = 5`), and index mutation (`arr[0] = 9`).
+- **Constants**: `const MAX: i64 = 100;` / `CONSTANT MAX: Int = 100` is permanently immutable at both module and local scopes (`E_ASSIGN_CONST`).
 
 ---
 
@@ -196,15 +197,15 @@ Each variant compiles to a compact integer tag (`0..N-1`) plus payload tuple (`E
 
 ---
 
-## 16. Traits / Interfaces
+## 16. Traits / Interfaces (Unsupported in v1.0 Runtime)
 
-`trait` / `TRAIT` declarations specify named behavioral contracts with typed method signatures and effect bounds:
+`trait` / `TRAIT` syntax is parsed into `TraitDecl` AST nodes and preserved by the formatter:
 ```manifest
 trait Hashable {
     fn digest(self_val: str) -> str effects(crypto);
 }
 ```
-Trait declarations are parsed into `TraitDecl` nodes in `SemanticModule` and validated for type well-formedness. Dynamic trait-object vtables (`dyn Trait`) are reserved for a future minor version.
+**Current Status**: Trait implementation blocks (`impl`), trait bounds, and dynamic dispatch vtables are **not implemented** in Manifest v1.0. Rather than silently ignoring trait declarations, `TypeChecker` explicitly rejects `TraitDecl` across both Beginner and Professional profiles with `E_UNSUPPORTED_FEATURE` and recommends concrete `struct` records paired with typed functions.
 
 ---
 
@@ -225,10 +226,11 @@ fn first_or<T>(items: Array<T>, fallback: T) -> T {
 
 ## 18. Error Handling (`Result<T, E>`, `?`, and Traps)
 
-Manifest separates **recoverable domain errors** from **unrecoverable invariant traps**:
+Manifest v1.0 separates **recoverable domain errors** from **unrecoverable invariant traps**:
 1. **Recoverable Errors (`Result<T, E>`)**: Built-in algebraic sum type with `Result::Ok(val)` and `Result::Err(err)`.
 2. **Propagation Operator (`expr?`)**: Evaluates `expr` of type `Result<T, E>`. If `Result::Ok(v)`, yields `v: T`; if `Result::Err(e)`, immediately returns `Result::Err(e)` from the enclosing function (verified to return `Result<_, E>`, otherwise `E_TRY_PROPAGATE_TYPE`).
-3. **Deterministic Traps**: Integer overflow/underflow, division/modulo by zero, out-of-bounds array index, capability violation, or step-budget exhaustion immediately abort VM execution with a structured `VmTrap` diagnostic rather than silently corrupting state. (Legacy `TRY ... IF FAILED` remains supported in the AST interpreter and Web/JS runtime for v0.2 compatibility.)
+3. **Deterministic Traps**: Integer overflow/underflow, division/modulo by zero, out-of-bounds array index, uninitialized global read, capability violation, or step-budget exhaustion immediately abort VM execution with a structured `VmTrap` diagnostic rather than silently corrupting state.
+4. **Statement-Level `try / catch` (`TryStmt`)**: Parsed into AST (`try { ... } catch (err) { ... }` / `TRY ... IF FAILED err ... END`), and **explicitly rejected across both Beginner and Professional profiles with `E_UNSUPPORTED_FEATURE`** in `TypeChecker` and MIR lowering because MVM bytecode does not implement stack-unwinding exception tables. Use `Result<T, E>` with `match` or `?` in v1.0 modules. (Legacy `APP`/`PAGE`/`ACTION` UI scripts continue to use the separate v0.2 runtime.)
 
 ---
 

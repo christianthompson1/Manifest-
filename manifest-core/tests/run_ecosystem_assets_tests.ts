@@ -88,7 +88,7 @@ async function main() {
   assert(Boolean(execRes.previewHtml?.includes('__manifestResolveAsset')), 'Preview HTML injects __manifestResolveAsset shim');
   assert(Boolean(execRes.previewHtml?.includes('assets/images/banner.png')), 'Preview HTML injects workspace binary asset data map');
   assert(Boolean(execRes.previewHtml?.includes(samplePngDataUrl)), 'Preview HTML preserves exact binary PNG data URL');
-  assert(Boolean(execRes.previewHtml?.includes('PAGE Docs') || execRes.outputCode?.includes('"Docs"')), 'Landing compiled output includes multi-page Docs route');
+  assert(Boolean(execRes.previewHtml?.includes('Docs') || execRes.outputCode?.includes('Docs')), 'Landing compiled output includes Docs route label');
 
   const buildRes = await provider.build(landingProj);
   assert(buildRes.success === true, 'Landing page Web build succeeds');
@@ -110,7 +110,7 @@ async function main() {
   assert(sanitizeAssetPath('/etc/passwd').valid === false, 'Rejects absolute POSIX asset path');
   assert(sanitizeAssetPath('assets/foo\0bar.png').valid === false, 'Rejects null byte in asset path');
 
-  const diagSource = `APP "DiagTest"\nPAGE Home\n  IMAGE src: "assets/missing_logo.png"\n  IMAGE src: "../outside/evil.png"\n  IMAGE src: "assets/brand/manifest-logo-dark.svg"\nEND`;
+  const diagSource = `module diag_test;\nrequires console;\nfn main() -> i64 {\n  let logo_missing: str = "assets/missing_logo.png";\n  let logo_traversal: str = "../outside/evil.png";\n  let logo_brand: str = "assets/brand/manifest-logo-dark.svg";\n  return 0;\n}`;
   const assetDiags = provider.auditAssetReferences(diagSource, landingProj);
   assert(assetDiags.some((d) => d.code === 'W_ASSET_MISSING' && d.message.includes('assets/missing_logo.png')), 'Emits non-fatal W_ASSET_MISSING warning for missing workspace asset');
   assert(assetDiags.some((d) => d.code === 'W_ASSET_UNSAFE_PATH'), 'Emits W_ASSET_UNSAFE_PATH warning for traversal asset reference');

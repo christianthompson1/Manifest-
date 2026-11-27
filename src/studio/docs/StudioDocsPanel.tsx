@@ -164,19 +164,14 @@ Security verifiers statically check:
 - Component lifecycle hooks (onMount, onDestroy) and automated listener cleanup.
 - SPA router with dynamic parameters (/users/:id) and route guards (canActivate).
 - Accessible form validation engine (required, minLength, pattern, numeric).`,
-    exampleCode: `APP "Commerce Dashboard"
-STATE active_tab TO "overview"
+    exampleCode: `// manifest-web.ts companion app (examples/web/commerce_dashboard_app.ts)
+module commerce_dashboard;
+requires console;
 
-PAGE Home
-    CONTAINER
-        HEADING "Dashboard Overview"
-        BUTTON "Switch Tab"
-            WHEN CLICK
-                SET active_tab TO "products"
-            END
-        END
-    END
-END`,
+fn main() -> i64 effects(console) {
+    console.print("Commerce overview ready");
+    return 0;
+}`,
     exampleTarget: 'web-js',
   },
   {
@@ -232,7 +227,14 @@ END`,
 - Binary preservation: Assets are stored losslessly in workspace storage.
 - Resolution: Manifest source references assets via project-relative paths (e.g. assets/brand/manifest-symbol.svg).
 - Directory traversal (../) is blocked at compile time for security.`,
-    exampleCode: `IMAGE src: "assets/brand/manifest-logo-dark.svg" alt: "Manifest Logo"`,
+    exampleCode: `module brand_assets;
+requires console;
+
+fn main() -> i64 effects(console) {
+    let logo_path: str = "assets/brand/manifest-logo-dark.svg";
+    console.print("Loaded logo asset: " + logo_path);
+    return 0;
+}`,
     exampleTarget: 'web-js',
   },
   {

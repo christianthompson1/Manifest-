@@ -6,6 +6,12 @@
 
 import { ExecutionProvider, ProjectKind, ProviderCapability, ExecutionOptions, UnifiedExecutionResult } from './execution-types.ts';
 import { ManifestProject, ProjectFile, StudioDiagnostic } from '../types.ts';
+import {
+  escapeHtml,
+  escapeInlineJsForScriptTag,
+  escapeJsStringLiteral,
+  sanitizeHtmlCommentText,
+} from '../utils/security-sanitize.ts';
 
 export class StaticWebExecutionProvider implements ExecutionProvider {
   public readonly id = 'static-web-provider';
@@ -271,7 +277,7 @@ export class StaticWebExecutionProvider implements ExecutionProvider {
       if (assetFile) {
         const dataUrl = this.resolveAssetDataUrl(assetFile);
         if (dataUrl) {
-          return `url("${dataUrl}")`;
+          return `url("${dataUrl.replace(/["\\\r\n]/g, '')}")`;
         }
       } else if (diagnostics) {
         diagnostics.push({
@@ -320,8 +326,8 @@ export class StaticWebExecutionProvider implements ExecutionProvider {
           const cssDir = cssFile.path.includes('/')
             ? cssFile.path.substring(0, cssFile.path.lastIndexOf('/') + 1)
             : '';
-          const resolvedCss = this.resolveCssUrls(cssFile.content, cssDir, project, diagnostics);
-          return `<!-- Inlined ${cssFile.path} -->\n<style>\n${resolvedCss}\n</style>`;
+          const resolvedCss = this.resolveCssUrls(cssFile.content, cssDir, project, diagnostics).replace(/<\/(style)/gi, '\\003c/$1');
+          return `<!-- Inlined ${sanitizeHtmlCommentText(cssFile.path)} -->\n<style>\n${resolvedCss}\n</style>`;
         }
 
         const origOffset = originalHtml.indexOf(match);
@@ -332,7 +338,7 @@ export class StaticWebExecutionProvider implements ExecutionProvider {
           severity: 'warning',
           source: 'web-provider',
         });
-        return `<!-- Missing local stylesheet: ${href} -->${match}`;
+        return `<!-- Missing local stylesheet: ${sanitizeHtmlCommentText(href)} -->${match}`;
       }
     );
 
@@ -358,8 +364,8 @@ export class StaticWebExecutionProvider implements ExecutionProvider {
 
         if (jsFile) {
           const isModule = /type=["']module["']/i.test(attrs);
-          const safeJs = jsFile.content.replace(/<\/script>/gi, '<\\/script>');
-          return `<!-- Inlined ${jsFile.path} -->\n<script ${isModule ? 'type="module"' : ''}>\n${safeJs}\n</script>`;
+          const safeJs = escapeInlineJsForScriptTag(jsFile.content);
+          return `<!-- Inlined ${sanitizeHtmlCommentText(jsFile.path)} -->\n<script ${isModule ? 'type="module"' : ''}>\n${safeJs}\n</script>`;
         }
 
         const origOffset = originalHtml.indexOf(match);
@@ -370,7 +376,7 @@ export class StaticWebExecutionProvider implements ExecutionProvider {
           severity: 'warning',
           source: 'web-provider',
         });
-        return `<!-- Missing local script: ${scriptSrc} -->${match}`;
+        return `<!-- Missing local script: ${sanitizeHtmlCommentText(scriptSrc)} -->${match}`;
       }
     );
 
@@ -392,7 +398,7 @@ export class StaticWebExecutionProvider implements ExecutionProvider {
         if (assetFile) {
           const dataUrl = this.resolveAssetDataUrl(assetFile);
           if (dataUrl) {
-            return `${pre}${dataUrl}${post}`;
+            return `${pre}${escapeHtml(dataUrl)}${post}`;
           }
           return match;
         }
@@ -446,7 +452,7 @@ export class StaticWebExecutionProvider implements ExecutionProvider {
           window.parent.postMessage({ type: 'preview-console', level: level, payload: message }, '*');
           ${
             mirrorToDomId
-              ? `const el = document.getElementById('${mirrorToDomId}');
+              ? `const el = document.getElementById(${escapeJsStringLiteral(mirrorToDomId)});
           if (el) {
             const row = document.createElement('div');
             row.style.color = level === 'error' ? '#f85149' : level === 'warn' ? '#cca700' : '#89d185';
@@ -476,13 +482,13 @@ export class StaticWebExecutionProvider implements ExecutionProvider {
   }
 
   private generateStandaloneJsHarness(jsFile: ProjectFile): string {
-    const safeJs = jsFile.content.replace(/<\/script>/gi, '<\\/script>');
+    const safeJs = escapeInlineJsForScriptTag(jsFile.content);
     const bridge = this.getConsoleBridgeScript('js-console-out');
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>${jsFile.name} — JavaScript Console</title>
+  <title>${escapeHtml(jsFile.name)} — JavaScript Console</title>
   <style>
     body {
       background: #1f1f1f;
@@ -504,7 +510,7 @@ export class StaticWebExecutionProvider implements ExecutionProvider {
   ${bridge}
 </head>
 <body>
-  <div class="header">JavaScript Execution (${jsFile.path})</div>
+  <div class="header">JavaScript Execution (${escapeHtml(jsFile.path)})</div>
   <div id="app"></div>
   <div id="js-console-out"></div>
   <script type="module">

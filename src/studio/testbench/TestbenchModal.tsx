@@ -1,10 +1,11 @@
 /**
- * Manifest Studio - Compiler & Runtime Inspector / Testbench Modal
- * Preserves the full reference testbench, IR inspection, AST visualization, and automated test suite.
+ * Manifest Studio - Compiler & Runtime Inspector / Testbench Modal (v1.0)
+ * Inspects authoritative Rust engine Typed MIR, AST Summary, MVM Bytecode Disassembly,
+ * and automated test suite results.
  * Styled with VS Code Dark Modern theme tokens (#1f1f1f body, #181818 headers, #2d2d2d dividers).
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   Zap,
@@ -13,15 +14,19 @@ import {
   Layers,
   Cpu,
   BookOpen,
-  Terminal,
-  Copy,
-  Check,
 } from 'lucide-react';
 import {
-  inspectManifest,
-  generateManifestIR,
-  compileManifest,
+  checkManifestSource,
+  compileManifestV1,
+  isSolanaProgramSource,
+  parseSolanaProgramSource,
+  ManifestCheckSummary,
+  ManifestV1BuildResult,
 } from '../../../manifest-core/src/index.ts';
+import {
+  executeAndParseTestRun,
+  ParsedTestRunState,
+} from '../../../manifest-core/src/verification/result-model.ts';
 
 interface TestbenchModalProps {
   isOpen: boolean;
@@ -34,60 +39,47 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
   onClose,
   currentCode,
 }) => {
-  const [activeTab, setActiveTab] = useState<'tests' | 'ir' | 'ast' | 'tokens' | 'docs'>('tests');
-  const [testResults, setTestResults] = useState<{
-    passed: number;
-    failed: number;
-    total: number;
-    results: any[];
-  } | null>(null);
+  const [activeTab, setActiveTab] = useState<'tests' | 'ir' | 'ast' | 'bytecode' | 'docs'>('tests');
+  const [testResults, setTestResults] = useState<ParsedTestRunState | null>(null);
   const [isTesting, setIsTesting] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [checkResult, setCheckResult] = useState<ManifestCheckSummary | null>(null);
+  const [compileResult, setCompileResult] = useState<ManifestV1BuildResult | null>(null);
+  const [solanaSummary, setSolanaSummary] = useState<any>(null);
 
-  // Real-time IR inspection
-  const irRepresentation = React.useMemo(() => {
-    try {
-      return generateManifestIR(currentCode);
-    } catch (err: any) {
-      return { error: err.message || String(err) };
-    }
-  }, [currentCode]);
-
-  // Real-time AST inspection
-  const inspection = React.useMemo(() => {
-    try {
-      return inspectManifest(currentCode);
-    } catch {
-      return null;
-    }
-  }, [currentCode]);
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    (async () => {
+      if (isSolanaProgramSource(currentCode)) {
+        const parsed = parseSolanaProgramSource(currentCode);
+        const comp = await compileManifestV1(currentCode, { target: 'solana-sbf' });
+        if (!cancelled) {
+          setSolanaSummary(parsed);
+          setCheckResult(null);
+          setCompileResult(comp);
+        }
+        return;
+      }
+      const [checked, compiled] = await Promise.all([
+        checkManifestSource(currentCode),
+        compileManifestV1(currentCode, { target: 'mvm' }),
+      ]);
+      if (!cancelled) {
+        setSolanaSummary(null);
+        setCheckResult(checked);
+        setCompileResult(compiled);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, currentCode]);
 
   const handleRunTests = async () => {
     setIsTesting(true);
     try {
-      const res = await fetch('/api/tests/run', { method: 'POST' });
-      const data = await res.json();
-      const logs: string[] = data.logs || [];
-      const passed = logs.filter((l) => l.includes('✓') || l.includes('[PASS]')).length || (data.success ? 20 : 0);
-      const failed = data.success ? 0 : 1;
-      setTestResults({
-        passed,
-        failed,
-        total: passed + failed,
-        results: logs.map((l: string) => ({
-          name: l,
-          passed: l.includes('✓') || l.includes('[PASS]'),
-          error: l.includes('[ERR]') || l.includes('Failed') ? l : undefined,
-        })),
-      });
-      setActiveTab('tests');
-    } catch {
-      setTestResults({
-        passed: 20,
-        failed: 0,
-        total: 20,
-        results: [{ name: 'Manifest Core Test Suite', passed: true }],
-      });
+      const parsed = await executeAndParseTestRun();
+      setTestResults(parsed);
       setActiveTab('tests');
     } finally {
       setIsTesting(false);
@@ -107,13 +99,13 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
             </div>
             <div>
               <div className="font-semibold text-sm text-[#ffffff] flex items-center gap-2">
-                Manifest Core & Compiler Inspector
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#252526] text-[#cccccc] border border-[#2d2d2d]">
-                  v0.1
+                Manifest Core &amp; Compiler Inspector
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#252526] text-[#4ec9b0] border border-[#2d2d2d]">
+                  v1.0
                 </span>
               </div>
               <p className="text-[11px] text-[#858585]">
-                Low-level diagnostics, AST, Manifest IR, and automated test suite.
+                Authoritative Rust Compiler Engine: AST summary, Typed MIR, MVM bytecode disassembly, and automated test suite.
               </p>
             </div>
           </div>
@@ -125,7 +117,7 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
               className="py-1.5 px-3 rounded-md bg-[#007acc] hover:bg-[#0062a3] text-white text-xs font-medium flex items-center gap-1.5 transition cursor-pointer"
             >
               <Zap className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin' : ''}`} />
-              {isTesting ? 'Running 42 Tests...' : 'Run Test Suite (42)'}
+              {isTesting ? 'Running Tests...' : 'Run Test Suite'}
             </button>
 
             <button
@@ -151,7 +143,7 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
             Automated Tests
             {testResults && (
               <span className="px-1.5 py-0.2 rounded-full bg-[#252526] text-[#cccccc] text-[10px]">
-                {testResults.passed}/{testResults.total}
+                {testResults.status === 'error' ? 'ERR' : `${testResults.passed}/${testResults.total}`}
               </span>
             )}
           </button>
@@ -165,7 +157,7 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
             }`}
           >
             <Boxes className="w-3.5 h-3.5 text-[#c586c0]" />
-            Manifest IR
+            Typed MIR
           </button>
 
           <button
@@ -177,19 +169,19 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
             }`}
           >
             <Layers className="w-3.5 h-3.5 text-[#89d185]" />
-            AST
+            AST Summary
           </button>
 
           <button
-            onClick={() => setActiveTab('tokens')}
+            onClick={() => setActiveTab('bytecode')}
             className={`px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition cursor-pointer ${
-              activeTab === 'tokens'
+              activeTab === 'bytecode'
                 ? 'bg-[#1f1f1f] text-[#ffffff] border border-[#2d2d2d]'
                 : 'text-[#858585] hover:text-[#cccccc]'
             }`}
           >
             <Cpu className="w-3.5 h-3.5 text-[#9cdcfe]" />
-            Tokens
+            Bytecode Disasm
           </button>
 
           <button
@@ -213,10 +205,10 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="font-semibold text-sm text-[#ffffff]">
-                    Automated Test Suite (42 Passing Tests)
+                    Automated Language Test Suite
                   </h3>
                   <p className="text-xs text-[#858585]">
-                    Runs the complete suite verifying lexer, parser, validator, IR builder, and JS compiler.
+                    Runs the server-side canonical v1.0 verification suite covering Rust compilation, Typed MIR, .mbc VM execution, and v0.x removal guards.
                   </p>
                 </div>
                 <button
@@ -224,34 +216,78 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
                   disabled={isTesting}
                   className="py-1 px-3 rounded bg-[#007acc] hover:bg-[#0062a3] text-white text-xs font-medium cursor-pointer"
                 >
-                  {isTesting ? 'Running...' : 'Run All 42 Tests'}
+                  {isTesting ? 'Running...' : 'Run All Tests'}
                 </button>
               </div>
 
               {testResults ? (
                 <div className="space-y-3">
-                  <div className="p-3 rounded-lg bg-[#181818] border border-[#2d2d2d] flex items-center justify-between">
-                    <span className="text-xs font-medium text-[#cccccc]">
-                      Executed {testResults.total} tests: {testResults.passed} passed, {testResults.failed} failed
-                    </span>
-                    <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-[#183a21] text-[#89d185] border border-[#238636]">
-                      ALL PASSING
-                    </span>
-                  </div>
-
-                  <div className="space-y-1 font-mono text-xs max-h-[400px] overflow-y-auto custom-scrollbar">
-                    {testResults.results.map((res: any, idx: number) => (
-                      <div
-                        key={idx}
-                        className="p-2.5 rounded bg-[#181818] border border-[#2d2d2d] flex items-center justify-between"
+                  {testResults.status === 'error' ? (
+                    <div className="p-3 rounded-lg bg-[#2d1818] border border-[#5a1d1d] flex items-center justify-between gap-3">
+                      <span className="text-xs font-medium text-[#f85149]">
+                        Test Runner Error: {testResults.error || 'Failed to execute test suite'}
+                      </span>
+                      <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-[#4d1f24] text-[#f85149] border border-[#5a1d1d] shrink-0">
+                        ERROR
+                      </span>
+                    </div>
+                  ) : (
+                    <div
+                      className={`p-3 rounded-lg border flex items-center justify-between ${
+                        testResults.ok
+                          ? 'bg-[#181818] border-[#2d2d2d]'
+                          : 'bg-[#2d1818] border-[#5a1d1d]'
+                      }`}
+                    >
+                      <span className="text-xs font-medium text-[#cccccc]">
+                        Executed {testResults.total} tests: {testResults.passed} passed, {testResults.failed} failed
+                        {testResults.skipped > 0 ? `, ${testResults.skipped} skipped` : ''}
+                        {testResults.unsupported > 0 ? `, ${testResults.unsupported} unsupported` : ''}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[11px] font-bold border ${
+                          testResults.ok
+                            ? 'bg-[#183a21] text-[#89d185] border-[#238636]'
+                            : 'bg-[#4d1f24] text-[#f85149] border-[#5a1d1d]'
+                        }`}
                       >
-                        <span className="text-[#cccccc]">{res.name}</span>
-                        <span className="text-[#89d185] font-semibold text-[11px]">
-                          PASS
-                        </span>
-                      </div>
-                    ))}
-                  </div>
+                        {testResults.ok ? 'ALL PASSING' : `${testResults.failed || 1} FAILED`}
+                      </span>
+                    </div>
+                  )}
+
+                  {testResults.results.length > 0 && (
+                    <div className="space-y-1 font-mono text-xs max-h-[400px] overflow-y-auto custom-scrollbar">
+                      {testResults.results.map((res, idx) => (
+                        <div
+                          key={idx}
+                          className="p-2.5 rounded bg-[#181818] border border-[#2d2d2d] flex items-center justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <span className="text-[#cccccc]">{res.name}</span>
+                            {res.error && (
+                              <div className="text-[#f85149] text-[10px] mt-0.5">{res.error}</div>
+                            )}
+                          </div>
+                          <span
+                            className={`font-semibold text-[11px] shrink-0 ${
+                              res.status === 'passed'
+                                ? 'text-[#89d185]'
+                                : res.status === 'skipped'
+                                ? 'text-[#cca700]'
+                                : 'text-[#f85149]'
+                            }`}
+                          >
+                            {res.status === 'passed'
+                              ? 'PASS'
+                              : res.status === 'skipped'
+                              ? 'SKIP'
+                              : 'FAIL'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="p-12 text-center text-[#858585] border border-dashed border-[#2d2d2d] rounded-lg space-y-2">
@@ -260,88 +296,105 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
                     Testbench is Ready
                   </div>
                   <div className="text-xs text-[#858585]">
-                    Click &quot;Run All 42 Tests&quot; to execute the automated suite.
+                    Click &quot;Run All Tests&quot; to execute the automated suite.
                   </div>
                 </div>
               )}
             </div>
           )}
 
-          {/* Tab: IR */}
+          {/* Tab: Typed MIR */}
           {activeTab === 'ir' && (
             <div className="space-y-3 font-sans">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="font-semibold text-sm text-[#c586c0]">
-                    Target-Agnostic Manifest IR
+                    Typed Manifest Intermediate Representation (MIR)
                   </h3>
                   <p className="text-xs text-[#858585]">
-                    Intermediate representation isolating Manifest semantics from any specific target backend.
+                    Target-agnostic typed IR produced by the authoritative Rust compiler engine.
                   </p>
                 </div>
                 <span className="px-2 py-0.5 rounded bg-[#252526] text-[#c586c0] text-xs font-mono border border-[#2d2d2d]">
-                  IR v0.1.0
+                  MIR v1.0
                 </span>
               </div>
 
-              {'error' in irRepresentation ? (
-                <div className="p-4 rounded-lg bg-[#2d1818] border border-[#5a1d1d] text-[#f85149] text-xs font-mono">
-                  IR Generation Error: {irRepresentation.error}
-                </div>
-              ) : (
+              {compileResult?.irText ? (
                 <pre className="p-4 rounded-lg bg-[#181818] border border-[#2d2d2d] text-[#ce9178] overflow-x-auto text-[11px] leading-relaxed max-h-[500px]">
-                  {JSON.stringify(irRepresentation, null, 2)}
+                  {compileResult.irText}
                 </pre>
+              ) : solanaSummary?.program ? (
+                <pre className="p-4 rounded-lg bg-[#181818] border border-[#2d2d2d] text-[#ce9178] overflow-x-auto text-[11px] leading-relaxed max-h-[500px]">
+                  {JSON.stringify(solanaSummary.program, null, 2)}
+                </pre>
+              ) : (
+                <div className="p-4 rounded-lg bg-[#2d1818] border border-[#5a1d1d] text-[#f85149] text-xs font-mono">
+                  {compileResult?.diagnostics?.[0]?.message || 'Compile diagnostics must be resolved before MIR emission.'}
+                </div>
               )}
             </div>
           )}
 
-          {/* Tab: AST */}
+          {/* Tab: AST Summary */}
           {activeTab === 'ast' && (
             <div className="space-y-3 font-sans">
               <div>
                 <h3 className="font-semibold text-sm text-[#89d185]">
-                  Parsed Abstract Syntax Tree (AST)
+                  Canonical AST &amp; Capability Summary
                 </h3>
                 <p className="text-xs text-[#858585]">
-                  Syntax tree generated by the Manifest Core parser.
+                  Unified representation shared by Beginner and Professional syntax profiles.
                 </p>
               </div>
 
-              {inspection?.program ? (
+              {checkResult?.astSummary ? (
                 <pre className="p-4 rounded-lg bg-[#181818] border border-[#2d2d2d] text-[#ce9178] overflow-x-auto text-[11px] leading-relaxed max-h-[500px]">
-                  {JSON.stringify(inspection.program, null, 2)}
+                  {JSON.stringify(
+                    {
+                      profile: checkResult.resolvedProfile,
+                      engine: checkResult.compilerEngine,
+                      astSummary: checkResult.astSummary,
+                      capabilities: checkResult.capabilityAudit,
+                    },
+                    null,
+                    2
+                  )}
+                </pre>
+              ) : solanaSummary ? (
+                <pre className="p-4 rounded-lg bg-[#181818] border border-[#2d2d2d] text-[#ce9178] overflow-x-auto text-[11px] leading-relaxed max-h-[500px]">
+                  {JSON.stringify(solanaSummary, null, 2)}
                 </pre>
               ) : (
-                <div className="text-[#f14c4c]">AST parsing error — check syntax</div>
+                <div className="p-4 rounded-lg bg-[#2d1818] border border-[#5a1d1d] text-[#f85149] text-xs font-mono">
+                  {checkResult?.diagnostics?.[0]?.message || 'Syntax or semantic check failed — inspect Problems panel.'}
+                </div>
               )}
             </div>
           )}
 
-          {/* Tab: Tokens */}
-          {activeTab === 'tokens' && (
+          {/* Tab: Bytecode Disasm */}
+          {activeTab === 'bytecode' && (
             <div className="space-y-3 font-sans">
               <div>
                 <h3 className="font-semibold text-sm text-[#9cdcfe]">
-                  Lexer Token Stream ({inspection?.tokens?.length ?? 0} tokens)
+                  Manifest Bytecode (.mbc v1.0) Disassembly
                 </h3>
+                <p className="text-xs text-[#858585]">
+                  {compileResult?.mbcBytes
+                    ? `Container size: ${compileResult.mbcBytes.byteLength} bytes`
+                    : 'Compile a valid v1.0 module to inspect .mbc instructions.'}
+                </p>
               </div>
-              <div className="space-y-1 max-h-[500px] overflow-y-auto custom-scrollbar">
-                {inspection?.tokens?.map((t, idx) => (
-                  <div
-                    key={idx}
-                    className="py-1 px-3 rounded bg-[#181818] border border-[#2d2d2d] flex items-center justify-between text-[11px]"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-[#89d185] font-mono">{t.type}</span>
-                      <span className="text-[#cccccc]">&quot;{t.value}&quot;</span>
-                    </div>
-                    <span className="text-[#858585] font-mono text-[10px]">
-                      L:{t.line} C:{t.column}
-                    </span>
-                  </div>
-                ))}
-              </div>
+              {compileResult?.disassembly ? (
+                <pre className="p-4 rounded-lg bg-[#181818] border border-[#2d2d2d] text-[#d4d4d4] overflow-x-auto text-[11px] leading-relaxed max-h-[500px]">
+                  {compileResult.disassembly}
+                </pre>
+              ) : (
+                <div className="p-4 rounded-lg bg-[#181818] border border-[#2d2d2d] text-[#858585] text-xs font-mono">
+                  {compileResult?.rustCode || compileResult?.diagnostics?.[0]?.message || 'No .mbc disassembly available for current target.'}
+                </div>
+              )}
             </div>
           )}
 
@@ -349,27 +402,27 @@ export const TestbenchModal: React.FC<TestbenchModalProps> = ({
           {activeTab === 'docs' && (
             <div className="space-y-4 font-sans text-[#cccccc] text-xs leading-relaxed">
               <h3 className="font-semibold text-sm text-[#ffffff]">
-                Manifest Core v0.1 Grammar Specifications
+                Manifest v1.0 Canonical Grammar Specifications
               </h3>
               <p className="text-[#858585]">
-                Manifest is a programming language with its own semantics and intermediate representation. JavaScript is only one possible compilation target.
+                Both Beginner and Professional profiles compile through the authoritative Rust frontend into identical AST, Typed MIR, capability audits, and MVM bytecode (.mbc).
               </p>
               <div className="grid grid-cols-2 gap-3 font-mono">
                 <div className="p-3 rounded bg-[#181818] border border-[#2d2d2d]">
-                  <div className="font-bold text-[#89d185] mb-1">APP Declaration</div>
-                  <code>APP &quot;Counter&quot;</code>
+                  <div className="font-bold text-[#89d185] mb-1">Module &amp; Capabilities</div>
+                  <code>module app_main;<br />requires console;</code>
                 </div>
                 <div className="p-3 rounded bg-[#181818] border border-[#2d2d2d]">
-                  <div className="font-bold text-[#89d185] mb-1">SET Variable</div>
-                  <code>SET counter TO 0</code>
+                  <div className="font-bold text-[#89d185] mb-1">Typed Bindings</div>
+                  <code>let count: i64 = 0;<br />let mut total: i64 = 10;</code>
                 </div>
                 <div className="p-3 rounded bg-[#181818] border border-[#2d2d2d]">
-                  <div className="font-bold text-[#89d185] mb-1">WHEN Event</div>
-                  <code>WHEN button.clicks<br />&nbsp;&nbsp;SET counter TO counter + 1<br />END</code>
+                  <div className="font-bold text-[#89d185] mb-1">Beginner Equivalent</div>
+                  <code>MODULE app_main<br />FUNCTION main() RETURNS Int EFFECTS console<br />&nbsp;&nbsp;SHOW &quot;Hello&quot;<br />&nbsp;&nbsp;RETURN 0<br />END</code>
                 </div>
                 <div className="p-3 rounded bg-[#181818] border border-[#2d2d2d]">
-                  <div className="font-bold text-[#89d185] mb-1">SHOW Output</div>
-                  <code>SHOW counter</code>
+                  <div className="font-bold text-[#89d185] mb-1">Solana Smart Contract</div>
+                  <code>PROGRAM Vault<br />&nbsp;&nbsp;ACCOUNT State<br />&nbsp;&nbsp;&nbsp;&nbsp;balance: NUMBER<br />&nbsp;&nbsp;END<br />END</code>
                 </div>
               </div>
             </div>

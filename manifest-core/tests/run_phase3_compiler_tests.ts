@@ -17,7 +17,6 @@ import { buildTypedIR } from '../src/ir/typed-ir-builder.ts';
 import { analyzeCapabilitiesAndEffects } from '../src/semantics/capability-analyzer.ts';
 import { resolveModuleGraph } from '../src/semantics/module-resolver.ts';
 import { checkManifestSource, compileManifestV1 } from '../src/pipeline.ts';
-import { compileManifest } from '../src/compiler/compiler.ts';
 
 let passed = 0;
 let failed = 0;
@@ -68,8 +67,8 @@ fn main() -> i64 {
 }
 `;
 
-  const checkBeg = checkManifestSource(beginnerFib, { profile: 'beginner' });
-  const checkPro = checkManifestSource(proFib, { profile: 'professional' });
+  const checkBeg = await checkManifestSource(beginnerFib, { profile: 'beginner' });
+  const checkPro = await checkManifestSource(proFib, { profile: 'professional' });
 
   assert(checkBeg.ok && checkPro.ok, '1.1 Both Beginner and Professional programs pass type checking');
   assert(
@@ -120,8 +119,8 @@ fn main() -> i64 {
 }
 `;
 
-  const begStructCheck = checkManifestSource(begStruct, { profile: 'beginner' });
-  const proStructCheck = checkManifestSource(proStruct, { profile: 'professional' });
+  const begStructCheck = await checkManifestSource(begStruct, { profile: 'beginner' });
+  const proStructCheck = await checkManifestSource(proStruct, { profile: 'professional' });
   assert(begStructCheck.ok && proStructCheck.ok, '2.1 Structs and field access pass type checking in both profiles');
   assert(
     begStructCheck.mir?.structs[0]?.fields.length === proStructCheck.mir?.structs[0]?.fields.length,
@@ -183,8 +182,8 @@ fn main() -> i64 { return internal_square(5); }
     '3.3 Importing private non-exported function is rejected with E_IMPORT_PRIVATE_SYMBOL'
   );
 
-  // TEST 4: Legacy Domain Declarations (APP/PAGE) Compatibility
-  console.log('\n4. Legacy APP/PAGE Compatibility & Desugaring');
+  // TEST 4: Legacy v0.x Syntax Removal Guard
+  console.log('\n4. Legacy v0.x Syntax Rejection (E_LEGACY_V0_REMOVED)');
 
   const legacyApp = `
 APP "CounterDemo"
@@ -200,29 +199,38 @@ PAGE Home
 END
 `;
 
-  const legacyComp = await compileManifest(legacyApp, 'js');
-  if (!legacyComp.success) {
-    console.error('legacyComp diagnostics:', legacyComp.diagnostics);
-  }
-  assert(legacyComp.success, '4.1 Legacy APP/PAGE compiles through compiler service to JS target');
+  const legacyComp = await compileManifestV1(legacyApp, { target: 'web-js' });
   assert(
-    legacyComp.outputCode !== undefined && legacyComp.outputCode.includes('startApp'),
-    '4.2 Emitted bundle exports startApp runtime harness'
+    !legacyComp.success && legacyComp.diagnostics.some((d) => d.code === 'E_LEGACY_V0_REMOVED'),
+    '4.1 Legacy APP/PAGE syntax is explicitly rejected with E_LEGACY_V0_REMOVED'
+  );
+  const v1WebComp = await compileManifestV1(
+    `module web_counter_v1;\nrequires console;\nfn main() -> i64 effects(console) { console.print("ok"); return 1; }`,
+    { target: 'web-js' }
+  );
+  assert(
+    v1WebComp.success && Boolean(v1WebComp.jsCode?.includes('__runManifestModule')),
+    '4.2 Canonical v1 web-js bundle exports __runManifestModule runtime harness'
   );
 
   // TEST 5: Solana Target Honesty — Missing PROGRAM Rejection
   console.log('\n5. Solana Target Honesty: Reject Missing PROGRAM');
 
-  const plainApp = `
-APP "PlainApp"
-PAGE "Main"
-    HEADING "Just HTML"
-END
+  const plainV1Module = `
+module plain_app;
+requires console;
+fn main() -> i64 effects(console) {
+    console.print("Just module");
+    return 0;
+}
 `;
-  const solanaResult = await compileManifest(plainApp, 'solana');
+  const solanaResult = await compileManifestV1(plainV1Module, { target: 'solana-sbf' });
   assert(
-    !solanaResult.success && solanaResult.diagnostics.some((d) => d.message.includes("requires an explicit 'PROGRAM")),
-    "5.1 Compiling plain UI app to Solana target fails honestly without fabricating a dummy counter contract"
+    !solanaResult.success &&
+      solanaResult.diagnostics.some(
+        (d) => d.code === 'E_SOLANA_CONTRACT_REQUIRED' || d.message.includes('PROGRAM')
+      ),
+    '5.1 Compiling plain v1 module to Solana target fails honestly without fabricating a dummy counter contract'
   );
 
   // TEST 6: Multi-Target Boundary Diagnostics

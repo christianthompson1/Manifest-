@@ -1,59 +1,41 @@
-# Manifest Language & Manifest Studio — Verification Baseline & v1.0 Upgrade Results
+# Manifest Language & Manifest Studio — Verification Baseline (Stage 6 & Stage 7)
 
-Environment: Linux `4.19.0-gvisor x86_64`, Node.js `v22.23.3`, `rustc 1.99.1`, `cargo 1.99.1`, `gcc 12.3.0`, Vite `v8.3.0`, TypeScript `v7.0.2`
+Environment: Linux `4.19.0-gvisor x86_64`, Node.js `v22.23.5`, TypeScript `v7.0.2`, Vite `v8.3.0`. Authoritative Rust `manifest-compiler` + `mvm-core` executed via prebuilt `public/wasm/mvm_wasm.wasm` (SHA-256 verified).
+
+> **Host Toolchain Limitation**: `cargo`, `rustc`, and native `mvm/target/release/mvm` are **not installed** in this host container. Consequently, `cargo test --manifest-path mvm/Cargo.toml`, native `rustc` ELF binary compilation, and native `mvm` CLI binary benchmarks were **not executed** in this container and are reported honestly as skipped / not-run.
 
 ---
 
 ## 1. End-to-End Verification Matrix
 
-| Check / Command | Pre-Upgrade Baseline | Post-v1.0 Upgrade Verified Result | Notes |
-|---|---|---|---|
-| `cargo test --manifest-path mvm/Cargo.toml` | *(Not present prior to v1.0)* | **Exit `0` (`6/6` Rust VM tests passed, 0 warnings)** | Safe Rust Manifest Virtual Machine (`#![forbid(unsafe_code)]`) across `mvm-core`, `mvm-cli`, and `mvm-wasm` |
-| `npm run lint` (`tsc --noEmit`) | Exit `0` (0 TS errors) | **Exit `0` (0 TS errors)** | Full strict TypeScript validation across `manifest-core/` and `src/` |
-| `npm run manifest:test` | Exit `0` (`299/299` core/audit + LiteSVM + `29/29` orchestrator + `8/8` editor) | **Exit `0` (`302/302` legacy/audit + LiteSVM + `29/29` orchestrator + `8/8` editor + `62/62` v1.0 upgrade suite)** | Zero regressions on v0.1–v0.4 + full v1.0 dual-profile, bytecode, Rust MVM, multi-target & Studio verification |
-| `npm run manifest:bench` | Legacy pipeline + AST interpreter + DOM mount | **Exit `0` (Legacy scaling + 4-way v1.0 Collatz `3,590,654`-step benchmark)** | Measures TS MIR Evaluator, Rust MVM WASM, Native Rust MVM CLI, and Direct `.wasm` |
-| `npm run context:refresh` | Exit `0` | **Exit `0`** | Regenerates non-normative `/docs/AI_CONTEXT_SUMMARY.md` |
-| Markdown Link Check (`16` `.md` files) | Legacy unarchived links | **Exit `0` (`0` broken relative links across all 16 `.md` files)** | Verified across `/README.md`, `/manifest-core/README.md`, and `/docs/**/*.md` |
-| `npm run build` (`vite build`) | Exit `0` | **Exit `0`** | Full production SPA bundle including offline `mvm_wasm.wasm` |
-| Headless Browser Automation | Unavailable (`NO_BROWSER_BINARY`) | **Unavailable (`NO_BROWSER_BINARY`)** | No Chromium/Playwright binary installed in container; interactive browser flows require manual verification |
+| Check / Command | Verified Result | Notes |
+|---|---|---|
+| `npm run lint` (`tsc --noEmit`) | **Exit `0` (`0` TS errors)** | Full TypeScript type-check across `manifest-core/`, `src/`, and `server.ts` |
+| `npm run manifest:test` | **Exit `0`** | Runs `run_stage6_authoritative_rust_tests.ts`, `run_stage7_canonical_v1_tests.ts` (`23/23`), `run_solana_counter_test.ts` (`3 passed, 1 skipped`), `run_orchestrator_tests.ts` (`29/29`), `run_editor_tests.ts` (`8/8`), and `run_v1_upgrade_tests.ts` (`63 passed, 0 failed, 2 skipped`) |
+| `npx tsx manifest-core/tests/run_batch1_security_and_honesty_tests.ts` | **Exit `0` (`37/37` passed)** | Live `/api/tests/run`, `/api/solana/*`, failure honesty, and capability enforcement |
+| `npx tsx manifest-core/tests/run_audit_verification_tests.ts` | **Exit `0` (`28/28` passed)** | Cross-engine parity (`runManifestOnRustMvm` vs `evaluateMIRModule` vs `web-js`), static diagnostics, and v0.x removal |
+| `npx tsx manifest-core/tests/run_ecosystem_assets_tests.ts` | **Exit `0` (All passed)** | Official brand assets, workspace asset path sanitization (`W_ASSET_UNSAFE_PATH`), and landing module checks |
+| `npm run manifest:bench` | **Exit `0`** | Canonical v1.0 scaling (`93..4,993` lines), pathological inputs, and Collatz(`2..2500`) across TS MIR, Rust MVM WASM, and Direct `.wasm` (native CLI skipped) |
+| `npm run context:refresh` | **Exit `0`** | Regenerates non-normative `/docs/AI_CONTEXT_SUMMARY.md` |
+| Markdown Link Check (`21` `.md` files) | **Exit `0` (`0` broken relative links)** | Verified across `/README.md`, `/CONTRIBUTING.md`, `/manifest-core/README.md`, and `/docs/**/*.md` |
+| `npm run build` (`vite build`) | **Exit `0`** | Full production SPA bundle including offline `mvm_wasm.wasm` |
+| Headless Browser Verification (`playwright-cli` Chromium) | **Passed (`0` console errors)** | Verified Studio initial load + Rust MVM execution preview (`Hello World`), Testbench modal (`23/23 ALL PASSING`, Typed MIR, `.mbc` disassembly), `Manifest Official Landing & Ecosystem` `web-js` iframe execution (`Return: 4`), and mobile (`390x844`) responsive drawer |
+| `cargo test --manifest-path mvm/Cargo.toml` | **Not run (`cargo` unavailable)** | Host container lacks `cargo` / `rustc`; Rust workspace tests require a Rust toolchain host |
 
 ---
 
-## 2. Automated Test Suite Breakdown
+## 2. Automated Verification Coverage Summary
 
-### A. Rust Manifest Virtual Machine (`cargo test --manifest-path mvm/Cargo.toml` — `6/6` Passed)
-1. Valid `.mbc` v1.0 arithmetic, function calls, and local variable execution.
-2. Static bytecode verifier rejection of truncated headers and corrupted magic bytes (`MBC\0`).
-3. Static bytecode verifier rejection of operand stack underflow before execution begins.
-4. Deterministic runtime trap on signed 64-bit (`i64`) integer division by zero.
-5. Runtime capability enforcement blocking unauthorized `HOST_CALL` when a capability is withheld by `CapabilityPolicy`.
-6. Deterministic instruction-step budget (`VmLimits.max_steps`) halting unbounded loops cleanly.
-
-### B. Manifest v1.0 Language, Compiler, Bytecode, MVM & Studio Suite (`run_v1_upgrade_tests.ts` — `62/62` Passed)
-1. **Dual Syntax Profiles & Lossless Formatter (`8/8`)**:
-   - Beginner (`MODULE`/`FUNCTION`/`LET`/`MUTABLE`/`SHOW`/`END`) and Professional (`module`/`fn`/`let`/`let mut`/`print`/`{}`) programs lower to byte-for-byte identical Typed MIR (`MIRModule`), compile to `.mbc`, and produce identical stdout and return values on Rust MVM.
-   - Bidirectional formatter (`Beginner -> Professional -> Beginner`) preserves exact execution semantics.
-2. **Multi-File Module Graph Resolution (`3/3`)**:
-   - Relative `import { apply_rate as calc, BASE_FEE } from "./lib_rates"` resolves, type-checks, links, and executes on Rust MVM; private symbol imports and circular module graphs (`a <-> b`) are rejected statically.
-3. **Static TypeChecker, Generics, Structs, Enums & `Result<T, E>` `?` (`7/7`)**:
-   - Generic struct `Pair<T>`, generic function `pick_first<T>(p: Pair<T>) -> T`, `Result::Ok` / `Result::Err` with `?` propagation, and exhaustive `match` execute on Rust MVM.
-   - Rejects `i64 + str`, immutable `let` mutation, `const` mutation, non-boolean `if 123`, non-exhaustive enum `match`, and `break` outside loops.
-4. **Capability & Transitive Call-Graph Effect Verifier (`4/4`)**:
-   - Rejects contradictory `requires [net]` + `denies [net]`, undeclared `fs.read_text`, denied `net.get`, and 3-hop transitive `console` effects inside `effects(pure)`.
-5. **Typed MIR Optimizer & Trap Preservation (`4/4`)**:
-   - Folds pure constants and algebraic identities, warns on unreachable code after `return`, and preserves runtime division-by-zero and checked `i64` overflow traps in Rust MVM.
-6. **`.mbc` v1.0 Static Verifier & Rust MVM Security Guards (`9/9`)**:
-   - Verifies `MBC\0` header; both TypeScript and Rust verifiers reject corrupt magic, truncated containers, injected `POP` stack underflow, and `JMP_IF_FALSE` into the middle of a 5-byte `CONST` instruction; verifies step-limit halting and runtime `fs.write` capability denial/grant in virtual workspace FS.
-7. **Six-Way Cross-Target Conformance & Planned Target Guards (`9/9`)**:
-   - `collatz_steps(27) == 111` verified identically across (1) TypeScript MIR Evaluator, (2) Rust MVM WASM, (3) Native Rust MVM CLI (`/mvm/target/release/mvm`), (4) Direct Standalone `.wasm`, (5) Capability-Restricted Web/JS (with verified `fetch()` lockdown), and (6) Native Linux ELF binary compiled via host `rustc 1.99.1`.
-   - `evm-solidity`, `move`, and `ton-tact` fail honestly with `E_TARGET_PLANNED`.
-8. **CLI, `/examples/**`, Studio Orchestrator, Binary `.mbc` ZIP & Live Editor Linter (`18/18`)**:
-   - CLI `targets` and `disassemble` subcommands verified.
-   - All 9 example programs under `/examples/{beginner,professional,web,backend,contracts}/` compile and run/emit cleanly.
-   - Studio `buildProject` vs `executeProject` verified across `mvm` and `native`, direct `.mbc` file execution in Explorer verified, byte-for-byte `.mbc` ZIP export/import verified, and CodeMirror 6 `manifestLinter` live syntax/type/capability diagnostics verified.
-
-### C. Preserved Legacy & Studio Regression Suites (`302/302` + LiteSVM + `29/29` + `8/8` Passed)
-1. **Manifest v0.1–v0.4 Core, Templates, GitHub Import, Mobile IDE, Dashboard, Orchestrator & Differential Parity (`run_tests.ts`)**: `302/302` passed (including all 3 new v1.0 starter templates).
-2. **Real Solana Counter LiteSVM State Transition & Underflow Test (`run_solana_counter_test.ts`)**: `ALL PASSED` (`150 CU` per instruction, controlled `0x1773` underflow error).
-3. **Standalone Execution Orchestrator & Static Web Provider Tests (`run_orchestrator_tests.ts`)**: `29/29` passed.
-4. **Editor State & Sync Regression Tests (`run_editor_tests.ts`)**: `8/8` passed.
+1. **Stage 6 Authoritative Rust Engine (`run_stage6_authoritative_rust_tests.ts`)**:
+   - SHA-256 verification of `public/wasm/mvm_wasm.wasm`, authoritative `manifest-compiler` diagnostics, Beginner/Professional MIR equivalence, transitive capability checks, and cross-target execution (`29 passed, 0 failed, 1 skipped` — native `mvm` binary suite skipped).
+2. **Stage 7 Canonical Manifest v1.0 Architecture (`run_stage7_canonical_v1_tests.ts` — `23/23` Passed)**:
+   - Complete removal of legacy v0.x compilation (`E_LEGACY_V0_REMOVED` for `APP`, `PAGE`, `STATE`, `ACTION`, `DEFINE`, `COMPONENT`, `WHEN app.starts`, `USE WEB`, `USE SOLANA`), explicit opt-in `migrateV0ToV1` / `manifest migrate`, canonical v1.0 Starter templates, standalone `PROGRAM` Solana Anchor + LiteSVM verification, and live Express HTTP `/api/compile` + `/api/tests/run` + `/api/solana/verify`.
+3. **Manifest v1.0 Upgrade & Conformance Suite (`run_v1_upgrade_tests.ts` — `63 passed, 0 failed, 2 skipped`)**:
+   - Dual syntax profiles & formatter round-trip (`8/8`), multi-file modules (`3/3`), generics/`Result<T, E>?`/`match` (`7/7`), capability & transitive effect verification (`4/4`), MIR optimizer & trap preservation (`4/4`), `.mbc` container verification & Rust MVM security guards (`9/9`), cross-target conformance (`ts-mir`, `rust-mvm-wasm`, `direct-wasm`, `web-js`, planned target guards; native CLI & `rustc` ELF skipped), CLI subcommands, and all 9 `/examples/**` programs.
+4. **Solana & Studio Integration Suites**:
+   - `run_solana_counter_test.ts`: `3 passed` (1 real LiteSVM SOL transfer `150 CU`, 2 JS-simulated Counter transitions), `1 skipped` (custom SBF `.so` compilation), `0 failed`.
+   - `run_orchestrator_tests.ts`: `29/29` passed.
+   - `run_editor_tests.ts`: `8/8` passed.
+   - `run_batch1_security_and_honesty_tests.ts`: `37/37` passed.
+   - `run_audit_verification_tests.ts`: `28/28` passed.
+   - `run_ecosystem_assets_tests.ts`: All passed.

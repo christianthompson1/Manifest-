@@ -1,17 +1,46 @@
-import { FnDecl, SemanticModule } from '../core/ast-v2.ts';
+import {
+  AssignTarget,
+  ConstDecl,
+  EnumDecl,
+  FnDecl,
+  MatchPattern,
+  SemanticExpr,
+  SemanticModule,
+  SemanticStmt,
+  StructDecl,
+  TypeNode,
+  VarDecl,
+} from '../core/ast-v2.ts';
 import { parseSemanticModule } from '../core/parse-unified.ts';
 import { SyntaxProfile } from '../core/profile.ts';
-import { SemanticDiagnostic } from './types.ts';
 import { StdLibraryRegistry } from '../stdlib/std-modules.ts';
+import { SemanticDiagnostic } from './types.ts';
 
 export interface WorkspaceFiles {
   [path: string]: string;
+}
+
+export interface ModuleGlobalBinding {
+  exportedName: string;
+  canonicalName: string;
+  mutable: boolean;
+  isConst: boolean;
+  exported: boolean;
+}
+
+export interface ModuleEnvironment {
+  moduleName: string;
+  pathKey: string;
+  bindings: Map<string, ModuleGlobalBinding>;
+  dependencies: string[];
+  initOnce: boolean;
 }
 
 export interface LinkedModuleGraph {
   entryModule: SemanticModule;
   orderedModules: SemanticModule[];
   mergedModule: SemanticModule;
+  environments?: Map<string, ModuleEnvironment>;
   diagnostics: SemanticDiagnostic[];
 }
 
@@ -42,9 +71,287 @@ function normalizeSegments(p: string): string {
   return out.join('/');
 }
 
+function sanitizeModPrefix(s: string): string {
+  return s.replace(/[^a-zA-Z0-9_]/g, '_') || 'mod';
+}
+
+class ScopedAstRenamer {
+  private scopes: Array<Set<string>> = [];
+
+  constructor(private readonly renameMap: Map<string, string>) {}
+
+  private pushScope(names: string[] = []): void {
+    this.scopes.push(new Set(names));
+  }
+
+  private popScope(): void {
+    this.scopes.pop();
+  }
+
+  private declareLocal(name: string): void {
+    if (this.scopes.length > 0) {
+      this.scopes[this.scopes.length - 1].add(name);
+    }
+  }
+
+  private isShadowed(name: string): boolean {
+    for (let i = this.scopes.length - 1; i >= 0; i--) {
+      if (this.scopes[i].has(name)) return true;
+    }
+    return false;
+  }
+
+  private resolveName(name: string): string {
+    if (this.isShadowed(name)) return name;
+    return this.renameMap.get(name) ?? name;
+  }
+
+  public rewriteType(t: TypeNode): TypeNode {
+    switch (t.kind) {
+      case 'NamedType':
+        return {
+          ...t,
+          name: this.renameMap.get(t.name) ?? t.name,
+          typeArgs: t.typeArgs.map((a) => this.rewriteType(a)),
+        };
+      case 'ArrayType':
+        return { ...t, elementType: this.rewriteType(t.elementType) };
+      case 'MapType':
+        return {
+          ...t,
+          keyType: this.rewriteType(t.keyType),
+          valueType: this.rewriteType(t.valueType),
+        };
+      case 'ResultType':
+        return {
+          ...t,
+          okType: this.rewriteType(t.okType),
+          errType: this.rewriteType(t.errType),
+        };
+      default:
+        return t;
+    }
+  }
+
+  public rewriteExpr(expr: SemanticExpr): SemanticExpr {
+    switch (expr.kind) {
+      case 'Identifier':
+        return { ...expr, name: this.resolveName(expr.name) };
+      case 'CallExpr':
+        return {
+          ...expr,
+          callee: this.resolveName(expr.callee),
+          typeArgs: expr.typeArgs.map((t) => this.rewriteType(t)),
+          args: expr.args.map((a) => this.rewriteExpr(a)),
+        };
+      case 'StructLiteral':
+        return {
+          ...expr,
+          structName: this.renameMap.get(expr.structName) ?? expr.structName,
+          typeArgs: expr.typeArgs.map((t) => this.rewriteType(t)),
+          fields: expr.fields.map((f) => ({ ...f, value: this.rewriteExpr(f.value) })),
+        };
+      case 'EnumConstructExpr':
+        return {
+          ...expr,
+          enumName: this.renameMap.get(expr.enumName) ?? expr.enumName,
+          args: expr.args.map((a) => this.rewriteExpr(a)),
+        };
+      case 'BinaryExpr':
+        return {
+          ...expr,
+          left: this.rewriteExpr(expr.left),
+          right: this.rewriteExpr(expr.right),
+        };
+      case 'UnaryExpr':
+        return { ...expr, operand: this.rewriteExpr(expr.operand) };
+      case 'FieldAccessExpr':
+        return { ...expr, object: this.rewriteExpr(expr.object) };
+      case 'IndexAccessExpr':
+        return {
+          ...expr,
+          object: this.rewriteExpr(expr.object),
+          index: this.rewriteExpr(expr.index),
+        };
+      case 'ArrayLiteral':
+        return { ...expr, elements: expr.elements.map((e) => this.rewriteExpr(e)) };
+      case 'MapLiteral':
+        return {
+          ...expr,
+          entries: expr.entries.map((kv) => ({
+            key: this.rewriteExpr(kv.key),
+            value: this.rewriteExpr(kv.value),
+          })),
+        };
+      case 'AwaitExpr':
+      case 'TryPropagateExpr':
+        return { ...expr, operand: this.rewriteExpr(expr.operand) };
+      default:
+        return expr;
+    }
+  }
+
+  private rewriteAssignTarget(target: AssignTarget): AssignTarget {
+    switch (target.kind) {
+      case 'VarTarget':
+        return { ...target, name: this.resolveName(target.name) };
+      case 'FieldTarget':
+        return { ...target, object: this.rewriteExpr(target.object) };
+      case 'IndexTarget':
+        return {
+          ...target,
+          object: this.rewriteExpr(target.object),
+          index: this.rewriteExpr(target.index),
+        };
+    }
+  }
+
+  private rewritePattern(pat: MatchPattern): MatchPattern {
+    if (pat.kind === 'EnumVariantPattern' && pat.enumName) {
+      return {
+        ...pat,
+        enumName: this.renameMap.get(pat.enumName) ?? pat.enumName,
+      };
+    }
+    return pat;
+  }
+
+  public rewriteBlockStmts(stmts: SemanticStmt[], isModuleTopLevel = false): SemanticStmt[] {
+    return stmts.map((stmt) => this.rewriteStmt(stmt, isModuleTopLevel));
+  }
+
+  private rewriteStmt(stmt: SemanticStmt, isModuleTopLevel: boolean): SemanticStmt {
+    switch (stmt.kind) {
+      case 'VarStmt': {
+        const d = stmt.decl;
+        const nextInit = this.rewriteExpr(d.init);
+        const nextType = this.rewriteType(d.typeAnnotation);
+        let nextName = d.name;
+        if (isModuleTopLevel) {
+          nextName = this.renameMap.get(d.name) ?? d.name;
+        } else {
+          this.declareLocal(d.name);
+        }
+        return {
+          ...stmt,
+          decl: {
+            ...d,
+            name: nextName,
+            typeAnnotation: nextType,
+            init: nextInit,
+            exported: false,
+          },
+        };
+      }
+      case 'ConstStmt': {
+        const d = stmt.decl;
+        const nextInit = this.rewriteExpr(d.init);
+        const nextType = this.rewriteType(d.typeAnnotation);
+        let nextName = d.name;
+        if (isModuleTopLevel) {
+          nextName = this.renameMap.get(d.name) ?? d.name;
+        } else {
+          this.declareLocal(d.name);
+        }
+        return {
+          ...stmt,
+          decl: {
+            ...d,
+            name: nextName,
+            typeAnnotation: nextType,
+            init: nextInit,
+            exported: false,
+          },
+        };
+      }
+      case 'AssignStmt':
+        return {
+          ...stmt,
+          target: this.rewriteAssignTarget(stmt.target),
+          value: this.rewriteExpr(stmt.value),
+        };
+      case 'ExprStmt':
+        return { ...stmt, expr: this.rewriteExpr(stmt.expr) };
+      case 'IfStmt': {
+        const cond = this.rewriteExpr(stmt.condition);
+        this.pushScope();
+        const thenBranch = this.rewriteBlockStmts(stmt.thenBranch, false);
+        this.popScope();
+        this.pushScope();
+        const elseBranch = this.rewriteBlockStmts(stmt.elseBranch, false);
+        this.popScope();
+        return { ...stmt, condition: cond, thenBranch, elseBranch };
+      }
+      case 'WhileStmt': {
+        const cond = this.rewriteExpr(stmt.condition);
+        this.pushScope();
+        const body = this.rewriteBlockStmts(stmt.body, false);
+        this.popScope();
+        return { ...stmt, condition: cond, body };
+      }
+      case 'ForInStmt': {
+        const iterable = this.rewriteExpr(stmt.iterable);
+        this.pushScope([stmt.itemName]);
+        const body = this.rewriteBlockStmts(stmt.body, false);
+        this.popScope();
+        return { ...stmt, iterable, body };
+      }
+      case 'RepeatStmt': {
+        const count = this.rewriteExpr(stmt.count);
+        this.pushScope();
+        const body = this.rewriteBlockStmts(stmt.body, false);
+        this.popScope();
+        return { ...stmt, count, body };
+      }
+      case 'ReturnStmt':
+        return stmt.value ? { ...stmt, value: this.rewriteExpr(stmt.value) } : stmt;
+      case 'MatchStmt': {
+        const subject = this.rewriteExpr(stmt.subject);
+        const arms = stmt.arms.map((arm) => {
+          const pat = this.rewritePattern(arm.pattern);
+          const bindings = pat.kind === 'EnumVariantPattern' ? pat.bindings : [];
+          this.pushScope(bindings);
+          const body = this.rewriteBlockStmts(arm.body, false);
+          this.popScope();
+          return { ...arm, pattern: pat, body };
+        });
+        return { ...stmt, subject, arms };
+      }
+      case 'TryStmt': {
+        this.pushScope();
+        const tryBody = this.rewriteBlockStmts(stmt.tryBody, false);
+        this.popScope();
+        this.pushScope(stmt.errBinding ? [stmt.errBinding] : []);
+        const catchBody = this.rewriteBlockStmts(stmt.catchBody, false);
+        this.popScope();
+        return { ...stmt, tryBody, catchBody };
+      }
+      default:
+        return stmt;
+    }
+  }
+
+  public rewriteFunction(fn: FnDecl, newName: string, keepExported: boolean): FnDecl {
+    this.pushScope(fn.params.map((p) => p.name));
+    const params = fn.params.map((p) => ({ ...p, type: this.rewriteType(p.type) }));
+    const returnType = this.rewriteType(fn.returnType);
+    const body = this.rewriteBlockStmts(fn.body, false);
+    this.popScope();
+    return {
+      ...fn,
+      name: newName,
+      params,
+      returnType,
+      body,
+      exported: keepExported,
+    };
+  }
+}
+
 /**
  * Resolves multi-file `import` / `export` graphs across a workspace map, detects circular imports,
- * enforces export visibility, and links exported declarations into a unified SemanticModule.
+ * enforces export visibility, isolates private module bindings/globals, preserves topological
+ * single-execution module initialization, and links declarations into a unified SemanticModule.
  */
 export function resolveModuleGraph(
   entrySource: string,
@@ -59,6 +366,11 @@ export function resolveModuleGraph(
   const entryPath = options.entryFile || 'src/main.manifest';
 
   const parsedCache = new Map<string, SemanticModule>();
+  const pathByMod = new Map<SemanticModule, string>();
+  const depEdges = new Map<
+    SemanticModule,
+    Array<{ targetPath: string; targetMod: SemanticModule; symbols: Array<{ name: string; alias?: string }> }>
+  >();
   const visiting = new Set<string>();
   const visited = new Set<string>();
   const ordered: SemanticModule[] = [];
@@ -71,6 +383,7 @@ export function resolveModuleGraph(
       profile: explicitProf ?? 'auto',
     });
     parsedCache.set(pathKey, mod);
+    pathByMod.set(mod, pathKey);
     return mod;
   };
 
@@ -79,9 +392,14 @@ export function resolveModuleGraph(
   const visit = (pathKey: string, mod: SemanticModule) => {
     if (visited.has(pathKey)) return;
     visiting.add(pathKey);
+    const edges: Array<{
+      targetPath: string;
+      targetMod: SemanticModule;
+      symbols: Array<{ name: string; alias?: string }>;
+    }> = [];
+    depEdges.set(mod, edges);
 
     for (const imp of mod.imports) {
-      // 1. Check if import is an official standard library module (std::* or std.*)
       const stdName = imp.from.startsWith('std.') ? imp.from.replace('std.', 'std::') : imp.from;
       const isStd = StdLibraryRegistry.getInstance().isStdModule(stdName);
       let foundPath: string | undefined;
@@ -124,14 +442,15 @@ export function resolveModuleGraph(
 
       const depMod = loadModule(foundPath, sourceToLoad!, 'auto');
       visit(foundPath, depMod);
+      edges.push({ targetPath: foundPath, targetMod: depMod, symbols: imp.symbols });
 
-      // Verify visibility (`export`) for each requested symbol
       for (const sym of imp.symbols) {
         const exportedFn = depMod.functions.find((f) => f.name === sym.name);
         const exportedConst = depMod.constants.find((c) => c.name === sym.name);
+        const exportedGlobal = depMod.globals.find((g) => g.name === sym.name);
         const exportedStruct = depMod.structs.find((s) => s.name === sym.name);
         const exportedEnum = depMod.enums.find((e) => e.name === sym.name);
-        const target = exportedFn || exportedConst || exportedStruct || exportedEnum;
+        const target = exportedFn || exportedConst || exportedGlobal || exportedStruct || exportedEnum;
 
         if (!target) {
           diagnostics.push({
@@ -162,118 +481,270 @@ export function resolveModuleGraph(
 
   visit(entryPath, entryMod);
 
+  const environments = new Map<string, ModuleEnvironment>();
+
   if (ordered.length <= 1) {
+    const bindings = new Map<string, ModuleGlobalBinding>();
+    for (const c of entryMod.constants) {
+      bindings.set(c.name, {
+        exportedName: c.name,
+        canonicalName: c.name,
+        mutable: false,
+        isConst: true,
+        exported: c.exported,
+      });
+    }
+    for (const g of entryMod.globals) {
+      bindings.set(g.name, {
+        exportedName: g.name,
+        canonicalName: g.name,
+        mutable: true,
+        isConst: false,
+        exported: g.exported,
+      });
+    }
+    environments.set(entryPath, {
+      moduleName: entryMod.moduleName,
+      pathKey: entryPath,
+      bindings,
+      dependencies: [],
+      initOnce: true,
+    });
     return {
       entryModule: entryMod,
       orderedModules: [entryMod],
       mergedModule: entryMod,
+      environments,
       diagnostics,
     };
   }
 
-  // Link imported symbols into a combined compilation unit while preserving entry module capability policy!
-  // Note: Entry module's `denies` AND `requires` govern imported code (transitive cross-module capability check!).
+  // Assign globally unique canonical symbol names for every dependency module so private globals,
+  // private helpers, and overloaded export aliases never collide across dependency graphs.
+  const depCanonicalMap = new Map<SemanticModule, Map<string, string>>();
+  ordered.forEach((mod, idx) => {
+    if (mod === entryMod) return;
+    const prefix = `__m${idx}_${sanitizeModPrefix(mod.moduleName)}__`;
+    const ownMap = new Map<string, string>();
+    for (const st of mod.structs) ownMap.set(st.name, `${prefix}${st.name}`);
+    for (const en of mod.enums) ownMap.set(en.name, `${prefix}${en.name}`);
+    for (const c of mod.constants) ownMap.set(c.name, `${prefix}${c.name}`);
+    for (const g of mod.globals) ownMap.set(g.name, `${prefix}${g.name}`);
+    for (const fn of mod.functions) ownMap.set(fn.name, `${prefix}${fn.name}`);
+    depCanonicalMap.set(mod, ownMap);
+  });
+
+  const buildModuleRenameMap = (mod: SemanticModule): Map<string, string> => {
+    const renameMap = new Map<string, string>();
+    // Map imported symbols (using exact target dependency edges and local aliases)
+    const edges = depEdges.get(mod) || [];
+    for (const edge of edges) {
+      const targetOwn = depCanonicalMap.get(edge.targetMod);
+      if (!targetOwn) continue;
+      for (const sym of edge.symbols) {
+        const canonical = targetOwn.get(sym.name);
+        if (canonical) {
+          renameMap.set(sym.alias || sym.name, canonical);
+        }
+      }
+    }
+    // Dependency's own declarations override/populate renameMap with its prefixed names
+    const ownMap = depCanonicalMap.get(mod);
+    if (ownMap) {
+      for (const [k, v] of ownMap.entries()) {
+        renameMap.set(k, v);
+      }
+    }
+    return renameMap;
+  };
+
+  const mergedStructs: StructDecl[] = [];
+  const mergedEnums: EnumDecl[] = [];
+  const mergedConstants: ConstDecl[] = [];
+  const mergedGlobals: VarDecl[] = [];
   const mergedFunctions: FnDecl[] = [];
-  const mergedConstants = [...entryMod.constants];
-  const mergedStructs = [...entryMod.structs];
-  const mergedEnums = [...entryMod.enums];
+  const mergedTopLevelStmts: SemanticStmt[] = [];
 
   for (const dep of ordered) {
     if (dep === entryMod) continue;
 
-    // Collect alias map if entryMod imports from dep
-    const aliasMap = new Map<string, string>();
-    for (const imp of entryMod.imports) {
-      for (const s of imp.symbols) {
-        if (s.alias) aliasMap.set(s.name, s.alias);
-      }
-    }
+    const depPath = pathByMod.get(dep) || dep.moduleName;
+    const renameMap = buildModuleRenameMap(dep);
+    const ownMap = depCanonicalMap.get(dep)!;
+    const renamer = new ScopedAstRenamer(renameMap);
+
+    const envBindings = new Map<string, ModuleGlobalBinding>();
 
     for (const st of dep.structs) {
-      if (st.exported && !mergedStructs.some((x) => x.name === st.name)) {
-        mergedStructs.unshift({
-          ...st,
-          name: aliasMap.get(st.name) || st.name,
-          exported: false,
-        });
-      }
+      const cname = ownMap.get(st.name)!;
+      mergedStructs.push({
+        ...st,
+        name: cname,
+        fields: st.fields.map((f) => ({ ...f, type: renamer.rewriteType(f.type) })),
+        exported: false,
+      });
     }
+
     for (const en of dep.enums) {
-      if (en.exported && !mergedEnums.some((x) => x.name === en.name)) {
-        mergedEnums.unshift({
-          ...en,
-          name: aliasMap.get(en.name) || en.name,
-          exported: false,
-        });
-      }
+      const cname = ownMap.get(en.name)!;
+      mergedEnums.push({
+        ...en,
+        name: cname,
+        variants: en.variants.map((v) => ({
+          ...v,
+          payloadTypes: v.payloadTypes.map((pt) => renamer.rewriteType(pt)),
+        })),
+        exported: false,
+      });
     }
+
     for (const c of dep.constants) {
-      if (c.exported && !mergedConstants.some((x) => x.name === c.name)) {
-        mergedConstants.unshift({
-          ...c,
-          name: aliasMap.get(c.name) || c.name,
-          exported: false,
-        });
-      }
-    }
-    // Build a map of internal function renames for this dependency
-    const internalRenames = new Map<string, string>();
-    for (const fn of dep.functions) {
-      if (!fn.exported) {
-        internalRenames.set(fn.name, `${dep.moduleName}__${fn.name}`);
-      } else if (aliasMap.has(fn.name)) {
-        internalRenames.set(fn.name, aliasMap.get(fn.name)!);
-      }
+      const cname = ownMap.get(c.name)!;
+      mergedConstants.push({
+        ...c,
+        name: cname,
+        typeAnnotation: renamer.rewriteType(c.typeAnnotation),
+        init: renamer.rewriteExpr(c.init),
+        exported: false,
+      });
+      envBindings.set(c.name, {
+        exportedName: c.name,
+        canonicalName: cname,
+        mutable: false,
+        isConst: true,
+        exported: c.exported,
+      });
     }
 
-    // Helper to rewrite CallExpr callee names inside statements
-    const rewriteCallsInExpr = (expr: any): any => {
-      if (!expr || typeof expr !== 'object') return expr;
-      if (expr.kind === 'CallExpr' && internalRenames.has(expr.callee)) {
-        return {
-          ...expr,
-          callee: internalRenames.get(expr.callee)!,
-          args: (expr.args || []).map(rewriteCallsInExpr),
-        };
-      }
-      const next: any = Array.isArray(expr) ? [] : { ...expr };
-      for (const k of Object.keys(expr)) {
-        if (k !== 'callee' && typeof expr[k] === 'object' && expr[k] !== null) {
-          next[k] = rewriteCallsInExpr(expr[k]);
-        }
-      }
-      return next;
-    };
+    for (const g of dep.globals) {
+      const cname = ownMap.get(g.name)!;
+      mergedGlobals.push({
+        ...g,
+        name: cname,
+        mutable: true,
+        typeAnnotation: renamer.rewriteType(g.typeAnnotation),
+        init: renamer.rewriteExpr(g.init),
+        exported: false,
+      });
+      envBindings.set(g.name, {
+        exportedName: g.name,
+        canonicalName: cname,
+        mutable: true,
+        isConst: false,
+        exported: g.exported,
+      });
+    }
 
     for (const fn of dep.functions) {
-      const targetName = fn.exported ? aliasMap.get(fn.name) || fn.name : `${dep.moduleName}__${fn.name}`;
-      if (!mergedFunctions.some((x) => x.name === targetName)) {
-        // Rewrite internal calls inside function body so calls to private helpers match the new prefix
-        const rewrittenBody = fn.body.map((stmt) => rewriteCallsInExpr(stmt));
-        mergedFunctions.push({
-          ...fn,
-          name: targetName,
-          body: rewrittenBody,
-          exported: false,
-        });
-      }
+      const cname = ownMap.get(fn.name)!;
+      mergedFunctions.push(renamer.rewriteFunction(fn, cname, false));
     }
+
+    // Rewrite top-level statements of this dependency in exact topological order (executed once)
+    const rewrittenTop = renamer.rewriteBlockStmts(dep.topLevelStmts, true);
+    mergedTopLevelStmts.push(...rewrittenTop);
+
+    environments.set(depPath, {
+      moduleName: dep.moduleName,
+      pathKey: depPath,
+      bindings: envBindings,
+      dependencies: (depEdges.get(dep) || []).map((e) => e.targetPath),
+      initOnce: true,
+    });
   }
 
-  mergedFunctions.push(...entryMod.functions);
+  // Rewrite entry module references to imported symbols (without renaming entry's own declarations!)
+  const entryImportsOnly = buildModuleRenameMap(entryMod);
+  // If entry declares a top-level symbol with the same local name as nothing imported, keep its name;
+  // if entry imported `foo` (or `foo as bar`), `entryImportsOnly` maps `bar -> canonicalName`.
+  const entryOwnNames = new Set<string>([
+    ...entryMod.structs.map((s) => s.name),
+    ...entryMod.enums.map((e) => e.name),
+    ...entryMod.constants.map((c) => c.name),
+    ...entryMod.globals.map((g) => g.name),
+    ...entryMod.functions.map((f) => f.name),
+  ]);
+  for (const own of entryOwnNames) {
+    entryImportsOnly.delete(own);
+  }
+  const entryRenamer = new ScopedAstRenamer(entryImportsOnly);
+
+  for (const st of entryMod.structs) {
+    mergedStructs.push({
+      ...st,
+      fields: st.fields.map((f) => ({ ...f, type: entryRenamer.rewriteType(f.type) })),
+    });
+  }
+  for (const en of entryMod.enums) {
+    mergedEnums.push({
+      ...en,
+      variants: en.variants.map((v) => ({
+        ...v,
+        payloadTypes: v.payloadTypes.map((pt) => entryRenamer.rewriteType(pt)),
+      })),
+    });
+  }
+  for (const c of entryMod.constants) {
+    mergedConstants.push({
+      ...c,
+      typeAnnotation: entryRenamer.rewriteType(c.typeAnnotation),
+      init: entryRenamer.rewriteExpr(c.init),
+    });
+  }
+  for (const g of entryMod.globals) {
+    mergedGlobals.push({
+      ...g,
+      typeAnnotation: entryRenamer.rewriteType(g.typeAnnotation),
+      init: entryRenamer.rewriteExpr(g.init),
+    });
+  }
+  for (const fn of entryMod.functions) {
+    mergedFunctions.push(entryRenamer.rewriteFunction(fn, fn.name, fn.exported));
+  }
+  mergedTopLevelStmts.push(...entryRenamer.rewriteBlockStmts(entryMod.topLevelStmts, true));
+
+  const entryBindings = new Map<string, ModuleGlobalBinding>();
+  for (const c of entryMod.constants) {
+    entryBindings.set(c.name, {
+      exportedName: c.name,
+      canonicalName: c.name,
+      mutable: false,
+      isConst: true,
+      exported: c.exported,
+    });
+  }
+  for (const g of entryMod.globals) {
+    entryBindings.set(g.name, {
+      exportedName: g.name,
+      canonicalName: g.name,
+      mutable: true,
+      isConst: false,
+      exported: g.exported,
+    });
+  }
+  environments.set(entryPath, {
+    moduleName: entryMod.moduleName,
+    pathKey: entryPath,
+    bindings: entryBindings,
+    dependencies: (depEdges.get(entryMod) || []).map((e) => e.targetPath),
+    initOnce: true,
+  });
 
   const mergedModule: SemanticModule = {
     ...entryMod,
     structs: mergedStructs,
     enums: mergedEnums,
     constants: mergedConstants,
+    globals: mergedGlobals,
     functions: mergedFunctions,
+    topLevelStmts: mergedTopLevelStmts,
   };
 
   return {
     entryModule: entryMod,
     orderedModules: ordered,
     mergedModule,
+    environments,
     diagnostics,
   };
 }

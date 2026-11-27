@@ -43,13 +43,14 @@ export async function runOrchestratorTests(): Promise<{ passed: number; failed: 
     id: 'test-manifest',
     name: 'Test Manifest',
     kind: 'manifest',
+    compilerTarget: 'web-js',
     files: [
       {
         id: 'f1',
         name: 'main.manifest',
         path: 'src/main.manifest',
         language: 'manifest',
-        content: 'APP "Test"\nPAGE Home\nTEXT "Hello"\nEND',
+        content: 'module test_app;\nrequires console;\nfn main() -> i64 effects(console) {\n  console.print("Hello");\n  return 0;\n}',
       },
     ],
   };
@@ -98,7 +99,7 @@ export async function runOrchestratorTests(): Promise<{ passed: number; failed: 
   assert(manifestExecResult.success === true, '4. Manifest provider executes valid Manifest code');
   assert(manifestExecResult.previewKind === 'manifest-canvas', '4. Manifest provider specifies "manifest-canvas" preview');
   assert(manifestExecResult.previewHtml?.includes('id="manifest-root"'), '4. Manifest preview HTML includes mount root');
-  assert(manifestExecResult.previewHtml?.includes('startApp'), '4. Manifest preview HTML includes runtime startApp invoker');
+  assert(manifestExecResult.previewHtml?.includes('__runManifestModule'), '4. Manifest preview HTML includes runtime __runManifestModule invoker');
 
   // Test 5: Static Web Execution Provider (Multi-file bundling)
   const webProvider = new StaticWebExecutionProvider();

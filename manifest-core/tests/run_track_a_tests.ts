@@ -37,7 +37,7 @@ function assert(condition: boolean, message: string) {
 async function runRegressionSuite() {
   console.log('\n=== RUNNING TRACK A REGRESSION TEST SUITE ===\n');
 
-  // TEST 1: TryStmt produces honest E_UNIMPLEMENTED_FEATURE diagnostic
+  // TEST 1: TryStmt produces honest E_UNSUPPORTED_FEATURE diagnostic
   console.log('1. Compiler Correctness: TryStmt Diagnostic');
   const trySrc = `
 mod test_try;
@@ -55,11 +55,11 @@ fn risky_op() -> i64 {
   const tc = new TypeChecker();
   const tcRes = tc.check(tryMod);
   assert(
-    tcRes.diagnostics.some((d) => d.code === 'E_UNIMPLEMENTED_FEATURE' && d.message.includes('try / catch')),
-    'TryStmt emits explicit E_UNIMPLEMENTED_FEATURE diagnostic in type checker instead of silently dropping catch'
+    tcRes.diagnostics.some((d) => d.code === 'E_UNSUPPORTED_FEATURE' && d.message.includes('try / catch')),
+    'TryStmt emits explicit E_UNSUPPORTED_FEATURE diagnostic in type checker instead of silently dropping catch'
   );
 
-  // TEST 2: Trait declarations produce honest E_UNIMPLEMENTED_FEATURE diagnostic in TypeChecker
+  // TEST 2: Trait declarations produce honest E_UNSUPPORTED_FEATURE diagnostic in TypeChecker
   console.log('\n2. Compiler Correctness: Trait Declaration Diagnostic');
   const traitSrc = `
 mod test_trait;
@@ -72,8 +72,8 @@ trait Printable {
   const traitTc = new TypeChecker();
   const traitRes = traitTc.check(traitMod);
   assert(
-    traitRes.diagnostics.some((d) => d.code === 'E_UNIMPLEMENTED_FEATURE' && d.message.includes('trait')),
-    'Trait declaration produces explicit E_UNIMPLEMENTED_FEATURE diagnostic'
+    traitRes.diagnostics.some((d) => d.code === 'E_UNSUPPORTED_FEATURE' && d.message.includes('trait')),
+    'Trait declaration produces explicit E_UNSUPPORTED_FEATURE diagnostic'
   );
 
   // TEST 3: Module Resolver Private Helper Call Rewriting
@@ -145,8 +145,23 @@ fn main() -> i64 {
   const lsvmReport = await LiteSVMRunner.runTestSuite(mockProgram);
   assert(lsvmReport.stepsCount >= 3, 'LiteSVM report records all execution and analysis steps');
   assert(
-    lsvmReport.steps.some((s) => s.stepName.includes('Analyze Instruction: increment')),
-    'LiteSVM runner labels uncompiled instructions as analyzed rather than claiming fake execution'
+    lsvmReport.steps.some(
+      (s) =>
+        s.stepName.includes('Analyze Instruction: increment') &&
+        s.status === 'skipped' &&
+        s.execution === 'analyzed-only' &&
+        !s.success
+    ),
+    'LiteSVM runner marks uncompiled instructions as skipped/analyzed-only rather than passed/executed'
+  );
+  assert(
+    lsvmReport.passedCount +
+      lsvmReport.failedCount +
+      lsvmReport.skippedCount +
+      lsvmReport.unsupportedCount +
+      lsvmReport.notRunCount ===
+      lsvmReport.stepsCount,
+    'LiteSVM report counts reconcile cleanly across passed/failed/skipped/unsupported/notRun'
   );
   assert(
     lsvmReport.steps.some((s) => s.stepName.includes('SBF Execution Environment Check')),

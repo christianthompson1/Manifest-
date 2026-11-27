@@ -2,7 +2,7 @@
 name = "mvm-cli"
 version = "1.0.0"
 edition = "2021"
-description = "Native CLI runner, verifier, and disassembler for Manifest Bytecode (.mbc)"
+description = "Authoritative Manifest compiler CLI, bytecode verifier, disassembler, and MVM runner"
 
 [[bin]]
 name = "mvm"
@@ -10,3 +10,4 @@ path = "src/main.rs"
 
 [dependencies]
 mvm-core = { path = "../mvm-core" }
+manifest-compiler = { path = "../manifest-compiler" }

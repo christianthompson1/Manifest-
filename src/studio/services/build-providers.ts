@@ -10,7 +10,6 @@
 
 import { SolanaProgramIR } from '../../../manifest-core/src/solana/solana-ir.ts';
 import { AnchorGenerator } from '../../../manifest-core/src/solana/anchor-generator.ts';
-import { SolanaSimulator } from '../../../manifest-core/src/solana/solana-simulator.ts';
 import { LiteSVMClient } from './litesvm-client.ts';
 
 export type BuildCapabilityStatus =
@@ -45,7 +44,7 @@ export const PINNED_TOOLCHAIN: ToolchainManifest = {
   solanaVersion: '1.18.26',
   anchorVersion: '0.30.1',
   cargoAnchorVersion: '0.30.1',
-  manifestCompilerVersion: '0.4.0',
+  manifestCompilerVersion: '1.0.0',
 };
 
 export interface BuildProviderResult {
@@ -269,14 +268,14 @@ jobs:
  */
 export class SolanaLocalSimulatorProvider implements BuildProvider {
   public readonly id = 'solana-simulator';
-  public readonly name = 'Solana In-Browser Simulator';
+  public readonly name = 'Solana Anchor Source & IDL Generator (Simulated)';
   public readonly target = 'solana';
 
   public getCapabilities(): BuildProviderCapabilities {
     return {
       status: 'available',
-      label: 'Local Simulator (Offline)',
-      description: 'Instant zero-latency in-browser Anchor code & IDL generator and state simulator.',
+      label: 'Local Anchor Codegen (Simulated)',
+      description: 'Generates Anchor Rust source, IDL, and CI workflows in-browser (does not execute Solana SBF bytecode).',
       offlineCapable: true,
     };
   }
@@ -287,11 +286,11 @@ export class SolanaLocalSimulatorProvider implements BuildProvider {
     const compilation = AnchorGenerator.generate(program);
 
     const logs: string[] = [
-      `[Local Simulator] Processing Manifest Solana program: ${program.programName}`,
+      `[Simulated Codegen Only] Processing Manifest Solana program: ${program.programName}`,
       `[Anchor Generator] Created Rust module: ${program.programName.toLowerCase()}`,
       `[Anchor Generator] Generated IDL for ${program.instructions.length} instructions, ${program.accounts.length} accounts`,
-      `[Local Simulator] Pinned Toolchain: Rust ${PINNED_TOOLCHAIN.rustVersion}, Anchor ${PINNED_TOOLCHAIN.anchorVersion}`,
-      `[Local Simulator] Project files and GitHub Actions workflow synthesized.`,
+      `[Simulated Codegen Only] Pinned Toolchain: Rust ${PINNED_TOOLCHAIN.rustVersion}, Anchor ${PINNED_TOOLCHAIN.anchorVersion}`,
+      `[Simulated Codegen Only] Workspace source files synthesized. No Solana VM bytecode executed.`,
     ];
 
     return {
@@ -306,19 +305,19 @@ export class SolanaLocalSimulatorProvider implements BuildProvider {
 }
 
 /**
- * Native LiteSVM in-process test and build provider
+ * Native LiteSVM test and build provider (fails honestly if server runtime is unavailable)
  */
 export class SolanaLiteSVMBuildProvider implements BuildProvider {
   public readonly id = 'solana-litesvm';
-  public readonly name = 'LiteSVM In-Process Test & Build';
+  public readonly name = 'LiteSVM Server Verification & Build';
   public readonly target = 'solana';
 
   public getCapabilities(): BuildProviderCapabilities {
     return {
       status: 'available',
-      label: 'Native LiteSVM Runner',
-      description: 'Executes Solana instruction testing, compute units measurement, and state transition checks in-process.',
-      offlineCapable: true,
+      label: 'LiteSVM Server Runner',
+      description: 'Submits Solana IR to server-side LiteSVM runtime; reports unavailable if the server runner endpoint is absent.',
+      offlineCapable: false,
     };
   }
 
@@ -329,12 +328,29 @@ export class SolanaLiteSVMBuildProvider implements BuildProvider {
 
     const testResults = await LiteSVMClient.executeTests(program);
 
+    if (testResults.execution === 'unavailable' || !testResults.success) {
+      const errorMsg =
+        testResults.error || 'LiteSVM verification backend did not succeed';
+      return {
+        success: false,
+        artifacts,
+        logs: [
+          `[Anchor Generator] Created Rust module: ${program.programName.toLowerCase()}`,
+          `[LiteSVM Unavailable] ${errorMsg}`,
+        ],
+        error: errorMsg,
+        durationMs: Math.round(performance.now() - startTime),
+        programId: program.programId,
+        idl: compilation.idl,
+      };
+    }
+
     const logs: string[] = [
-      `[LiteSVM Engine] Executing in-process test suite for: ${program.programName}`,
+      `[LiteSVM Engine] Executed checks for: ${program.programName}`,
       `[Anchor Generator] Created Rust module: ${program.programName.toLowerCase()}`,
       `[Anchor Generator] Generated IDL for ${program.instructions.length} instructions`,
       `[LiteSVM] Total Compute Units Consumed: ${testResults.totalComputeUnits}`,
-      `[LiteSVM] Test Steps Completed: ${testResults.passedCount}/${testResults.stepsCount} passed`,
+      `[LiteSVM] Executed Steps: ${testResults.passedCount} passed, ${testResults.failedCount} failed, ${testResults.skippedCount} skipped / analyzed-only (${testResults.stepsCount} total)`,
       ...testResults.steps.flatMap((s) => s.logs),
     ];
 

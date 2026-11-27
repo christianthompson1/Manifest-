@@ -1,13 +1,19 @@
 /**
  * Manifest Studio - GitHub Import Modal
  * Supports cloning/importing public or private GitHub repositories
- * with optional personal access token (PAT) stored in localStorage.
+ * with an optional session-scoped personal access token (PAT) stored in sessionStorage.
  */
 
 import React, { useState } from 'react';
 import { GitBranch, Key, X, Download, AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { ManifestProject } from '../types.ts';
-import { GitHubProvider, parseGitHubUrl } from '../services/git-provider.ts';
+import {
+  GitHubProvider,
+  parseGitHubUrl,
+  getStoredGitHubToken,
+  setStoredGitHubToken,
+  clearStoredGitHubToken,
+} from '../services/git-provider.ts';
 
 interface GitHubImportModalProps {
   isOpen: boolean;
@@ -25,7 +31,7 @@ export const GitHubImportModal: React.FC<GitHubImportModalProps> = ({
   const [repoUrl, setRepoUrl] = useState('');
   const [branch, setBranch] = useState('');
   const [personalToken, setPersonalToken] = useState(() => {
-    return typeof window !== 'undefined' ? localStorage.getItem('manifest_github_pat') || '' : '';
+    return getStoredGitHubToken() || '';
   });
   const [activeTab, setActiveTab] = useState<'url' | 'token'>('url');
   const [isLoading, setIsLoading] = useState(false);
@@ -63,14 +69,12 @@ export const GitHubImportModal: React.FC<GitHubImportModalProps> = ({
 
   const handleSaveToken = () => {
     const token = personalToken.trim();
-    if (typeof window !== 'undefined') {
-      if (token) {
-        localStorage.setItem('manifest_github_pat', token);
-        onShowToast('Personal access token saved');
-      } else {
-        localStorage.removeItem('manifest_github_pat');
-        onShowToast('Personal access token removed');
-      }
+    if (token) {
+      setStoredGitHubToken(token);
+      onShowToast('Personal access token saved for current session');
+    } else {
+      clearStoredGitHubToken();
+      onShowToast('Personal access token cleared');
     }
     setActiveTab('url');
   };
@@ -172,7 +176,7 @@ export const GitHubImportModal: React.FC<GitHubImportModalProps> = ({
                   className="w-full px-3 py-2 rounded-md bg-[#252526] border border-[#3c3c3c] text-[#cccccc] placeholder-[#666666] focus:border-[#569cd6] focus:outline-none font-mono"
                 />
                 <div className="text-[10px] text-[#858585] mt-1.5">
-                  Stored locally in your browser to avoid GitHub API unauthenticated rate limits (60 req/hr) and access private repos.
+                  Stored in sessionStorage for this browser session only (never persisted to localStorage) to raise GitHub API rate limits and access private repos.
                 </div>
               </div>
 

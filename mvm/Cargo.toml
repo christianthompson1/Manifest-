@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/mvm-core",
+    "crates/manifest-compiler",
     "crates/mvm-cli",
     "crates/mvm-wasm",
 ]

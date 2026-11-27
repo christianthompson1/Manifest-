@@ -8,12 +8,11 @@ import { Completion, CompletionContext, CompletionResult, snippetCompletion } fr
 import { EditorView, hoverTooltip, Tooltip } from '@codemirror/view';
 import {
   detectSyntaxProfile,
-  isLegacyDomainManifestSource,
+  isSolanaProgramSource,
   checkManifestSource,
   STD_INTRINSICS,
   lookupStdIntrinsic,
   formatSemanticType,
-  formatTypeNode,
 } from '../../../manifest-core/src/index.ts';
 
 export interface ManifestCompletionItem {
@@ -286,21 +285,13 @@ const STD_COMPLETIONS: ManifestCompletionItem[] = STD_INTRINSICS.map((sig) => ({
   boost: 84,
 }));
 
-// Legacy UI & Solana Domain Completions (preserved for backward compatibility)
-const LEGACY_DOMAIN_COMPLETIONS: ManifestCompletionItem[] = [
-  {
-    label: 'APP',
-    type: 'keyword',
-    detail: 'APP "Name"',
-    info: 'Declare a declarative Web UI application.',
-    template: 'APP "${1:MyProgram}"',
-    boost: 82,
-  },
+// Beginner v1 Statements & Standalone Solana Contract Completions
+const BEGINNER_AND_SOLANA_COMPLETIONS: ManifestCompletionItem[] = [
   {
     label: 'SET',
     type: 'keyword',
     detail: 'SET variable = value',
-    info: 'Mutate a mutable variable or reactive state.',
+    info: 'Mutate a mutable variable (Beginner Profile).',
     template: 'SET ${1:variable} = ${2:0}',
     boost: 82,
   },
@@ -337,14 +328,6 @@ const LEGACY_DOMAIN_COMPLETIONS: ManifestCompletionItem[] = [
     boost: 80,
   },
   {
-    label: 'PAGE',
-    type: 'class',
-    detail: 'PAGE Name ... END',
-    info: 'Declare a Web UI page container.',
-    template: 'PAGE ${1:Home}\n    ${2:TEXT "Welcome"}\nEND',
-    boost: 80,
-  },
-  {
     label: 'PROGRAM',
     type: 'class',
     detail: 'PROGRAM Name ... END',
@@ -354,7 +337,7 @@ const LEGACY_DOMAIN_COMPLETIONS: ManifestCompletionItem[] = [
   },
 ];
 
-function extractDocumentScope(docText: string): ManifestCompletionItem[] {
+async function extractDocumentScope(docText: string): Promise<ManifestCompletionItem[]> {
   const items: ManifestCompletionItem[] = [];
   const seen = new Set<string>();
 
@@ -365,57 +348,55 @@ function extractDocumentScope(docText: string): ManifestCompletionItem[] {
     }
   };
 
-  // Try structured v1.0 type-checked AST extraction first
-  if (!isLegacyDomainManifestSource(docText)) {
+  // Query authoritative Rust compiler engine AST summary first
+  if (!isSolanaProgramSource(docText)) {
     try {
-      const checked = checkManifestSource(docText);
-      if (checked.ast) {
-        const isPro = checked.resolvedProfile === 'professional';
-        for (const fn of checked.ast.functions) {
+      const checked = await checkManifestSource(docText);
+      if (checked.astSummary) {
+        for (const fn of checked.astSummary.functions) {
           const paramsStr = fn.params
-            .map((p) => `${p.name}: ${formatTypeNode(p.type, isPro)}`)
+            .map((p) => `${p.name}: ${p.typeStr}`)
             .join(', ');
-          const retStr = formatTypeNode(fn.returnType, isPro);
           addUnique({
             label: fn.name,
             type: 'function',
-            detail: `fn(${paramsStr}) -> ${retStr}`,
+            detail: `fn(${paramsStr}) -> ${fn.returnTypeStr}`,
             info: fn.effects.length > 0 ? `Effects: ${fn.effects.join(', ')}` : 'Pure function',
             boost: 75,
           });
         }
-        for (const st of checked.ast.structs) {
+        for (const st of checked.astSummary.structs) {
           addUnique({
             label: st.name,
             type: 'class',
             detail: `struct (${st.fields.length} fields)`,
-            info: `Fields: ${st.fields.map((f) => `${f.name}: ${formatTypeNode(f.type, isPro)}`).join(', ')}`,
+            info: `Fields: ${st.fields.map((f) => `${f.name}: ${f.typeStr}`).join(', ')}`,
             boost: 74,
           });
         }
-        for (const en of checked.ast.enums) {
+        for (const en of checked.astSummary.enums) {
           addUnique({
             label: en.name,
             type: 'class',
-            detail: `enum (${en.variants.map((v) => v.name).join(' | ')})`,
+            detail: `enum (${en.variants.join(' | ')})`,
             boost: 74,
           });
         }
-        for (const c of checked.ast.constants) {
+        for (const c of checked.astSummary.constants) {
           addUnique({
             label: c.name,
             type: 'constant',
-            detail: formatTypeNode(c.typeAnnotation, isPro),
+            detail: c.typeStr,
             boost: 71,
           });
         }
-        for (const g of checked.ast.globals) {
+        for (const g of checked.astSummary.globals) {
           addUnique({
             label: g.name,
             type: 'variable',
             detail:
-              g.typeAnnotation.kind !== 'InferredType'
-                ? formatTypeNode(g.typeAnnotation, isPro)
+              g.typeStr !== 'any'
+                ? g.typeStr
                 : g.mutable
                   ? 'mut var'
                   : 'let binding',
@@ -424,12 +405,12 @@ function extractDocumentScope(docText: string): ManifestCompletionItem[] {
         }
       }
     } catch {
-      // Fallback to regex token scan while user is mid-keystroke
+      // Ignore transient parse failures while user is mid-keystroke; regex token scan below keeps typing responsive
     }
   }
 
   let match: RegExpExecArray | null;
-  const fnRegex = /\b(?:fn|FUNCTION|ACTION)\s+([a-zA-Z_][a-zA-Z0-9_]*)/g;
+  const fnRegex = /\b(?:fn|FUNCTION)\s+([a-zA-Z_][a-zA-Z0-9_]*)/g;
   while ((match = fnRegex.exec(docText)) !== null) {
     addUnique({ label: match[1], type: 'function', detail: 'Function', boost: 68 });
   }
@@ -442,24 +423,24 @@ function extractDocumentScope(docText: string): ManifestCompletionItem[] {
   return items;
 }
 
-export function manifestAutocomplete(context: CompletionContext): CompletionResult | null {
+export async function manifestAutocomplete(context: CompletionContext): Promise<CompletionResult | null> {
   const word = context.matchBefore(/[a-zA-Z_][a-zA-Z0-9_.:]*/);
   if (!word && !context.explicit) {
     return null;
   }
 
   const docText = context.state.doc.toString();
-  const isLegacy = isLegacyDomainManifestSource(docText);
+  const isSolana = isSolanaProgramSource(docText);
   const detectedProfile = detectSyntaxProfile(docText);
-  const scopeItems = extractDocumentScope(docText);
+  const scopeItems = await extractDocumentScope(docText);
 
   let pool: ManifestCompletionItem[];
-  if (isLegacy) {
-    pool = [...LEGACY_DOMAIN_COMPLETIONS, ...BEGINNER_V1_COMPLETIONS, ...completionRegistry.getCompletions(), ...scopeItems];
+  if (isSolana) {
+    pool = [...BEGINNER_AND_SOLANA_COMPLETIONS, ...completionRegistry.getCompletions(), ...scopeItems];
   } else if (detectedProfile === 'professional') {
     pool = [...PROFESSIONAL_COMPLETIONS, ...STD_COMPLETIONS, ...completionRegistry.getCompletions(), ...scopeItems];
   } else {
-    pool = [...BEGINNER_V1_COMPLETIONS, ...PROFESSIONAL_COMPLETIONS, ...STD_COMPLETIONS, ...LEGACY_DOMAIN_COMPLETIONS, ...completionRegistry.getCompletions(), ...scopeItems];
+    pool = [...BEGINNER_V1_COMPLETIONS, ...PROFESSIONAL_COMPLETIONS, ...STD_COMPLETIONS, ...BEGINNER_AND_SOLANA_COMPLETIONS, ...completionRegistry.getCompletions(), ...scopeItems];
   }
 
   const deduped = new Map<string, ManifestCompletionItem>();
@@ -508,7 +489,7 @@ const CAPABILITY_DOCS: Record<string, string> = {
 /**
  * CodeMirror 6 Hover Tooltip providing static types, function effects, and capability explanations.
  */
-export const manifestHoverTooltip = hoverTooltip((view: EditorView, pos: number): Tooltip | null => {
+export const manifestHoverTooltip = hoverTooltip(async (view: EditorView, pos: number): Promise<Tooltip | null> => {
   const doc = view.state.doc;
   const line = doc.lineAt(pos);
   const text = line.text;
@@ -536,40 +517,36 @@ export const manifestHoverTooltip = hoverTooltip((view: EditorView, pos: number)
       stdSig.capability !== 'pure'
         ? `Standard library intrinsic • Requires capability: ${stdSig.capability}`
         : 'Pure deterministic standard library intrinsic';
-  } else if (!isLegacyDomainManifestSource(fullSource)) {
+  } else if (!isSolanaProgramSource(fullSource)) {
     try {
-      const checked = checkManifestSource(fullSource);
-      if (checked.typeCheck) {
-        const fnSig = checked.typeCheck.functions.get(token);
+      const checked = await checkManifestSource(fullSource);
+      if (checked.astSummary) {
+        const fnSig = checked.astSummary.functions.find((f) => f.name === token);
         if (fnSig) {
           const auditFn = checked.capabilityAudit?.functions.find((s) => s.name === token);
           const effectsLabel =
             auditFn && auditFn.inferredEffects.length > 0
               ? ` effects(${auditFn.inferredEffects.join(', ')})`
-              : ' [pure]';
+              : fnSig.effects.length > 0
+                ? ` effects(${fnSig.effects.join(', ')})`
+                : ' [pure]';
           const paramsText = fnSig.params
-            .map((p) => `${p.name}: ${formatSemanticType(p.type)}`)
+            .map((p) => `${p.name}: ${p.typeStr}`)
             .join(', ');
-          header = `fn ${token}(${paramsText}) -> ${formatSemanticType(fnSig.returnType)}${effectsLabel}`;
-          body = `Verified in ${checked.resolvedProfile} syntax profile.`;
+          header = `fn ${token}(${paramsText}) -> ${fnSig.returnTypeStr}${effectsLabel}`;
+          body = `Verified in ${checked.resolvedProfile} syntax profile (${checked.compilerEngine || 'rust-manifest-compiler'}).`;
         } else {
-          const stType = checked.typeCheck.structs.get(token);
-          if (stType && stType.kind === 'struct') {
+          const stType = checked.astSummary.structs.find((s) => s.name === token);
+          if (stType) {
             header = `struct ${stType.name}`;
             body = `Fields: ${stType.fields
-              .map((f) => `${f.name}: ${formatSemanticType(f.type)}`)
+              .map((f) => `${f.name}: ${f.typeStr}`)
               .join(', ')}`;
           } else {
-            const enType = checked.typeCheck.enums.get(token);
-            if (enType && enType.kind === 'enum') {
+            const enType = checked.astSummary.enums.find((e) => e.name === token);
+            if (enType) {
               header = `enum ${enType.name}`;
-              body = `Variants: ${enType.variants
-                .map((v) =>
-                  v.payload.length
-                    ? `${v.name}(${v.payload.map(formatSemanticType).join(', ')})`
-                    : v.name
-                )
-                .join(' | ')}`;
+              body = `Variants: ${enType.variants.join(' | ')}`;
             }
           }
         }

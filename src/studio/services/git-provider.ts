@@ -111,30 +111,76 @@ export function parseGitHubUrl(url: string): ParsedGitHubUrl | null {
   };
 }
 
-export function getStoredGitHubToken(): string | undefined {
-  if (typeof window === 'undefined') return undefined;
-  // Prefer sessionStorage for security against persistent token theft
-  const sessionToken = sessionStorage.getItem('manifest_github_pat');
-  if (sessionToken) return sessionToken.trim();
+export const GITHUB_PAT_STORAGE_KEY = 'manifest_github_pat';
 
-  // Migrate legacy localStorage if present
-  const localToken = localStorage.getItem('manifest_github_pat');
-  if (localToken) {
-    sessionStorage.setItem('manifest_github_pat', localToken.trim());
-    localStorage.removeItem('manifest_github_pat');
-    return localToken.trim();
+function getSafeStorage(kind: 'sessionStorage' | 'localStorage'): Storage | null {
+  try {
+    const scope = typeof window !== 'undefined' ? (window as any) : (globalThis as any);
+    const storage = scope?.[kind];
+    if (
+      storage &&
+      typeof storage.getItem === 'function' &&
+      typeof storage.setItem === 'function' &&
+      typeof storage.removeItem === 'function'
+    ) {
+      return storage as Storage;
+    }
+  } catch {
+    // Ignore storage access errors (e.g. restricted sandbox or SSR)
   }
-  return undefined;
+  return null;
 }
 
-export function setStoredGitHubToken(token: string | null) {
-  if (typeof window === 'undefined') return;
-  if (!token) {
-    sessionStorage.removeItem('manifest_github_pat');
-    localStorage.removeItem('manifest_github_pat');
-  } else {
-    sessionStorage.setItem('manifest_github_pat', token.trim());
-    localStorage.removeItem('manifest_github_pat');
+function purgeLegacyLocalGitHubToken(): void {
+  const local = getSafeStorage('localStorage');
+  if (!local) return;
+  try {
+    local.removeItem(GITHUB_PAT_STORAGE_KEY);
+  } catch {
+    // Ignore cleanup errors
+  }
+}
+
+export function clearStoredGitHubToken(): void {
+  const session = getSafeStorage('sessionStorage');
+  if (session) {
+    try {
+      session.removeItem(GITHUB_PAT_STORAGE_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+  }
+  purgeLegacyLocalGitHubToken();
+}
+
+export function getStoredGitHubToken(): string | undefined {
+  // Always purge any legacy persistent localStorage PAT without migrating it into sessionStorage
+  purgeLegacyLocalGitHubToken();
+
+  const session = getSafeStorage('sessionStorage');
+  if (!session) return undefined;
+  try {
+    const sessionToken = session.getItem(GITHUB_PAT_STORAGE_KEY);
+    const trimmed = sessionToken?.trim();
+    return trimmed ? trimmed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function setStoredGitHubToken(token: string | null): void {
+  purgeLegacyLocalGitHubToken();
+  const trimmed = token ? token.trim() : '';
+  if (!trimmed) {
+    clearStoredGitHubToken();
+    return;
+  }
+  const session = getSafeStorage('sessionStorage');
+  if (!session) return;
+  try {
+    session.setItem(GITHUB_PAT_STORAGE_KEY, trimmed);
+  } catch {
+    // Ignore storage errors
   }
 }
 

@@ -5,6 +5,7 @@ import {
   SemanticStmt,
   SourceSpan,
 } from '../core/ast-v2.ts';
+import { ManifestError } from '../errors/manifest-error.ts';
 import { CapabilityAuditReport } from '../semantics/capability-analyzer.ts';
 import { TypeCheckResult } from '../semantics/type-checker.ts';
 import {
@@ -117,7 +118,7 @@ class FunctionLoweringContext {
     switch (stmt.kind) {
       case 'VarStmt': {
         const val = this.lowerExpr(stmt.decl.init);
-        if (this.fnName === '__script__' && this.scopes.length === 1) {
+        if ((this.fnName === '__script__' || this.fnName === '__init__') && this.scopes.length === 1) {
           const glob = this.lookupGlobal(stmt.decl.name);
           if (glob) {
             out.push({
@@ -567,18 +568,25 @@ class FunctionLoweringContext {
       }
 
       case 'TryStmt': {
-        // Honest diagnostic: TryStmt catchBody cannot be dropped silently.
-        // Once MVM v1.1 exception unwinding table and Result-lowering are implemented,
-        // this will lower to an explicit try_catch block.
+        const err = new ManifestError(
+          `[E_UNSUPPORTED_FEATURE] Unsupported feature: 'try / catch' / 'TRY / IF FAILED' statements are not supported in the Manifest v1.0 IR and runtime pipeline.`,
+          stmt.span.line,
+          stmt.span.column,
+          `Replace 'try / catch' with a function returning 'Result<T, str>' and handle with 'match' or '?'.`,
+          undefined,
+          'ir-lowering'
+        );
+        (err as { code?: string }).code = 'E_UNSUPPORTED_FEATURE';
         this.diagnostics.push({
-          code: 'E_UNIMPLEMENTED_FEATURE',
+          code: 'E_UNSUPPORTED_FEATURE',
           severity: 'error',
-          message: `The 'try / catch' construct is not yet supported in the Manifest IR and MVM execution pipeline. Use Result<T, E> (Ok / Err) and 'match' pattern matching for explicit, deterministic error handling.`,
+          message: err.message,
           line: stmt.span.line,
           column: stmt.span.column,
-          hint: `Replace 'try { ... } catch' with a function returning 'Result<T, str>' and handle with 'match res { Ok(val) => ..., Err(err) => ... }'.`,
+          file: stmt.span.file,
+          hint: err.hint,
         });
-        break;
+        throw err;
       }
     }
   }
@@ -915,6 +923,19 @@ export function buildTypedIR(
   typeCheck: TypeCheckResult,
   capabilityAudit: CapabilityAuditReport
 ): MIRModule {
+  if (module.traits.length > 0) {
+    const tr = module.traits[0];
+    const err = new ManifestError(
+      `[E_UNSUPPORTED_FEATURE] Unsupported feature: 'trait' declaration '${tr.name}' cannot be lowered into Typed MIR (trait dispatch is not implemented in v1.0).`,
+      tr.span.line,
+      tr.span.column,
+      `Replace 'trait ${tr.name}' with concrete 'struct' types and typed functions.`,
+      undefined,
+      'ir-lowering'
+    );
+    (err as { code?: string }).code = 'E_UNSUPPORTED_FEATURE';
+    throw err;
+  }
   const structs: MIRStruct[] = [];
   const structsByName = new Map<string, MIRStruct>();
 
@@ -1027,7 +1048,7 @@ export function buildTypedIR(
     const g: MIRGlobal = {
       name: gv.name,
       slot,
-      mutable: gv.mutable,
+      mutable: true,
       isConst: false,
       exported: gv.exported,
       type: initExpr.type,
@@ -1054,6 +1075,11 @@ export function buildTypedIR(
   const hasUserMain = module.functions.some((f) => f.name === 'main');
   const hasTopLevel = module.topLevelStmts.length > 0;
   const topCallsMain = hasTopLevel && stmtsContainCallToMain(module.topLevelStmts);
+  const runTopLevelInInit = hasTopLevel && hasUserMain && !topCallsMain;
+
+  if (runTopLevelInInit) {
+    initCtx.lowerBlock(module.topLevelStmts).forEach((s) => initBody.push(s));
+  }
 
   if (initBody.length > 0) {
     initBody.push({ kind: 'Return', span: module.span });
@@ -1114,12 +1140,12 @@ export function buildTypedIR(
   let entryFunction: string | undefined;
 
   for (const fn of module.functions) {
-    const isEntry = fn.name === 'main' && (!hasTopLevel || !topCallsMain);
+    const isEntry = fn.name === 'main' && (!hasTopLevel || runTopLevelInInit || !topCallsMain);
     if (isEntry) entryFunction = 'main';
     functions.push(lowerUserFunction(fn, isEntry));
   }
 
-  if (hasTopLevel) {
+  if (hasTopLevel && !runTopLevelInInit) {
     const scriptCtx = new FunctionLoweringContext(
       '__script__',
       T_ANY,

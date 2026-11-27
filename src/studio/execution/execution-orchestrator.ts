@@ -224,8 +224,7 @@ export class ExecutionOrchestrator {
         lowerPath === 'manifest.toml' ||
         (activeFile.language === 'plaintext' &&
           activeFile.content &&
-          (activeFile.content.trimStart().startsWith('APP ') ||
-            activeFile.content.trimStart().startsWith('PAGE ') ||
+          (activeFile.content.trimStart().startsWith('PROGRAM ') ||
             activeFile.content.trimStart().startsWith('module ') ||
             activeFile.content.trimStart().startsWith('MODULE ')))
       ) {

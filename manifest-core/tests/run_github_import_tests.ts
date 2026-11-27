@@ -75,7 +75,7 @@ export async function runGitHubImportTests(): Promise<{ passed: number; failed: 
 
     // Add 40 files across nested directories
     for (let i = 1; i <= 40; i++) {
-      mockZip.file(`${rootDir}/src/module${Math.floor(i / 10)}/file_${i}.manifest`, `APP "App${i}"\nSHOW "File ${i}"\nEND`);
+      mockZip.file(`${rootDir}/src/module${Math.floor(i / 10)}/file_${i}.manifest`, `module app_${i};\nrequires console;\nfn main() -> i64 effects(console) {\n  console.print("File ${i}");\n  return 0;\n}`);
     }
     // Add a binary png file
     const sampleBinary = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]); // PNG header
@@ -126,7 +126,7 @@ export async function runGitHubImportTests(): Promise<{ passed: number; failed: 
       if (urlStr.includes('/zipball/')) {
         requestedBranch = decodeURIComponent(urlStr.split('/zipball/')[1]);
         const zip = new JSZip();
-        zip.file('root/src/main.manifest', 'APP "SlashBranch"\nEND');
+        zip.file('root/src/main.manifest', 'module slash_branch;\nfn main() -> i64 { return 0; }');
         const buf = await zip.generateAsync({ type: 'arraybuffer' });
         return new Response(buf, { status: 200 });
       }

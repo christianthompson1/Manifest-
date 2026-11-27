@@ -1,6 +1,6 @@
 /**
  * Manifest Studio - Interactive CLI Terminal Panel (v1.0)
- * Executes real Manifest v1.0 CLI commands (check, run, build, ir, bytecode, disassemble, verify, format, targets)
+ * Executes real Manifest v1.0 CLI commands (check, run, build, ir, bytecode, disassemble, verify, format, migrate, targets)
  * directly in the browser environment against the Rust Manifest Virtual Machine (WASM) and compiler pipeline.
  * Styled with VS Code Dark Modern tokens (#1f1f1f buffer, #181818 subheader/input, #2d2d2d borders).
  */
@@ -8,16 +8,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Terminal, Send, Trash2 } from 'lucide-react';
 import {
-  executeManifest,
-  inspectManifest,
-  generateManifestIR,
-  compileManifest,
-  isLegacyDomainManifestSource,
+  isSolanaProgramSource,
+  parseSolanaProgramSource,
   checkManifestSource,
   compileManifestV1,
   runManifestOnRustMvm,
   formatManifestSource,
   verifyMbcInRustVm,
+  migrateV0ToV1,
   COMPILER_TARGETS,
 } from '../../../manifest-core/src/index.ts';
 
@@ -48,11 +46,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource, wor
       output: [
         'Available commands:',
         '  manifest check             - Type-check & verify capabilities/effects',
-        '  manifest run               - Compile to .mbc & execute on Rust MVM (or UI runtime)',
+        '  manifest run               - Compile to .mbc & execute on Rust MVM',
         '  manifest ir                - Print optimized Typed Manifest IR',
         '  manifest disassemble       - Emit & disassemble .mbc v1.0 bytecode',
         '  manifest verify            - Run static .mbc verifier inside Rust MVM',
         '  manifest build [target]    - Build target (mvm | web-js | wasm | native | solana-sbf)',
+        '  manifest migrate           - Convert legacy v0.x source to canonical v1.0 (opt-in)',
         '  manifest targets           - List all compiler targets & honest statuses',
         '  clear                      - Clear terminal buffer',
       ],
@@ -91,13 +90,14 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource, wor
             '',
             'Commands:',
             '  check                 Validate syntax, static types & transitive capability effects',
-            '  run                   Execute active program on Rust MVM (.mbc) or Web runtime',
+            '  run                   Execute active program on Rust MVM (.mbc)',
             '  ir                    Inspect optimized Typed Manifest IR',
             '  bytecode              Compile to binary .mbc and report container metrics',
             '  disassemble           Print human-readable .mbc bytecode disassembly',
             '  verify                Verify .mbc stack heights & jump bounds via Rust MVM',
             '  build [target]        Compile to mvm | web-js | wasm | native | solana-sbf',
             '  format [profile]      Format source as beginner or professional',
+            '  migrate               Explicitly migrate legacy v0.x source to canonical v1.0',
             '  targets               List all registered compilation targets',
           ];
         } else if (action === '--version' || action === '-v') {
@@ -108,12 +108,25 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource, wor
             ...COMPILER_TARGETS.map((t) => `  • ${t.id.padEnd(14)} [${t.status}] — ${t.name}`),
           ];
         } else if (action === 'check') {
-          if (!isLegacyDomainManifestSource(currentSource)) {
-            const res = checkManifestSource(currentSource, { files: workspaceFiles });
+          if (isSolanaProgramSource(currentSource)) {
+            const solRes = parseSolanaProgramSource(currentSource);
+            if (solRes.ok && solRes.program) {
+              output = [
+                `[CHECK PASS] Solana Contract PROGRAM "${solRes.program.programName}" (${solRes.program.accounts.length} accounts, ${solRes.program.instructions.length} instructions)`,
+              ];
+            } else {
+              isError = true;
+              output = [
+                `[CHECK FAIL] ${solRes.diagnostics.length} diagnostic(s):`,
+                ...solRes.diagnostics.map((d) => `  • [${d.code}] Line ${d.line || 1}: ${d.message}`),
+              ];
+            }
+          } else {
+            const res = await checkManifestSource(currentSource, { files: workspaceFiles });
             if (res.ok) {
               const reqs = res.capabilityAudit?.declaredRequires.join(', ') || 'none';
               output = [
-                `[CHECK PASS] Profile: ${res.resolvedProfile} | Functions: ${res.ast?.functions.length || 0} | Capabilities: ${reqs}`,
+                `[CHECK PASS] Profile: ${res.resolvedProfile} | Functions: ${res.astSummary?.functions.length || 0} | Capabilities: ${reqs}`,
               ];
             } else {
               isError = true;
@@ -122,23 +135,12 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource, wor
                 ...res.diagnostics.map((d) => `  • [${d.code}] Line ${d.line || 1}: ${d.message}`),
               ];
             }
-          } else {
-            const inspection = inspectManifest(currentSource);
-            const synDiags = inspection.diagnostics || [];
-            const valIssues = inspection.validation?.issues || [];
-            const allIssues = [...synDiags, ...valIssues];
-            if (allIssues.filter((i: any) => i.severity !== 'warning').length === 0) {
-              output = ['[CHECK PASS] Declarative Manifest syntax & semantics valid.'];
-            } else {
-              isError = true;
-              output = [
-                `[CHECK FAIL] ${allIssues.length} issue(s):`,
-                ...allIssues.map((iss: any) => `  • Line ${iss.line || 1}: ${iss.message}`),
-              ];
-            }
           }
         } else if (action === 'run') {
-          if (!isLegacyDomainManifestSource(currentSource)) {
+          if (isSolanaProgramSource(currentSource)) {
+            isError = true;
+            output = ['Solana PROGRAM files target `manifest build solana-sbf` or LiteSVM simulation rather than Rust MVM .mbc.'];
+          } else {
             const vmRun = await runManifestOnRustMvm(currentSource, { files: workspaceFiles });
             if (vmRun.ok) {
               output = [
@@ -153,38 +155,24 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource, wor
                 ...vmRun.stdout.map((line) => `  > ${line}`),
               ];
             }
-          } else {
-            const runRes = await executeManifest(currentSource);
-            if (runRes.validationIssues.length === 0) {
-              output = [
-                `[EXEC OK] Executed (${runRes.output.length} outputs):`,
-                ...runRes.output.map((log: string) => `  > ${log}`),
-              ];
-            } else {
-              isError = true;
-              output = [
-                `[EXEC DIAGNOSTICS] ${runRes.validationIssues.length} issue(s):`,
-                ...runRes.validationIssues.map((e: any) => `  • Line ${e.line || 1}: ${e.message}`),
-              ];
-            }
           }
         } else if (action === 'ir') {
-          if (!isLegacyDomainManifestSource(currentSource)) {
-            const comp = await compileManifestV1(currentSource, { target: 'mvm', files: workspaceFiles });
-            if (comp.irText) {
-              output = [comp.irText];
-            } else {
-              isError = true;
-              output = comp.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
-            }
+          const comp = await compileManifestV1(currentSource, {
+            target: isSolanaProgramSource(currentSource) ? 'solana-sbf' : 'mvm',
+            files: workspaceFiles,
+          });
+          if (comp.irText) {
+            output = [comp.irText];
+          } else if (comp.success && comp.rustCode) {
+            output = [comp.rustCode];
           } else {
-            const ir = generateManifestIR(currentSource);
-            output = [JSON.stringify(ir, null, 2)];
+            isError = true;
+            output = comp.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
           }
         } else if (action === 'bytecode' || action === 'disassemble' || action === 'disasm') {
-          if (isLegacyDomainManifestSource(currentSource)) {
+          if (isSolanaProgramSource(currentSource)) {
             isError = true;
-            output = ['Declarative UI apps compile to DOM JS rather than .mbc bytecode. Open a v1.0 module to inspect .mbc.'];
+            output = ['Solana PROGRAM blocks compile to Anchor Rust / SBF rather than .mbc bytecode. Run `manifest build solana-sbf`.'];
           } else {
             const comp = await compileManifestV1(currentSource, { target: 'mvm', files: workspaceFiles });
             if (comp.success && comp.mbcBytes) {
@@ -223,30 +211,29 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ currentSource, wor
             isError = true;
             output = fmt.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
           }
+        } else if (action === 'migrate') {
+          const mig = migrateV0ToV1(currentSource);
+          output = [
+            `[MIGRATED] Profile: ${mig.targetProfile} | Target hint: ${mig.targetHint} | Changes: ${mig.changes.length}`,
+            ...mig.warnings.map((w) => `  ! ${w}`),
+            '',
+            mig.migratedSource,
+          ];
         } else if (action === 'build') {
-          const requestedTarget = parts[2] && !parts[2].endsWith('.manifest') ? parts[2].toLowerCase() : parts[3]?.toLowerCase() || 'mvm';
-          if (!isLegacyDomainManifestSource(currentSource)) {
-            const comp = await compileManifestV1(currentSource, { target: requestedTarget, files: workspaceFiles });
-            if (comp.success) {
-              output = [
-                `[BUILD OK] Target: ${comp.target.id} (${comp.target.status})`,
-                ...comp.artifacts.map((a) => `  • ${a.filename} (${a.bytes ? a.bytes.byteLength : (a.text || '').length} bytes)`),
-              ];
-            } else {
-              isError = true;
-              output = comp.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
-            }
+          const defaultTarget = isSolanaProgramSource(currentSource) ? 'solana-sbf' : 'mvm';
+          const requestedTarget =
+            parts[2] && !parts[2].endsWith('.manifest')
+              ? parts[2].toLowerCase()
+              : parts[3]?.toLowerCase() || defaultTarget;
+          const comp = await compileManifestV1(currentSource, { target: requestedTarget, files: workspaceFiles });
+          if (comp.success) {
+            output = [
+              `[BUILD OK] Target: ${comp.target.id} (${comp.target.status})`,
+              ...comp.artifacts.map((a) => `  • ${a.filename} (${a.bytes ? a.bytes.byteLength : (a.text || '').length} bytes)`),
+            ];
           } else {
-            const compileRes = await compileManifest(currentSource, requestedTarget === 'mvm' ? 'js' : requestedTarget);
-            if (compileRes.success) {
-              output = [
-                `[BUILD OK] Target: ${requestedTarget}`,
-                ...compileRes.artifacts.map((a: any) => `  • ${a.fileName} (${a.sizeBytes || a.content?.length || 0} bytes)`),
-              ];
-            } else {
-              isError = true;
-              output = compileRes.diagnostics.map((d: any) => `  • Line ${d.line || 1}: ${d.message}`);
-            }
+            isError = true;
+            output = comp.diagnostics.map((d) => `  • Line ${d.line || 1}: ${d.message}`);
           }
         } else {
           isError = true;

@@ -29,6 +29,7 @@ mod tests {
     use crate::bytecode::section_tags;
     use crate::instruction::opcodes;
 
+    #[allow(clippy::too_many_arguments)]
     fn build_test_mbc(
         requires: &[&str],
         denies: &[&str],
@@ -39,7 +40,8 @@ mod tests {
         local_count: u16,
         max_stack: u16,
     ) -> Vec<u8> {
-        let mut const_pool_strs: Vec<String> = constants_str.iter().map(|s| s.to_string()).collect();
+        let mut const_pool_strs: Vec<String> =
+            constants_str.iter().map(|s| s.to_string()).collect();
         let add_str = |pool: &mut Vec<String>, s: &str| -> u32 {
             if let Some(pos) = pool.iter().position(|x| x == s) {
                 (constants_i64.len() + pos) as u32
@@ -204,7 +206,10 @@ mod tests {
 
     #[test]
     fn rejects_unverified_or_corrupt_bytecode() {
-        assert_eq!(decode_mbc(b"BAD!0123456789abcdef").unwrap_err(), MvmError::InvalidMagic);
+        assert_eq!(
+            decode_mbc(b"BAD!0123456789abcdef").unwrap_err(),
+            MvmError::InvalidMagic
+        );
 
         // Stack underflow on ADD_I64 with only 1 operand
         let mut bad_code = Vec::new();
@@ -295,6 +300,26 @@ mod tests {
         // 3) Both module `requires` AND host policy grant `fs.read` -> succeeds!
         let ok = vm_granted.execute(&mod2, &mut host, None).unwrap();
         assert_eq!(ok.return_value, Value::Str("top-secret".to_string()));
+
+        // 4) Narrow `requires [fs.read]` MUST NOT satisfy a host import needing broad `fs`
+        let bytes_broad_import = build_test_mbc(
+            &["fs.read"],
+            &[],
+            &[],
+            &["secret.txt"],
+            &[("fs.admin_raw", "fs", 1, true)],
+            &code,
+            0,
+            4,
+        );
+        let mut mod_broad = decode_mbc(&bytes_broad_import).unwrap();
+        verify_module(&mut mod_broad).unwrap();
+        let vm_full_fs =
+            VirtualMachine::new(VmLimits::default(), CapabilityPolicy::with_granted(["fs"]));
+        assert!(matches!(
+            vm_full_fs.execute(&mod_broad, &mut host, None).unwrap_err(),
+            MvmError::CapabilityDenied { .. }
+        ));
     }
 
     #[test]
@@ -343,5 +368,643 @@ mod tests {
             stdlib::deterministic_hash_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+        assert_eq!(
+            stdlib::deterministic_hash_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    struct FnSpec<'a> {
+        name: &'a str,
+        param_count: u16,
+        local_count: u16,
+        max_stack: u16,
+        has_return: bool,
+        code: Vec<u8>,
+    }
+
+    fn build_multi_fn_mbc(
+        requires: &[&str],
+        denies: &[&str],
+        global_count: u32,
+        entry_fn_idx: u32,
+        constants: &[bytecode::ConstantEntry],
+        imports: &[(&str, &str, u16, bool)],
+        functions: &[FnSpec<'_>],
+    ) -> Vec<u8> {
+        let mut const_pool = constants.to_vec();
+        let add_str = |pool: &mut Vec<bytecode::ConstantEntry>, s: &str| -> u32 {
+            for (idx, item) in pool.iter().enumerate() {
+                if let bytecode::ConstantEntry::Str(existing) = item {
+                    if existing == s {
+                        return idx as u32;
+                    }
+                }
+            }
+            let idx = pool.len() as u32;
+            pool.push(bytecode::ConstantEntry::Str(s.to_string()));
+            idx
+        };
+
+        let mut fn_name_indices = Vec::with_capacity(functions.len());
+        for f in functions {
+            fn_name_indices.push(add_str(&mut const_pool, f.name));
+        }
+
+        let mut import_records = Vec::with_capacity(imports.len());
+        for (sym, cap, arity, has_ret) in imports {
+            let s_idx = add_str(&mut const_pool, sym);
+            let c_idx = add_str(&mut const_pool, cap);
+            import_records.push((s_idx, c_idx, *arity, *has_ret));
+        }
+
+        // Section 1: Module meta
+        let mut sec_meta = Vec::new();
+        write_str(&mut sec_meta, "stage5_test_mod");
+        sec_meta.extend_from_slice(&(requires.len() as u16).to_le_bytes());
+        for r in requires {
+            write_str(&mut sec_meta, r);
+        }
+        sec_meta.extend_from_slice(&0u16.to_le_bytes());
+        sec_meta.extend_from_slice(&(denies.len() as u16).to_le_bytes());
+        for d in denies {
+            write_str(&mut sec_meta, d);
+        }
+
+        // Section 2: Constant pool
+        let mut sec_consts = Vec::new();
+        sec_consts.extend_from_slice(&(const_pool.len() as u32).to_le_bytes());
+        for c in &const_pool {
+            match c {
+                bytecode::ConstantEntry::I64(n) => {
+                    sec_consts.push(0x01);
+                    sec_consts.extend_from_slice(&n.to_le_bytes());
+                }
+                bytecode::ConstantEntry::F64(n) => {
+                    sec_consts.push(0x02);
+                    sec_consts.extend_from_slice(&n.to_le_bytes());
+                }
+                bytecode::ConstantEntry::Bool(b) => {
+                    sec_consts.push(0x03);
+                    sec_consts.push(if *b { 1 } else { 0 });
+                }
+                bytecode::ConstantEntry::Str(s) => {
+                    sec_consts.push(0x04);
+                    write_str(&mut sec_consts, s);
+                }
+            }
+        }
+
+        // Section 4: Imports
+        let mut sec_imports = Vec::new();
+        sec_imports.extend_from_slice(&(import_records.len() as u32).to_le_bytes());
+        for (s_idx, c_idx, arity, has_ret) in import_records {
+            sec_imports.extend_from_slice(&s_idx.to_le_bytes());
+            sec_imports.extend_from_slice(&c_idx.to_le_bytes());
+            sec_imports.extend_from_slice(&arity.to_le_bytes());
+            sec_imports.push(if has_ret { 1 } else { 0 });
+        }
+
+        // Section 6 & 7: Func table + concatenated code
+        let mut sec_funcs = Vec::new();
+        sec_funcs.extend_from_slice(&global_count.to_le_bytes());
+        sec_funcs.extend_from_slice(&entry_fn_idx.to_le_bytes());
+        sec_funcs.extend_from_slice(&(functions.len() as u32).to_le_bytes());
+
+        let mut sec_code = Vec::new();
+        for (idx, f) in functions.iter().enumerate() {
+            let offset = sec_code.len() as u32;
+            sec_code.extend_from_slice(&f.code);
+            sec_funcs.extend_from_slice(&fn_name_indices[idx].to_le_bytes());
+            sec_funcs.extend_from_slice(&f.param_count.to_le_bytes());
+            sec_funcs.extend_from_slice(&f.local_count.to_le_bytes());
+            sec_funcs.extend_from_slice(&f.max_stack.to_le_bytes());
+            sec_funcs.push(if f.has_return { 1 } else { 0 });
+            sec_funcs.extend_from_slice(&0u16.to_le_bytes()); // effect count
+            sec_funcs.extend_from_slice(&offset.to_le_bytes());
+            sec_funcs.extend_from_slice(&(f.code.len() as u32).to_le_bytes());
+        }
+
+        let sections: Vec<(u32, Vec<u8>)> = vec![
+            (section_tags::MODULE_META, sec_meta),
+            (section_tags::CONST_POOL, sec_consts),
+            (section_tags::IMPORT_TABLE, sec_imports),
+            (section_tags::FUNC_TABLE, sec_funcs),
+            (section_tags::CODE, sec_code),
+        ];
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&bytecode::MBC_MAGIC);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(sections.len() as u32).to_le_bytes());
+
+        let mut offset = 16 + sections.len() * 12;
+        for (tag, data) in &sections {
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&(offset as u32).to_le_bytes());
+            out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            offset += data.len();
+        }
+        for (_, data) in sections {
+            out.extend_from_slice(&data);
+        }
+        out
+    }
+
+    #[test]
+    fn vm_gc_reclaims_loop_allocations_under_tight_object_and_byte_limits() {
+        // Constants: #0 = 0 (i), #1 = 1 (step), #2 = 25 (iters), #3 = 42 (elem)
+        // Loop 25 times allocating [42] and storing into local 1 (overwriting unreachable arrays)
+        let mut code = Vec::new();
+        // CONST 0; STORE_LOCAL 0 (i = 0)
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.push(opcodes::STORE_LOCAL);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        // loop_head: offset 8
+        let loop_head = code.len() as u32;
+        code.push(opcodes::LOAD_LOCAL);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&2u32.to_le_bytes());
+        code.push(opcodes::LT);
+        code.push(opcodes::JMP_IF_FALSE);
+        let jmp_end_patch = code.len();
+        code.extend_from_slice(&0u32.to_le_bytes());
+
+        // Allocate [42] and overwrite local 1
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&3u32.to_le_bytes());
+        code.push(opcodes::ARRAY_NEW);
+        code.extend_from_slice(&1u32.to_le_bytes());
+        code.push(opcodes::STORE_LOCAL);
+        code.extend_from_slice(&1u16.to_le_bytes());
+
+        // i = i + 1
+        code.push(opcodes::LOAD_LOCAL);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&1u32.to_le_bytes());
+        code.push(opcodes::ADD_I64);
+        code.push(opcodes::STORE_LOCAL);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcodes::JMP);
+        code.extend_from_slice(&loop_head.to_le_bytes());
+
+        let end_off = code.len() as u32;
+        code[jmp_end_patch..jmp_end_patch + 4].copy_from_slice(&end_off.to_le_bytes());
+
+        // Return local1[0] (verifies live array survived GC!)
+        code.push(opcodes::LOAD_LOCAL);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.push(opcodes::ARRAY_GET);
+        code.push(opcodes::RET);
+
+        let bytes = build_test_mbc(&[], &[], &[0, 1, 25, 42], &[], &[], &code, 2, 4);
+        let mut module = decode_mbc(&bytes).expect("decode");
+        verify_module(&mut module).expect("verify");
+
+        let limits = VmLimits {
+            max_heap_objects: 4,
+            max_heap_bytes: 256,
+            ..VmLimits::default()
+        };
+        let vm = VirtualMachine::new(limits, CapabilityPolicy::sandboxed_default());
+        let mut host = MemoryHostEnvironment::new();
+        let res = vm
+            .execute(&module, &mut host, None)
+            .expect("gc should prevent OOM");
+        assert_eq!(res.return_value, Value::I64(42));
+        assert!(res.heap_objects_allocated >= 25);
+        assert!(res.gc_stats.collections >= 1);
+        assert!(res.gc_stats.objects_reclaimed >= 20);
+        assert!(res.gc_stats.live_objects <= 4);
+    }
+
+    #[test]
+    fn vm_gc_enforces_byte_limit_on_array_push_and_map_set() {
+        // Array growth beyond max_heap_bytes must trap cleanly with HeapBytesLimitExceeded
+        // Constants: #0 = "0123456789abcdef0123456789abcdef" (32B str), #1 = "k1", #2 = 0
+        let mut arr_code = Vec::new();
+        arr_code.push(opcodes::ARRAY_NEW);
+        arr_code.extend_from_slice(&0u32.to_le_bytes());
+        arr_code.push(opcodes::STORE_LOCAL);
+        arr_code.extend_from_slice(&0u16.to_le_bytes());
+        let loop_head = arr_code.len() as u32;
+        arr_code.push(opcodes::LOAD_LOCAL);
+        arr_code.extend_from_slice(&0u16.to_le_bytes());
+        arr_code.push(opcodes::CONST);
+        arr_code.extend_from_slice(&0u32.to_le_bytes());
+        arr_code.push(opcodes::ARRAY_PUSH);
+        arr_code.push(opcodes::POP); // discard Void pushed by ARRAY_PUSH
+        arr_code.push(opcodes::JMP);
+        arr_code.extend_from_slice(&loop_head.to_le_bytes());
+
+        let arr_bytes = build_test_mbc(
+            &[],
+            &[],
+            &[],
+            &["0123456789abcdef0123456789abcdef"],
+            &[],
+            &arr_code,
+            1,
+            4,
+        );
+        let mut arr_mod = decode_mbc(&arr_bytes).unwrap();
+        verify_module(&mut arr_mod).unwrap();
+
+        let limits = VmLimits {
+            max_heap_objects: 64,
+            max_heap_bytes: 200,
+            ..VmLimits::default()
+        };
+        let vm = VirtualMachine::new(limits.clone(), CapabilityPolicy::sandboxed_default());
+        let mut host = MemoryHostEnvironment::new();
+        assert!(matches!(
+            vm.execute(&arr_mod, &mut host, None).unwrap_err(),
+            MvmError::HeapBytesLimitExceeded { .. }
+        ));
+
+        // Map growth beyond max_heap_bytes must also trap cleanly
+        let mut map_code = Vec::new();
+        map_code.push(opcodes::MAP_NEW);
+        map_code.extend_from_slice(&0u32.to_le_bytes());
+        map_code.push(opcodes::STORE_LOCAL);
+        map_code.extend_from_slice(&0u16.to_le_bytes());
+        // set 4 distinct keys -> exceeds 200 bytes
+        for k_idx in 0..4u32 {
+            map_code.push(opcodes::LOAD_LOCAL);
+            map_code.extend_from_slice(&0u16.to_le_bytes());
+            map_code.push(opcodes::CONST);
+            map_code.extend_from_slice(&k_idx.to_le_bytes());
+            map_code.push(opcodes::CONST);
+            map_code.extend_from_slice(&4u32.to_le_bytes()); // payload str
+            map_code.push(opcodes::MAP_SET);
+            map_code.push(opcodes::POP);
+        }
+        map_code.push(opcodes::LOAD_LOCAL);
+        map_code.extend_from_slice(&0u16.to_le_bytes());
+        map_code.push(opcodes::RET);
+
+        let map_bytes = build_test_mbc(
+            &[],
+            &[],
+            &[],
+            &[
+                "key_a",
+                "key_b",
+                "key_c",
+                "key_d",
+                "0123456789abcdef0123456789abcdef",
+            ],
+            &[],
+            &map_code,
+            1,
+            4,
+        );
+        let mut map_mod = decode_mbc(&map_bytes).unwrap();
+        verify_module(&mut map_mod).unwrap();
+        assert!(matches!(
+            vm.execute(&map_mod, &mut host, None).unwrap_err(),
+            MvmError::HeapBytesLimitExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn vm_bytecode_eq_and_neq_are_cycle_safe_and_ieee754_compliant() {
+        // Test self-referential cycle equality:
+        // local 0 = [0]; local 0[0] = local 0
+        // local 1 = [0]; local 1[0] = local 1
+        // return (local 0 == local 1) && !(NaN == NaN)
+        let mut code = Vec::new();
+        // local 0 = [0]
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.push(opcodes::ARRAY_NEW);
+        code.extend_from_slice(&1u32.to_le_bytes());
+        code.push(opcodes::STORE_LOCAL);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        // local 0[0] = local 0
+        code.push(opcodes::LOAD_LOCAL);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.push(opcodes::LOAD_LOCAL);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcodes::ARRAY_SET);
+
+        // local 1 = [0]
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.push(opcodes::ARRAY_NEW);
+        code.extend_from_slice(&1u32.to_le_bytes());
+        code.push(opcodes::STORE_LOCAL);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        // local 1[0] = local 1
+        code.push(opcodes::LOAD_LOCAL);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&0u32.to_le_bytes());
+        code.push(opcodes::LOAD_LOCAL);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.push(opcodes::ARRAY_SET);
+
+        // (local 0 == local 1) && (NaN != NaN)
+        code.push(opcodes::LOAD_LOCAL);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(opcodes::LOAD_LOCAL);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.push(opcodes::EQ);
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&1u32.to_le_bytes());
+        code.push(opcodes::CONST);
+        code.extend_from_slice(&1u32.to_le_bytes());
+        code.push(opcodes::NEQ);
+        code.push(opcodes::BOOL_AND);
+        code.push(opcodes::RET);
+
+        let consts = [
+            bytecode::ConstantEntry::I64(0),
+            bytecode::ConstantEntry::F64(f64::NAN),
+        ];
+        let bytes = build_multi_fn_mbc(
+            &[],
+            &[],
+            0,
+            0,
+            &consts,
+            &[],
+            &[FnSpec {
+                name: "main",
+                param_count: 0,
+                local_count: 2,
+                max_stack: 6,
+                has_return: true,
+                code,
+            }],
+        );
+        let mut module = decode_mbc(&bytes).unwrap();
+        verify_module(&mut module).unwrap();
+
+        let vm = VirtualMachine::new(VmLimits::default(), CapabilityPolicy::sandboxed_default());
+        let mut host = MemoryHostEnvironment::new();
+        let res = vm.execute(&module, &mut host, None).unwrap();
+        assert_eq!(res.return_value, Value::Bool(true));
+    }
+
+    #[test]
+    fn vm_f64_to_i64_opcode_traps_on_invalid_and_matches_wasm_bounds() {
+        let vm = VirtualMachine::new(VmLimits::default(), CapabilityPolicy::sandboxed_default());
+        let mut host = MemoryHostEnvironment::new();
+
+        for (input, expected) in [
+            (-0.0f64, 0i64),
+            (-9.9f64, -9i64),
+            (42.875f64, 42i64),
+            (-9223372036854775808.0f64, i64::MIN),
+            (9223372036854774784.0f64, 9223372036854774784i64),
+        ] {
+            let mut code = Vec::new();
+            code.push(opcodes::CONST);
+            code.extend_from_slice(&0u32.to_le_bytes());
+            code.push(opcodes::F64_TO_I64);
+            code.push(opcodes::RET);
+            let bytes = build_multi_fn_mbc(
+                &[],
+                &[],
+                0,
+                0,
+                &[bytecode::ConstantEntry::F64(input)],
+                &[],
+                &[FnSpec {
+                    name: "main",
+                    param_count: 0,
+                    local_count: 0,
+                    max_stack: 2,
+                    has_return: true,
+                    code,
+                }],
+            );
+            let mut m = decode_mbc(&bytes).unwrap();
+            verify_module(&mut m).unwrap();
+            assert_eq!(
+                vm.execute(&m, &mut host, None).unwrap().return_value,
+                Value::I64(expected)
+            );
+        }
+
+        for bad in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            9223372036854775808.0f64,
+            -1e20f64,
+            1e20f64,
+        ] {
+            let mut code = Vec::new();
+            code.push(opcodes::CONST);
+            code.extend_from_slice(&0u32.to_le_bytes());
+            code.push(opcodes::F64_TO_I64);
+            code.push(opcodes::RET);
+            let bytes = build_multi_fn_mbc(
+                &[],
+                &[],
+                0,
+                0,
+                &[bytecode::ConstantEntry::F64(bad)],
+                &[],
+                &[FnSpec {
+                    name: "main",
+                    param_count: 0,
+                    local_count: 0,
+                    max_stack: 2,
+                    has_return: true,
+                    code,
+                }],
+            );
+            let mut m = decode_mbc(&bytes).unwrap();
+            verify_module(&mut m).unwrap();
+            assert!(matches!(
+                vm.execute(&m, &mut host, None).unwrap_err(),
+                MvmError::NumericConversionTrap { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn vm_crypto_hash_requires_str_and_produces_nist_sha256() {
+        let mut ok_code = Vec::new();
+        ok_code.push(opcodes::CONST);
+        ok_code.extend_from_slice(&0u32.to_le_bytes());
+        ok_code.push(opcodes::HOST_CALL);
+        ok_code.extend_from_slice(&0u32.to_le_bytes());
+        ok_code.push(opcodes::RET);
+
+        let bytes = build_test_mbc(
+            &["crypto"],
+            &[],
+            &[],
+            &["λ🚀"],
+            &[("std::crypto::sha256", "crypto", 1, true)],
+            &ok_code,
+            0,
+            2,
+        );
+        let mut ok_mod = decode_mbc(&bytes).unwrap();
+        verify_module(&mut ok_mod).unwrap();
+
+        let vm = VirtualMachine::new(
+            VmLimits::default(),
+            CapabilityPolicy::with_granted(["crypto"]),
+        );
+        let mut host = MemoryHostEnvironment::new();
+        let ok_res = vm.execute(&ok_mod, &mut host, None).unwrap();
+        assert_eq!(
+            ok_res.return_value,
+            Value::Str(stdlib::deterministic_hash_hex("λ🚀".as_bytes()))
+        );
+
+        // Passing i64 to crypto.hash must trap with TypeMismatch
+        let mut bad_code = Vec::new();
+        bad_code.push(opcodes::CONST);
+        bad_code.extend_from_slice(&0u32.to_le_bytes());
+        bad_code.push(opcodes::HOST_CALL);
+        bad_code.extend_from_slice(&0u32.to_le_bytes());
+        bad_code.push(opcodes::RET);
+        let bad_bytes = build_test_mbc(
+            &["crypto"],
+            &[],
+            &[12345],
+            &[],
+            &[("crypto.hash", "crypto", 1, true)],
+            &bad_code,
+            0,
+            2,
+        );
+        let mut bad_mod = decode_mbc(&bad_bytes).unwrap();
+        verify_module(&mut bad_mod).unwrap();
+        assert!(matches!(
+            vm.execute(&bad_mod, &mut host, None).unwrap_err(),
+            MvmError::TypeMismatch {
+                expected: "str",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn vm_init_and_nested_calls_share_invocation_step_budget() {
+        // Constants: #0 = 1, #1 = 2, #2 = 10
+        // fn 0: __init__: CALL 2 (helper); POP? Wait: CALL pushes helper's ret value (3), STORE_GLOBAL 0; RET_VOID -> 3 steps + helper(4 steps) = 7 steps
+        // fn 1: main (entry = 1): LOAD_GLOBAL 0; CONST 2 (10); ADD_I64; RET -> 4 steps
+        // fn 2: helper: CONST 0 (1); CONST 1 (2); ADD_I64; RET -> 4 steps
+        let mut init_code = Vec::new();
+        init_code.push(opcodes::CALL);
+        init_code.extend_from_slice(&2u32.to_le_bytes());
+        init_code.push(opcodes::STORE_GLOBAL);
+        init_code.extend_from_slice(&0u32.to_le_bytes());
+        init_code.push(opcodes::RET_VOID);
+
+        let mut main_code = Vec::new();
+        main_code.push(opcodes::LOAD_GLOBAL);
+        main_code.extend_from_slice(&0u32.to_le_bytes());
+        main_code.push(opcodes::CONST);
+        main_code.extend_from_slice(&2u32.to_le_bytes());
+        main_code.push(opcodes::ADD_I64);
+        main_code.push(opcodes::RET);
+
+        let mut helper_code = Vec::new();
+        helper_code.push(opcodes::CONST);
+        helper_code.extend_from_slice(&0u32.to_le_bytes());
+        helper_code.push(opcodes::CONST);
+        helper_code.extend_from_slice(&1u32.to_le_bytes());
+        helper_code.push(opcodes::ADD_I64);
+        helper_code.push(opcodes::RET);
+
+        let consts = [
+            bytecode::ConstantEntry::I64(1),
+            bytecode::ConstantEntry::I64(2),
+            bytecode::ConstantEntry::I64(10),
+        ];
+        let bytes = build_multi_fn_mbc(
+            &[],
+            &[],
+            1,
+            1,
+            &consts,
+            &[],
+            &[
+                FnSpec {
+                    name: "__init__",
+                    param_count: 0,
+                    local_count: 0,
+                    max_stack: 4,
+                    has_return: false,
+                    code: init_code,
+                },
+                FnSpec {
+                    name: "main",
+                    param_count: 0,
+                    local_count: 0,
+                    max_stack: 4,
+                    has_return: true,
+                    code: main_code,
+                },
+                FnSpec {
+                    name: "helper",
+                    param_count: 0,
+                    local_count: 0,
+                    max_stack: 4,
+                    has_return: true,
+                    code: helper_code,
+                },
+            ],
+        );
+        let mut module = decode_mbc(&bytes).unwrap();
+        verify_module(&mut module).unwrap();
+
+        let mut host = MemoryHostEnvironment::new();
+
+        // 1) Exhausted inside __init__/helper at limit=5
+        let vm5 = VirtualMachine::new(
+            VmLimits {
+                max_steps: 5,
+                ..VmLimits::default()
+            },
+            CapabilityPolicy::sandboxed_default(),
+        );
+        assert_eq!(
+            vm5.execute(&module, &mut host, None).unwrap_err(),
+            MvmError::ExecutionStepLimitExceeded { limit: 5 }
+        );
+
+        // 2) __init__ completes in 7 steps, main starts with only 2 remaining -> traps in main at limit=9
+        let vm9 = VirtualMachine::new(
+            VmLimits {
+                max_steps: 9,
+                ..VmLimits::default()
+            },
+            CapabilityPolicy::sandboxed_default(),
+        );
+        assert_eq!(
+            vm9.execute(&module, &mut host, None).unwrap_err(),
+            MvmError::ExecutionStepLimitExceeded { limit: 9 }
+        );
+
+        // 3) Exact budget limit=11 succeeds and accurately reports total steps_executed = 11
+        let vm11 = VirtualMachine::new(
+            VmLimits {
+                max_steps: 11,
+                ..VmLimits::default()
+            },
+            CapabilityPolicy::sandboxed_default(),
+        );
+        let summary = vm11.execute(&module, &mut host, None).unwrap();
+        assert_eq!(summary.return_value, Value::I64(13));
+        assert_eq!(summary.steps_executed, 11);
     }
 }

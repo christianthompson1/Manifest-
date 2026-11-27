@@ -1,9 +1,9 @@
 {
   "name": "manifest-core",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "type": "module",
   "main": "src/index.ts",
   "scripts": {
-    "test": "tsx tests/run_tests.ts"
+    "test": "tsx tests/run_stage7_canonical_v1_tests.ts"
   }
 }

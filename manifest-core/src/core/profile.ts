@@ -16,7 +16,7 @@ export const SYNTAX_PROFILES: Record<SyntaxProfile, ProfileMetadata> = {
       'Structured, human-readable keyword block syntax (MODULE, REQUIRES, LET, MUTABLE, CONSTANT, FUNCTION ... END, IF ... END, STRUCT ... END).',
     keywords: [
       'MODULE', 'IMPORT', 'FROM', 'EXPORT', 'REQUIRES', 'PROVIDES', 'DENIES', 'EFFECTS',
-      'CONSTANT', 'LET', 'MUTABLE', 'SET', 'TO', 'FUNCTION', 'ACTION', 'RETURN',
+      'CONSTANT', 'LET', 'MUTABLE', 'SET', 'TO', 'FUNCTION', 'RETURN',
       'IF', 'ELSE', 'WHILE', 'FOR', 'EACH', 'IN', 'REPEAT', 'TIMES', 'BREAK', 'CONTINUE',
       'STRUCT', 'ENUM', 'TRAIT', 'MATCH', 'WHEN', 'TRY', 'SHOW', 'NEW', 'END',
       'AND', 'OR', 'NOT', 'TRUE', 'FALSE',
@@ -70,8 +70,8 @@ export function detectSyntaxProfile(
     .replace(/"(?:\\.|[^"\\])*"/g, '""')
     .replace(/'(?:\\.|[^'\\])*'/g, "''");
 
-  // Unambiguous legacy/domain Beginner markers
-  if (/^\s*(?:APP|PAGE|STATE|ACTION|COMPONENT|PROGRAM|USE\s+SOLANA|USE\s+WEB)\b/m.test(stripped)) {
+  // Unambiguous standalone Solana PROGRAM block
+  if (/^\s*PROGRAM\b/m.test(stripped)) {
     return 'beginner';
   }
 
@@ -136,39 +136,5 @@ export function normalizePrimitiveTypeName(raw: string): string {
   }
 }
 
-/**
- * Returns true if the Manifest source file uses legacy/domain declarative UI (`APP`, `PAGE`,
- * `COMPONENT`, `STATE`, `STYLE`, `SERVER`, `ROUTE`) or Solana smart-contract (`PROGRAM`, `USE SOLANA`)
- * blocks rather than general-purpose Manifest v1.0 modules.
- */
-export function isLegacyDomainManifestSource(source: string): boolean {
-  const stripped = source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/.*$/gm, '')
-    .replace(/--.*$/gm, '')
-    .replace(/"(?:\\.|[^"\\])*"/g, '""')
-    .replace(/'(?:\\.|[^'\\])*'/g, "''");
-
-  // Explicit Professional or Beginner v1.0 module declarations
-  if (/^\s*module\s+[a-zA-Z0-9_.]+\s*;/m.test(stripped)) {
-    return false;
-  }
-  if (
-    /^\s*(?:APP|PAGE|COMPONENT|PROGRAM|SERVER|ENDPOINT|ROUTE|STYLE|STATE|USE\s+SOLANA|USE\s+WEB)\b/im.test(
-      stripped
-    )
-  ) {
-    return true;
-  }
-  // Legacy UI widget statements at statement start without a v1.0 MODULE header
-  if (
-    !/^\s*MODULE\s+[a-zA-Z0-9_.]+/m.test(stripped) &&
-    /^\s*(?:HEADING|BUTTON|INPUT|CONTAINER|CARD|NAV|MODAL|SAVE|LOAD|SEND|EMIT|ON\s+[A-Z_]+)\b/m.test(
-      stripped
-    )
-  ) {
-    return true;
-  }
-  return false;
-}
+export { isSolanaProgramSource } from '../solana/solana-program-parser.ts';
 

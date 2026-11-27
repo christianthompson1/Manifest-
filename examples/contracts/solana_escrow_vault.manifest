@@ -1,7 +1,3 @@
-APP "EscrowVaultContract"
-
-USE SOLANA
-
 PROGRAM EscrowVault
     ACCOUNT EscrowState
         balance: NUMBER

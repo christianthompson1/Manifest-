@@ -6,7 +6,7 @@ use crate::errors::MvmError;
 use crate::frame::CallFrame;
 use crate::host::HostEnvironment;
 use crate::instruction::Instruction;
-use crate::memory::{HeapArena, HeapObject};
+use crate::memory::{GcRoots, GcStats, HeapArena, HeapObject, DEFAULT_MAX_HEAP_BYTES};
 use crate::stack::OperandStack;
 use crate::value::Value;
 
@@ -16,6 +16,7 @@ pub struct VmLimits {
     pub max_call_depth: usize,
     pub max_stack_slots: usize,
     pub max_heap_objects: usize,
+    pub max_heap_bytes: usize,
 }
 
 impl Default for VmLimits {
@@ -25,6 +26,7 @@ impl Default for VmLimits {
             max_call_depth: 512,
             max_stack_slots: 16_384,
             max_heap_objects: 65_536,
+            max_heap_bytes: DEFAULT_MAX_HEAP_BYTES,
         }
     }
 }
@@ -36,6 +38,7 @@ pub struct ExecutionSummary {
     pub stdout: Vec<String>,
     pub steps_executed: u64,
     pub heap_objects_allocated: usize,
+    pub gc_stats: GcStats,
 }
 
 pub struct VirtualMachine {
@@ -82,13 +85,14 @@ impl VirtualMachine {
 
         let mut globals = vec![Value::Void; module.global_count as usize];
         let mut stack = OperandStack::new(self.limits.max_stack_slots);
-        let mut heap = HeapArena::new(self.limits.max_heap_objects);
+        let mut heap =
+            HeapArena::with_limits(self.limits.max_heap_objects, self.limits.max_heap_bytes);
         let mut frames: Vec<CallFrame> = Vec::with_capacity(64);
+        let mut steps_executed = 0u64;
 
-        // If module has `__init__` and target is not `__init__`, run `__init__` first to populate globals/constants
+        // If module has `__init__` and target is not `__init__`, run `__init__` first under the shared step budget
         if let Some(init_idx) = self.find_function_idx(module, "__init__") {
             if init_idx != target_fn_idx {
-                let mut steps = 0u64;
                 self.run_call_loop(
                     module,
                     &jump_tables,
@@ -99,12 +103,11 @@ impl VirtualMachine {
                     &mut heap,
                     &mut frames,
                     host,
-                    &mut steps,
+                    &mut steps_executed,
                 )?;
             }
         }
 
-        let mut steps_executed = 0u64;
         let ret_val = self.run_call_loop(
             module,
             &jump_tables,
@@ -124,7 +127,8 @@ impl VirtualMachine {
             formatted_return,
             stdout: host.stdout().to_vec(),
             steps_executed,
-            heap_objects_allocated: heap.len(),
+            heap_objects_allocated: heap.stats.objects_allocated,
+            gc_stats: heap.stats.clone(),
         })
     }
 
@@ -325,7 +329,8 @@ impl VirtualMachine {
                 }
                 Instruction::F64ToI64 => {
                     let a = pop_f64(stack, &func.name, byte_offset, line)?;
-                    stack.push(Value::I64(a as i64), &func.name)?;
+                    let converted = crate::stdlib::checked_f64_to_i64(a, line)?;
+                    stack.push(Value::I64(converted), &func.name)?;
                 }
                 Instruction::ToStr => {
                     let v = stack.pop(&func.name, byte_offset)?;
@@ -336,12 +341,14 @@ impl VirtualMachine {
                 Instruction::Eq => {
                     let b = stack.pop(&func.name, byte_offset)?;
                     let a = stack.pop(&func.name, byte_offset)?;
-                    stack.push(Value::Bool(a == b), &func.name)?;
+                    let eq = heap.values_equal(&a, &b)?;
+                    stack.push(Value::Bool(eq), &func.name)?;
                 }
                 Instruction::Neq => {
                     let b = stack.pop(&func.name, byte_offset)?;
                     let a = stack.pop(&func.name, byte_offset)?;
-                    stack.push(Value::Bool(a != b), &func.name)?;
+                    let eq = heap.values_equal(&a, &b)?;
+                    stack.push(Value::Bool(!eq), &func.name)?;
                 }
                 Instruction::Lt => {
                     let res = compare_ord(stack, &func.name, byte_offset, line, |o| o.is_lt())?;
@@ -380,15 +387,13 @@ impl VirtualMachine {
                 Instruction::JmpIfFalse(target_off) => {
                     let cond = pop_bool(stack, &func.name, byte_offset, line)?;
                     if !cond {
-                        frames[frame_idx].pc =
-                            jump_tables[fn_idx as usize][&(target_off as usize)];
+                        frames[frame_idx].pc = jump_tables[fn_idx as usize][&(target_off as usize)];
                     }
                 }
                 Instruction::JmpIfTrue(target_off) => {
                     let cond = pop_bool(stack, &func.name, byte_offset, line)?;
                     if cond {
-                        frames[frame_idx].pc =
-                            jump_tables[fn_idx as usize][&(target_off as usize)];
+                        frames[frame_idx].pc = jump_tables[fn_idx as usize][&(target_off as usize)];
                     }
                 }
 
@@ -452,7 +457,16 @@ impl VirtualMachine {
                     for i in (0..n).rev() {
                         items[i] = stack.pop(&func.name, byte_offset)?;
                     }
-                    let id = heap.alloc(HeapObject::Array(items))?;
+                    let temps = collect_heap_temps(&items);
+                    let id = heap.alloc_with_roots(
+                        HeapObject::Array(items),
+                        GcRoots {
+                            stack: stack.as_slice(),
+                            globals,
+                            frames,
+                            temps: &temps,
+                        },
+                    )?;
                     stack.push(Value::ArrayRef(id), &func.name)?;
                 }
                 Instruction::ArrayGet => {
@@ -503,25 +517,19 @@ impl VirtualMachine {
                             })
                         }
                     };
-                    match heap.get_mut(id)? {
-                        HeapObject::Array(items) => {
-                            if idx < 0 || (idx as usize) >= items.len() {
-                                return Err(MvmError::IndexOutOfBounds {
-                                    index: idx,
-                                    len: items.len(),
-                                    line,
-                                });
-                            }
-                            items[idx as usize] = val;
-                        }
-                        _ => {
-                            return Err(MvmError::TypeMismatch {
-                                expected: "Array",
-                                actual: "non-array heap object",
-                                line,
-                            })
-                        }
-                    }
+                    let temps = [arr_val, val.clone()];
+                    heap.array_set_with_roots(
+                        id,
+                        idx,
+                        val,
+                        line,
+                        GcRoots {
+                            stack: stack.as_slice(),
+                            globals,
+                            frames,
+                            temps: &temps,
+                        },
+                    )?;
                 }
                 Instruction::ArrayLen => {
                     let arr_val = stack.pop(&func.name, byte_offset)?;
@@ -563,19 +571,19 @@ impl VirtualMachine {
                             })
                         }
                     };
-                    match heap.get_mut(id)? {
-                        HeapObject::Array(items) => {
-                            items.push(val);
-                            stack.push(Value::Void, &func.name)?;
-                        }
-                        _ => {
-                            return Err(MvmError::TypeMismatch {
-                                expected: "Array",
-                                actual: "non-array",
-                                line,
-                            })
-                        }
-                    }
+                    let temps = [arr_val, val.clone()];
+                    heap.array_push_with_roots(
+                        id,
+                        val,
+                        line,
+                        GcRoots {
+                            stack: stack.as_slice(),
+                            globals,
+                            frames,
+                            temps: &temps,
+                        },
+                    )?;
+                    stack.push(Value::Void, &func.name)?;
                 }
 
                 Instruction::MapNew(pair_count) => {
@@ -589,11 +597,33 @@ impl VirtualMachine {
                         };
                         pairs.push((k, v));
                     }
+                    let temps: Vec<Value> = pairs
+                        .iter()
+                        .map(|(_, v)| v)
+                        .filter(|v| {
+                            matches!(
+                                v,
+                                Value::ArrayRef(_)
+                                    | Value::MapRef(_)
+                                    | Value::StructRef(_)
+                                    | Value::EnumRef(_)
+                            )
+                        })
+                        .cloned()
+                        .collect();
                     let mut map = BTreeMap::new();
                     for (k, v) in pairs.into_iter().rev() {
                         map.insert(k, v);
                     }
-                    let id = heap.alloc(HeapObject::Map(map))?;
+                    let id = heap.alloc_with_roots(
+                        HeapObject::Map(map),
+                        GcRoots {
+                            stack: stack.as_slice(),
+                            globals,
+                            frames,
+                            temps: &temps,
+                        },
+                    )?;
                     stack.push(Value::MapRef(id), &func.name)?;
                 }
                 Instruction::MapGet => {
@@ -646,19 +676,20 @@ impl VirtualMachine {
                             })
                         }
                     };
-                    match heap.get_mut(id)? {
-                        HeapObject::Map(entries) => {
-                            entries.insert(key, val);
-                            stack.push(Value::Void, &func.name)?;
-                        }
-                        _ => {
-                            return Err(MvmError::TypeMismatch {
-                                expected: "Map",
-                                actual: "non-map",
-                                line,
-                            })
-                        }
-                    }
+                    let temps = [map_val, val.clone()];
+                    heap.map_set_with_roots(
+                        id,
+                        key,
+                        val,
+                        line,
+                        GcRoots {
+                            stack: stack.as_slice(),
+                            globals,
+                            frames,
+                            temps: &temps,
+                        },
+                    )?;
+                    stack.push(Value::Void, &func.name)?;
                 }
                 Instruction::MapHas => {
                     let key = match stack.pop(&func.name, byte_offset)? {
@@ -696,7 +727,16 @@ impl VirtualMachine {
                     for i in (0..field_count).rev() {
                         fields[i] = stack.pop(&func.name, byte_offset)?;
                     }
-                    let id = heap.alloc(HeapObject::Struct { struct_idx, fields })?;
+                    let temps = collect_heap_temps(&fields);
+                    let id = heap.alloc_with_roots(
+                        HeapObject::Struct { struct_idx, fields },
+                        GcRoots {
+                            stack: stack.as_slice(),
+                            globals,
+                            frames,
+                            temps: &temps,
+                        },
+                    )?;
                     stack.push(Value::StructRef(id), &func.name)?;
                 }
                 Instruction::FieldGet(field_idx) => {
@@ -713,13 +753,12 @@ impl VirtualMachine {
                     };
                     match heap.get(id)? {
                         HeapObject::Struct { fields, .. } => {
-                            let val = fields
-                                .get(field_idx as usize)
-                                .cloned()
-                                .ok_or_else(|| MvmError::RuntimeTrap {
+                            let val = fields.get(field_idx as usize).cloned().ok_or_else(|| {
+                                MvmError::RuntimeTrap {
                                     message: format!("Struct field {} out of bounds", field_idx),
                                     line,
-                                })?;
+                                }
+                            })?;
                             stack.push(val, &func.name)?;
                         }
                         _ => {
@@ -744,42 +783,45 @@ impl VirtualMachine {
                             })
                         }
                     };
-                    match heap.get_mut(id)? {
-                        HeapObject::Struct { fields, .. } => {
-                            if (field_idx as usize) >= fields.len() {
-                                return Err(MvmError::RuntimeTrap {
-                                    message: format!("Struct field {} out of bounds", field_idx),
-                                    line,
-                                });
-                            }
-                            fields[field_idx as usize] = val;
-                        }
-                        _ => {
-                            return Err(MvmError::TypeMismatch {
-                                expected: "Struct",
-                                actual: "non-struct",
-                                line,
-                            })
-                        }
-                    }
+                    let temps = [sref, val.clone()];
+                    heap.field_set_with_roots(
+                        id,
+                        field_idx,
+                        val,
+                        line,
+                        GcRoots {
+                            stack: stack.as_slice(),
+                            globals,
+                            frames,
+                            temps: &temps,
+                        },
+                    )?;
                 }
 
                 Instruction::EnumNew {
                     enum_idx,
                     variant_idx,
                 } => {
-                    let arity =
-                        module.enums[enum_idx as usize].variants[variant_idx as usize].arity
-                            as usize;
+                    let arity = module.enums[enum_idx as usize].variants[variant_idx as usize].arity
+                        as usize;
                     let mut payload = vec![Value::Void; arity];
                     for i in (0..arity).rev() {
                         payload[i] = stack.pop(&func.name, byte_offset)?;
                     }
-                    let id = heap.alloc(HeapObject::Enum {
-                        enum_idx,
-                        variant_idx,
-                        payload,
-                    })?;
+                    let temps = collect_heap_temps(&payload);
+                    let id = heap.alloc_with_roots(
+                        HeapObject::Enum {
+                            enum_idx,
+                            variant_idx,
+                            payload,
+                        },
+                        GcRoots {
+                            stack: stack.as_slice(),
+                            globals,
+                            frames,
+                            temps: &temps,
+                        },
+                    )?;
                     stack.push(Value::EnumRef(id), &func.name)?;
                 }
                 Instruction::EnumTag => {
@@ -821,15 +863,15 @@ impl VirtualMachine {
                     };
                     match heap.get(id)? {
                         HeapObject::Enum { payload, .. } => {
-                            let val = payload
-                                .get(payload_idx as usize)
-                                .cloned()
-                                .ok_or_else(|| MvmError::RuntimeTrap {
-                                    message: format!(
-                                        "Enum payload index {} out of bounds",
-                                        payload_idx
-                                    ),
-                                    line,
+                            let val =
+                                payload.get(payload_idx as usize).cloned().ok_or_else(|| {
+                                    MvmError::RuntimeTrap {
+                                        message: format!(
+                                            "Enum payload index {} out of bounds",
+                                            payload_idx
+                                        ),
+                                        line,
+                                    }
                                 })?;
                             stack.push(val, &func.name)?;
                         }
@@ -858,6 +900,19 @@ impl VirtualMachine {
             }
         }
     }
+}
+
+fn collect_heap_temps(values: &[Value]) -> Vec<Value> {
+    values
+        .iter()
+        .filter(|v| {
+            matches!(
+                v,
+                Value::ArrayRef(_) | Value::MapRef(_) | Value::StructRef(_) | Value::EnumRef(_)
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 fn pop_i64(

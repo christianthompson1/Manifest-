@@ -23,7 +23,7 @@ import {
 } from '../compiler-service.ts';
 import { WasmExecutionProvider } from './wasm-execution-provider.ts';
 import {
-  isLegacyDomainManifestSource,
+  isSolanaProgramSource,
   executeMbcInRustVm,
   disassembleMbcBytes,
   verifyMbcBytes,
@@ -136,9 +136,12 @@ function extractAssetReferences(source: string): Array<{ path: string; line: num
     for (const m of lineText.matchAll(/["']([^"'\n]*(?:\.\.\/|\/)?assets\/[^"'\n]+)["']/g)) {
       candidates.push(m[1]);
     }
-    // 2. Explicit IMAGE path literals (catches ../outside/... or /etc/... traversal attempts too)
-    for (const m of lineText.matchAll(/\bIMAGE\s+(?:src\s*:\s*)?["']([^"'\n]+)["']/gi)) {
-      candidates.push(m[1]);
+    // 2. Explicit asset/media path assignments in v1 declarations
+    for (const m of lineText.matchAll(/\b(?:src|asset|icon|logo|image|avatar|banner|media|poster)(?:_[a-z0-9_]+)?\b\s*(?::\s*[a-zA-Z0-9_<>\[\]]+\s*)?[:=]\s*["']([^"'\n]+)["']/gi)) {
+      const val = m[1];
+      if (val.includes('/') || val.includes('\\') || /\.(?:svg|png|jpe?g|webp|gif|ico|mp3|wav|ogg|m4a|mp4|webm|woff2?|ttf|otf)$/i.test(val)) {
+        candidates.push(val);
+      }
     }
 
     for (const ref of candidates) {
@@ -332,14 +335,10 @@ export class ManifestExecutionProvider implements ExecutionProvider {
     if (options.target && options.target !== 'js' && options.target !== 'auto') {
       return options.target;
     }
-    if (isLegacyDomainManifestSource(source)) {
-      const trimmed = source.trimStart();
-      if (/^PROGRAM\s+/i.test(trimmed) && !/\bPAGE\s+/i.test(source)) {
-        return 'solana-sbf';
-      }
-      return 'web-js';
+    if (isSolanaProgramSource(source)) {
+      return 'solana-sbf';
     }
-    // General-purpose Manifest v1.0 defaults to the portable Rust Manifest Virtual Machine (.mbc)!
+    // General-purpose Manifest v1.0 defaults to the portable Rust Manifest Virtual Machine (.mbc)
     return 'mvm';
   }
 
@@ -403,8 +402,9 @@ export class ManifestExecutionProvider implements ExecutionProvider {
   ): Promise<UnifiedExecutionResult> {
     const startTime = performance.now();
     const runId = options.runId || `manifest-run-${Date.now()}`;
-    const activeFile = options.activeFilePath
-      ? project.files.find((f) => f.path === options.activeFilePath)
+    const targetActivePath = options.activeFilePath ?? project.activeFilePath;
+    const activeFile = targetActivePath
+      ? project.files.find((f) => f.path === targetActivePath)
       : undefined;
     const resolved = this.resolveEntryFile(project, activeFile);
 
@@ -648,16 +648,19 @@ export class ManifestExecutionProvider implements ExecutionProvider {
     }
 
     // ------------------------------------------------------------------------
-    // Target 4: JavaScript / Web (Legacy Declarative UI or Capability-Sandboxed v1.0 JS)
+    // Target 4: JavaScript / Web (Capability-Sandboxed v1.0 JS)
     // ------------------------------------------------------------------------
     const durationMs = Math.round(performance.now() - startTime);
-    const isLegacyUi = isLegacyDomainManifestSource(entryFile.content);
     const assetWarnings = this.auditAssetReferences(entryFile.content, project);
-    const assetMap = isLegacyUi ? await this.resolvePreviewAssetMap(entryFile.content, project) : {};
+    const assetMap = await this.resolvePreviewAssetMap(entryFile.content, project);
     const brandOrigin = typeof window !== 'undefined' ? window.location.origin : '';
-    const previewHtml = isLegacyUi
-      ? this.generateCanvasHtml(entryFile.name, pipelineRes.outputCode || '', pipelineRes.ir, assetMap, brandOrigin)
-      : this.generateV1WebModuleHtml(entryFile.path, pipelineRes.outputCode || '', pipelineRes.capabilityAudit);
+    const previewHtml = this.generateV1WebModuleHtml(
+      entryFile.path,
+      pipelineRes.outputCode || '',
+      pipelineRes.capabilityAudit,
+      assetMap,
+      brandOrigin
+    );
 
     const combinedDiagnostics = [...pipelineRes.diagnostics, ...assetWarnings];
     const logs = [
@@ -694,8 +697,9 @@ export class ManifestExecutionProvider implements ExecutionProvider {
   ): Promise<UnifiedExecutionResult> {
     const startTime = performance.now();
     const runId = options.runId || `manifest-build-${Date.now()}`;
-    const activeFile = options.activeFilePath
-      ? project.files.find((f) => f.path === options.activeFilePath)
+    const targetActivePath = options.activeFilePath ?? project.activeFilePath;
+    const activeFile = targetActivePath
+      ? project.files.find((f) => f.path === targetActivePath)
       : undefined;
     const resolved = this.resolveEntryFile(project, activeFile);
 
@@ -1134,8 +1138,16 @@ export class ManifestExecutionProvider implements ExecutionProvider {
 </html>`;
   }
 
-  private generateV1WebModuleHtml(entryPath: string, compiledJs: string, capabilityAudit?: any): string {
+  private generateV1WebModuleHtml(
+    entryPath: string,
+    compiledJs: string,
+    capabilityAudit?: any,
+    assetMap: Record<string, string> = {},
+    brandOrigin = ''
+  ): string {
     const caps = (capabilityAudit?.required || []).join(', ') || 'none (network & storage isolated)';
+    const serializedAssets = JSON.stringify(assetMap).replace(/<\//g, '<\\/');
+    const serializedBrandOrigin = JSON.stringify(brandOrigin);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1158,19 +1170,63 @@ export class ManifestExecutionProvider implements ExecutionProvider {
   </div>
   <div class="box">Capabilities: ${escapeHtml(caps)}</div>
   <div id="manifest-root" class="box">Running module...</div>
+  <script>
+    (function() {
+      const __assets = ${serializedAssets};
+      const __brandBase = ${serializedBrandOrigin};
+      window.__MANIFEST_ASSETS__ = __assets;
+      window.__manifestResolveAsset = function(rawPath) {
+        if (!rawPath || typeof rawPath !== 'string') return rawPath;
+        if (rawPath.startsWith('data:') || rawPath.startsWith('blob:') || /^https?:\\/\\//i.test(rawPath)) {
+          return rawPath;
+        }
+        const clean = rawPath.replace(/\\\\/g, '/').replace(/^\\.\\//, '').replace(/^\\/+/, '');
+        if (clean.split('/').includes('..')) return '';
+        if (Object.prototype.hasOwnProperty.call(__assets, clean)) {
+          return __assets[clean];
+        }
+        if (clean.startsWith('assets/brand/') && __brandBase) {
+          return __brandBase + '/' + clean;
+        }
+        return rawPath;
+      };
+      if (typeof HTMLImageElement !== 'undefined') {
+        const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+        if (desc && desc.set) {
+          Object.defineProperty(HTMLImageElement.prototype, 'src', {
+            configurable: true,
+            enumerable: true,
+            get: desc.get,
+            set: function(val) {
+              return desc.set.call(this, window.__manifestResolveAsset(String(val || '')));
+            }
+          });
+        }
+      }
+    })();
+  </script>
   <script type="module">
-    ${compiledJs}
+    ${compiledJs.replace(/<\/(script)/gi, '<\\/$1')}
     const outEl = document.getElementById('manifest-root');
     const lines = [];
+    const renderSafeOutput = (retText) => {
+      if (!outEl) return;
+      outEl.textContent = '';
+      if (lines.length) {
+        outEl.appendChild(document.createTextNode(lines.join('\\n') + '\\n\\n'));
+      }
+      const span = document.createElement('span');
+      span.className = 'ret';
+      span.textContent = 'Return: ' + String(retText);
+      outEl.appendChild(span);
+    };
     try {
-      const runner = typeof createManifestModule === 'function' ? createManifestModule : (typeof __runManifestModule === 'function' ? __runManifestModule : null);
       if (typeof __runManifestModule === 'function') {
         const res = __runManifestModule();
         if (res.stdout && res.stdout.length) {
           lines.push(...res.stdout);
         }
-        const renderedReturn = res.returnValue || 'void';
-        outEl.innerHTML = (lines.length ? lines.join('\\n') + '\\n\\n' : '') + '<span class="ret">Return: ' + escapeHtml(renderedReturn) + '</span>';
+        renderSafeOutput(res.returnValue || 'void');
       } else if (typeof createManifestModule === 'function') {
         const mod = createManifestModule({
           console: (msg) => {
@@ -1180,11 +1236,13 @@ export class ManifestExecutionProvider implements ExecutionProvider {
         });
         const ret = typeof mod.main === 'function' ? mod.main() : undefined;
         const renderedReturn = typeof ret === 'bigint' ? ret.toString() : JSON.stringify(ret);
-        outEl.innerHTML = (lines.length ? lines.join('\\n') + '\\n\\n' : '') + '<span class="ret">Return: ' + escapeHtml(renderedReturn) + '</span>';
+        renderSafeOutput(renderedReturn);
       }
     } catch (err) {
-      outEl.style.color = '#f85149';
-      outEl.textContent = 'Runtime Trap: ' + (err.message || String(err));
+      if (outEl) {
+        outEl.style.color = '#f85149';
+        outEl.textContent = 'Runtime Trap: ' + (err.message || String(err));
+      }
       try { window.parent.postMessage({ type: 'manifest-output', payload: 'Runtime Trap: ' + (err.message || String(err)) }, '*'); } catch (_) {}
     }
   </script>
@@ -1234,113 +1292,6 @@ export class ManifestExecutionProvider implements ExecutionProvider {
 </html>`;
   }
 
-  private generateCanvasHtml(
-    title: string,
-    compiledJs: string,
-    ir?: any,
-    assetMap: Record<string, string> = {},
-    brandOrigin = ''
-  ): string {
-    const appName = ir?.appName || title || 'Manifest Application';
-    const serializedAssets = JSON.stringify(assetMap).replace(/<\//g, '<\\/');
-    const serializedBrandOrigin = JSON.stringify(brandOrigin);
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${escapeHtml(appName)}</title>
-  <style>
-    *, *::before, *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-    body {
-      background-color: #1f1f1f;
-      color: #cccccc;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      min-height: 100vh;
-      width: 100%;
-      overflow-x: hidden;
-    }
-    #manifest-root {
-      width: 100%;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-  </style>
-</head>
-<body>
-  <div id="manifest-root"></div>
-
-  <script>
-    (function() {
-      const __assets = ${serializedAssets};
-      const __brandBase = ${serializedBrandOrigin};
-      window.__MANIFEST_ASSETS__ = __assets;
-      window.__manifestResolveAsset = function(rawPath) {
-        if (!rawPath || typeof rawPath !== 'string') return rawPath;
-        if (rawPath.startsWith('data:') || rawPath.startsWith('blob:') || /^https?:\\/\\//i.test(rawPath)) {
-          return rawPath;
-        }
-        const clean = rawPath.replace(/\\\\/g, '/').replace(/^\\.\\//, '').replace(/^\\/+/, '');
-        if (clean.split('/').includes('..')) return '';
-        if (Object.prototype.hasOwnProperty.call(__assets, clean)) {
-          return __assets[clean];
-        }
-        if (clean.startsWith('assets/brand/') && __brandBase) {
-          return __brandBase + '/' + clean;
-        }
-        return rawPath;
-      };
-      if (typeof HTMLImageElement !== 'undefined') {
-        const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
-        if (desc && desc.set) {
-          Object.defineProperty(HTMLImageElement.prototype, 'src', {
-            configurable: true,
-            enumerable: true,
-            get: desc.get,
-            set: function(val) {
-              return desc.set.call(this, window.__manifestResolveAsset(String(val || '')));
-            }
-          });
-        }
-      }
-    })();
-  </script>
-
-  <script type="module">
-    ${compiledJs}
-
-    try {
-      const root = document.getElementById('manifest-root');
-      if (typeof startApp === 'function') {
-        startApp(root, {
-          onOutput: (msg) => {
-            try {
-              window.parent.postMessage({ type: 'manifest-output', payload: String(msg) }, '*');
-            } catch (_) {}
-          },
-          onState: (st) => {
-            try {
-              window.parent.postMessage({ type: 'manifest-state', payload: { ...st } }, '*');
-            } catch (_) {}
-          }
-        });
-      }
-    } catch (err) {
-      console.error('[Manifest Runtime Error]', err);
-      try {
-        window.parent.postMessage({ type: 'manifest-output', payload: 'Runtime Error: ' + (err.message || String(err)) }, '*');
-      } catch (_) {}
-    }
-  </script>
-</body>
-</html>`;
-  }
 
   private generateErrorHtml(filename: string, diagnostics: StudioDiagnostic[]): string {
     const errorItems = diagnostics

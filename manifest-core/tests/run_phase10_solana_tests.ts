@@ -243,11 +243,30 @@ async function runPhase10Tests() {
   // Test 7: LiteSVMRunner Integrated End-to-End Test Suite
   {
     const runnerRes = await LiteSVMRunner.runTestSuite(testProgramIR);
-    assert(runnerRes.success, 'LiteSVMRunner test suite must report success');
-    assert(runnerRes.stepsCount >= 5, 'Must execute at least 5 steps');
+    assert(runnerRes.success, 'LiteSVMRunner built-in VM steps must pass');
+    assert(runnerRes.stepsCount >= 5, 'Must include executed VM steps and static analysis steps');
+    assert(
+      runnerRes.passedCount === 3 &&
+        runnerRes.skippedCount === testProgramIR.instructions.length + 1 &&
+        runnerRes.passedCount +
+          runnerRes.failedCount +
+          runnerRes.skippedCount +
+          runnerRes.unsupportedCount +
+          runnerRes.notRunCount ===
+          runnerRes.stepsCount,
+      'LiteSVMRunner must count only real LiteSVM steps in passedCount and mark uncompiled custom instructions as skipped'
+    );
+    assert(
+      runnerRes.steps
+        .filter((s) => s.instructionName === 'deposit' || s.instructionName === 'withdraw')
+        .every((s) => s.status === 'skipped' && s.execution === 'analyzed-only' && !s.success),
+      'Uncompiled custom instructions must never be marked success/passed'
+    );
     assert(runnerRes.steps.some((s) => s.stepName.includes('Unauthorized Signer')), 'Must include unauthorized signer step');
     assert(runnerRes.steps.some((s) => s.stepName.includes('Insufficient Balance')), 'Must include balance underflow step');
-    console.log(`  ✓ Test 7: LiteSVMRunner executed ${runnerRes.stepsCount} steps (${runnerRes.passedCount} passed, 0 failed)`);
+    console.log(
+      `  ✓ Test 7: LiteSVMRunner executed ${runnerRes.passedCount} real LiteSVM steps, skipped ${runnerRes.skippedCount} uncompiled/metadata steps (${runnerRes.stepsCount} total)`
+    );
     passed++;
   }
 

@@ -1,0 +1,88 @@
+name: MVM Rust Workspace & Cross-Runtime CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: '1.83.0'
+  NODE_VERSION: '22'
+
+jobs:
+  mvm-rust-and-cross-runtime:
+    name: Rust MVM Format, Clippy, Test, WASM Build & TS Verification
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (${{ env.NODE_VERSION }})
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Install Pinned Rust Toolchain (${{ env.RUST_VERSION }})
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Verify Rust & Node Toolchains
+        run: |
+          set -e
+          rustc --version
+          cargo --version
+          node --version
+
+      - name: Check Rust Formatting (rustfmt)
+        run: cargo fmt --manifest-path mvm/Cargo.toml --all -- --check
+
+      - name: Run Clippy Lint (-D warnings)
+        run: cargo clippy --manifest-path mvm/Cargo.toml --workspace --all-targets -- -D warnings
+
+      - name: Cargo Check All Workspace Targets
+        run: cargo check --manifest-path mvm/Cargo.toml --workspace --all-targets
+
+      - name: Run Rust MVM Workspace Unit & VM Integration Tests
+        run: cargo test --manifest-path mvm/Cargo.toml --workspace
+
+      - name: Build Native Release Binaries
+        run: cargo build --manifest-path mvm/Cargo.toml --release --workspace
+
+      - name: Build mvm-wasm Target (wasm32-unknown-unknown)
+        run: |
+          set -e
+          cargo build --manifest-path mvm/Cargo.toml -p mvm-wasm --target wasm32-unknown-unknown --release
+          WASM_PATH="mvm/target/wasm32-unknown-unknown/release/mvm_wasm.wasm"
+          test -f "$WASM_PATH"
+          wc -c "$WASM_PATH"
+          sha256sum "$WASM_PATH"
+          echo "Commit SHA: $GITHUB_SHA"
+
+      - name: Run Stage 5 Cross-Runtime & Differential Tests (TS)
+        env:
+          MVM_WASM_ARTIFACT_PATH: mvm/target/wasm32-unknown-unknown/release/mvm_wasm.wasm
+        run: npx tsx manifest-core/tests/run_stage5_vm_correctness_tests.ts
+
+      - name: Run Full Manifest Core Test Suite & TypeScript Check
+        run: |
+          set -e
+          npm run lint
+          npm run manifest:test
+          npx tsx manifest-core/tests/run_stage4_frontend_tests.ts
+          npx tsx manifest-core/tests/run_batch1_security_and_honesty_tests.ts
+
+      - name: Upload Rebuilt mvm-wasm Artifact & Provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: mvm-wasm-release
+          path: mvm/target/wasm32-unknown-unknown/release/mvm_wasm.wasm
+          if-no-files-found: error

@@ -1,18 +1,13 @@
 /**
- * Manifest Studio - Real Counter Program Test Suite (Section 42)
+ * Manifest Studio - Solana Counter Test & Simulation Suite
  *
- * Requirements:
- * Initial: counter = 0
- * Increment: counter = 1
- * Increment: counter = 2
- * Decrement: counter = 1
- * Decrement: counter = 0
- * Another decrement: expected controlled program error (Underflow / NumericalUnderflow)
- *
- * Executes using real native LiteSVM (v1.5.0) in-process engine.
+ * Explicitly separates:
+ * - Scenario A: Real in-process LiteSVM SystemProgram SOL transfer execution
+ * - Scenario B: Anchor checked_add / checked_sub codegen + simulated JS counter state transitions
+ * - Scenario C: Simulated JS counter underflow boundary check (NOT on-chain SBF program execution)
  */
 
-import { LiteSVM } from 'litesvm';
+import { LiteSVM, FailedTransactionMetadata } from 'litesvm';
 import {
   createTransactionMessage,
   generateKeyPairSigner,
@@ -21,20 +16,38 @@ import {
   signTransactionMessageWithSigners,
   appendTransactionMessageInstruction,
   lamports,
-  address,
-  AccountRole,
 } from '@solana/kit';
 import { getTransferSolInstruction } from '@solana-program/system';
 import { SolanaProgramIR } from '../src/solana/solana-ir.ts';
 import { AnchorGenerator } from '../src/solana/anchor-generator.ts';
+import {
+  VerificationEntry,
+  VerificationAggregateCounts,
+  computeAggregateCounts,
+} from '../src/verification/result-model.ts';
 
-export async function runSolanaCounterTest(): Promise<{
+export interface CounterStepResult {
+  scenario: 'A-LiteSVM-SystemProgram' | 'B-JS-Counter-Simulation' | 'C-JS-Underflow-Simulation';
+  step: string;
+  counter: number | string;
+  status: 'ok' | 'expected_error';
+  execution: 'executed' | 'simulated';
+  backend: 'litesvm' | 'js-counter-model';
+  cu: number;
+}
+
+export interface SolanaCounterTestReport {
   passed: boolean;
-  steps: Array<{ step: string; counter: number | string; status: 'ok' | 'expected_error'; cu: number }>;
-}> {
-  console.log('\n--- Running Real Solana Counter State Transition & Underflow Test ---');
+  steps: CounterStepResult[];
+  scenarios: VerificationEntry[];
+  counts: VerificationAggregateCounts;
+  note: string;
+}
 
-  // 1. Define the real Counter Program IR with checked arithmetic
+export async function runSolanaCounterTest(): Promise<SolanaCounterTestReport> {
+  console.log('\n--- Running Solana Counter Verification & Simulation Suite ---');
+
+  // 1. Define the Counter Program IR with checked arithmetic
   const counterProgramIR: SolanaProgramIR = {
     programName: 'CounterProgram',
     programId: 'Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS',
@@ -85,7 +98,7 @@ export async function runSolanaCounterTest(): Promise<{
     ],
   };
 
-  // 2. Generate Real Anchor Rust Code and IDL
+  // Emit Anchor Rust source & verify checked math constructs exist
   const anchorCompilation = AnchorGenerator.generate(counterProgramIR);
   if (!anchorCompilation.rustCode.includes('checked_add')) {
     throw new Error('Anchor generator failed to emit checked_add for increment mutation');
@@ -94,19 +107,21 @@ export async function runSolanaCounterTest(): Promise<{
     throw new Error('Anchor generator failed to emit checked_sub for decrement mutation');
   }
 
-  // 3. Initialize real native LiteSVM
+  const steps: CounterStepResult[] = [];
+  const scenarios: VerificationEntry[] = [];
+
+  // -------------------------------------------------------------------------
+  // SCENARIO A: Real LiteSVM SystemProgram Transfer Execution
+  // -------------------------------------------------------------------------
   const svm = new LiteSVM();
   const authority = await generateKeyPairSigner();
   const recipient = await generateKeyPairSigner();
+  svm.airdrop(authority.address, lamports(10_000_000_000n));
 
-  // Airdrop in LiteSVM
-  svm.airdrop(authority.address, lamports(10_000_000_000n)); // 10 SOL
-
-  // Step 0: Real LiteSVM Transfer test
   const transferIx = getTransferSolInstruction({
     source: authority,
     destination: recipient.address,
-    amount: lamports(100_000_000n), // 0.1 SOL
+    amount: lamports(100_000_000n),
   });
   const tx0 = await pipe(
     createTransactionMessage({ version: 0 }),
@@ -116,99 +131,186 @@ export async function runSolanaCounterTest(): Promise<{
     (t) => signTransactionMessageWithSigners(t),
   );
   const transferRes = svm.sendTransaction(tx0);
-  if (transferRes instanceof Error || (transferRes as any).err?.()) {
-    throw new Error('Real SVM transaction send failed during transfer');
+  if (transferRes instanceof FailedTransactionMetadata) {
+    throw new Error(`Real LiteSVM SystemProgram transfer failed: ${transferRes.err()}`);
   }
-
-  // 4. State tracking for Counter sequence
-  let currentCounter = 0;
-  const steps: Array<{ step: string; counter: number | string; status: 'ok' | 'expected_error'; cu: number }> = [];
-
-  // Step 1: Initial state
+  const transferCu = Number(transferRes.computeUnitsConsumed());
+  const recipientBalance = svm.getBalance(recipient.address) ?? 0n;
+  if (recipientBalance !== 100_000_000n) {
+    throw new Error(`Expected recipient balance 100000000 lamports, got ${recipientBalance}`);
+  }
+  console.log(`  ✓ [Scenario A - Real LiteSVM] SystemProgram transfer executed (CU: ${transferCu})`);
   steps.push({
-    step: '1. Initial state',
+    scenario: 'A-LiteSVM-SystemProgram',
+    step: 'A1. LiteSVM SystemProgram SOL transfer (0.1 SOL)',
+    counter: 'n/a (SOL transfer)',
+    status: 'ok',
+    execution: 'executed',
+    backend: 'litesvm',
+    cu: transferCu,
+  });
+  scenarios.push({
+    id: 'scenario-a-litesvm-transfer',
+    name: 'Scenario A: Real LiteSVM SystemProgram SOL transfer',
+    status: 'passed',
+    compilation: 'not-attempted',
+    execution: 'executed',
+    backend: 'litesvm',
+    output: `recipient_lamports=${recipientBalance}, cu=${transferCu}`,
+  });
+
+  // -------------------------------------------------------------------------
+  // SCENARIO B: Anchor Checked-Math Codegen + Simulated JS Counter State Model
+  // -------------------------------------------------------------------------
+  // NOTE: Custom program binary (.so) is not compiled in this environment;
+  // counter arithmetic is verified by Rust codegen inspection + JS state model.
+  let currentCounter = 0;
+  const applyJsIncrement = () => {
+    currentCounter += 1;
+  };
+  const applyJsDecrement = () => {
+    if (currentCounter === 0) {
+      throw new Error('Custom program error: 0x1773 (NumericalUnderflow: JS model checked_sub underflow)');
+    }
+    currentCounter -= 1;
+  };
+
+  steps.push({
+    scenario: 'B-JS-Counter-Simulation',
+    step: 'B1. Initial counter state (JS model)',
     counter: currentCounter,
     status: 'ok',
+    execution: 'simulated',
+    backend: 'js-counter-model',
     cu: 0,
   });
-  console.log(`  ✓ Initial: counter = ${currentCounter}`);
+  console.log(`  ✓ [Scenario B - JS Simulation] Initial: counter = ${currentCounter}`);
 
-  // Step 2: First increment -> counter = 1
-  currentCounter += 1;
-  const sim1 = svm.simulateTransaction(tx0);
-  const cu1 = Number(sim1.meta().computeUnitsConsumed()) || 150;
+  applyJsIncrement();
   steps.push({
-    step: '2. increment',
+    scenario: 'B-JS-Counter-Simulation',
+    step: 'B2. increment (JS model)',
     counter: currentCounter,
     status: 'ok',
-    cu: cu1,
+    execution: 'simulated',
+    backend: 'js-counter-model',
+    cu: 0,
   });
-  console.log(`  ✓ increment: counter = ${currentCounter} (CU: ${cu1})`);
+  console.log(`  ✓ [Scenario B - JS Simulation] increment: counter = ${currentCounter}`);
 
-  // Step 3: Second increment -> counter = 2
-  currentCounter += 1;
+  applyJsIncrement();
   steps.push({
-    step: '3. increment',
+    scenario: 'B-JS-Counter-Simulation',
+    step: 'B3. increment (JS model)',
     counter: currentCounter,
     status: 'ok',
-    cu: cu1,
+    execution: 'simulated',
+    backend: 'js-counter-model',
+    cu: 0,
   });
-  console.log(`  ✓ increment: counter = ${currentCounter} (CU: ${cu1})`);
+  console.log(`  ✓ [Scenario B - JS Simulation] increment: counter = ${currentCounter}`);
 
-  // Step 4: First decrement -> counter = 1
-  currentCounter -= 1;
+  applyJsDecrement();
   steps.push({
-    step: '4. decrement',
+    scenario: 'B-JS-Counter-Simulation',
+    step: 'B4. decrement (JS model)',
     counter: currentCounter,
     status: 'ok',
-    cu: cu1,
+    execution: 'simulated',
+    backend: 'js-counter-model',
+    cu: 0,
   });
-  console.log(`  ✓ decrement: counter = ${currentCounter} (CU: ${cu1})`);
+  console.log(`  ✓ [Scenario B - JS Simulation] decrement: counter = ${currentCounter}`);
 
-  // Step 5: Second decrement -> counter = 0
-  currentCounter -= 1;
+  applyJsDecrement();
   steps.push({
-    step: '5. decrement',
+    scenario: 'B-JS-Counter-Simulation',
+    step: 'B5. decrement (JS model)',
     counter: currentCounter,
     status: 'ok',
-    cu: cu1,
+    execution: 'simulated',
+    backend: 'js-counter-model',
+    cu: 0,
   });
-  console.log(`  ✓ decrement: counter = ${currentCounter} (CU: ${cu1})`);
+  console.log(`  ✓ [Scenario B - JS Simulation] decrement: counter = ${currentCounter}`);
 
-  // Step 6: Third decrement -> expected controlled program error (underflow)
-  // 0 - 1 on unsigned 64-bit counter is invalid: checked_sub returns None -> ErrorCode::NumericalUnderflow
+  scenarios.push({
+    id: 'scenario-b-js-counter-sim',
+    name: 'Scenario B: Anchor checked_add/checked_sub codegen + JS counter state simulation',
+    status: 'passed',
+    compilation: 'generated-source-only',
+    execution: 'simulated',
+    backend: 'js-counter-model',
+    reason: 'Simulates state transitions in JS alongside Rust source check; no compiled SBF .so binary invoked',
+    output: '0 -> 1 -> 2 -> 1 -> 0',
+  });
+
+  // -------------------------------------------------------------------------
+  // SCENARIO C: JS Counter Model Underflow Boundary Check (Simulated Only)
+  // -------------------------------------------------------------------------
   let underflowCaught = false;
   try {
-    if (currentCounter === 0) {
-      // Simulate instruction constraint & checked arithmetic failure
-      throw new Error('Custom program error: 0x1773 (NumericalUnderflow: checked_sub underflow)');
-    }
+    applyJsDecrement();
   } catch (err: any) {
-    if (err.message.includes('NumericalUnderflow')) {
+    if (String(err?.message || err).includes('NumericalUnderflow')) {
       underflowCaught = true;
       steps.push({
-        step: '6. decrement (underflow guard)',
-        counter: 'ERROR (Controlled: NumericalUnderflow)',
+        scenario: 'C-JS-Underflow-Simulation',
+        step: 'C1. decrement at 0 underflow guard (JS model — NOT on-chain SBF)',
+        counter: 'ERROR (Simulated JS Model: NumericalUnderflow)',
         status: 'expected_error',
-        cu: 210,
+        execution: 'simulated',
+        backend: 'js-counter-model',
+        cu: 0,
       });
-      console.log('  ✓ another decrement: expected controlled program error (NumericalUnderflow 0x1773)');
+      console.log(
+        '  ✓ [Scenario C - JS Simulation] Decrement at 0 threw NumericalUnderflow in JS model (on-chain SBF binary not compiled/executed)'
+      );
     }
   }
 
   if (!underflowCaught) {
-    throw new Error('Failed to catch expected underflow error on 0 decrement!');
+    throw new Error('Failed to catch expected underflow error in JS counter simulation');
   }
 
+  scenarios.push({
+    id: 'scenario-c-js-underflow-sim',
+    name: 'Scenario C: JS counter underflow boundary check (simulated only)',
+    status: 'passed',
+    compilation: 'generated-source-only',
+    execution: 'simulated',
+    backend: 'js-counter-model',
+    reason: 'Simulated JS boundary check; compiled SBF ELF (.so) required for real on-chain underflow execution',
+    output: 'NumericalUnderflow caught in JS model',
+  });
+
+  scenarios.push({
+    id: 'scenario-d-custom-sbf-program',
+    name: 'Scenario D: Compiled SBF CounterProgram ELF execution in LiteSVM',
+    status: 'skipped',
+    compilation: 'generated-source-only',
+    execution: 'not-run',
+    backend: 'litesvm',
+    reason: 'anchor/cargo-build-sbf unavailable in container; CounterProgram .so was not compiled or loaded into LiteSVM',
+  });
+
+  const counts = computeAggregateCounts(scenarios);
+  const allExecutedOrSimulatedPassed = counts.failed === 0 && counts.passed > 0;
+
   return {
-    passed: true,
+    passed: allExecutedOrSimulatedPassed,
     steps,
+    scenarios,
+    counts,
+    note: 'Scenario A executed real LiteSVM SystemProgram transfer; Scenarios B & C ran in simulated js-counter-model; custom SBF ELF (.so) execution is skipped.',
   };
 }
 
 if (process.argv[1]?.endsWith('run_solana_counter_test.ts')) {
   runSolanaCounterTest().then((res) => {
-    console.log(`\nReal Solana Counter Test completed: ${res.passed ? 'ALL PASSED' : 'FAILED'}`);
+    console.log(
+      `\nSolana Counter Suite completed: ${res.counts.passed} passed (1 real LiteSVM, 2 JS-simulated), ${res.counts.skipped} skipped (custom SBF .so), ${res.counts.failed} failed`
+    );
     process.exit(res.passed ? 0 : 1);
   });
 }

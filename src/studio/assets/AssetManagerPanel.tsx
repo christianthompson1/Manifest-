@@ -11,7 +11,7 @@
  * - Responsive mobile drawer & desktop sidebar integration
  */
 
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Image as ImageIcon,
   Music,
@@ -44,6 +44,65 @@ import {
   generateHexDump,
   FileClassification,
 } from '../editor/file-signatures.ts';
+import {
+  isSvgAsset,
+  isSafeImageDataUrl,
+  validateSvgPreviewContent,
+} from '../utils/security-sanitize.ts';
+
+interface SafeSvgPreviewProps {
+  content: string;
+  alt: string;
+  className?: string;
+}
+
+const SafeSvgPreview: React.FC<SafeSvgPreviewProps> = ({ content, alt, className }) => {
+  const [blobUrl, setBlobUrl] = useState<string>('');
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const validation = useMemo(() => validateSvgPreviewContent(content), [content]);
+
+  useEffect(() => {
+    setLoadError(null);
+    if (!validation.valid || !validation.cleanSvgText) {
+      setBlobUrl('');
+      return;
+    }
+
+    const blob = new Blob([validation.cleanSvgText], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    setBlobUrl(url);
+
+    return () => {
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [validation]);
+
+  if (!validation.valid || loadError || !blobUrl) {
+    return (
+      <div
+        className="flex flex-col items-center justify-center text-center text-[10px] text-[#8b949e] p-2 gap-1"
+        title={validation.reason || loadError || 'Invalid SVG preview'}
+      >
+        <AlertTriangle className="w-4 h-4 text-[#cca700]" />
+        <span className="truncate max-w-full">
+          {validation.valid ? 'SVG render failed' : 'Invalid SVG'}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={blobUrl}
+      alt={alt}
+      className={className || 'max-h-full max-w-full object-contain'}
+      onError={() => setLoadError('Failed to decode SVG image')}
+    />
+  );
+};
 
 export type AssetCategoryFilter = 'all' | 'image' | 'audio' | 'video' | 'font' | 'data' | 'binary';
 
@@ -361,14 +420,21 @@ export const AssetManagerPanel: React.FC<AssetManagerPanelProps> = ({
                     {/* Thumbnail preview */}
                     <div className="w-full h-20 bg-[#141414] rounded flex items-center justify-center overflow-hidden mb-2 relative">
                       {item.categoryGroup === 'image' ? (
-                        item.file.path.endsWith('.svg') ? (
-                          <div
-                            className="w-full h-full p-2 flex items-center justify-center"
-                            dangerouslySetInnerHTML={{ __html: item.file.content }}
-                          />
+                        isSvgAsset(item.file) ? (
+                          <div className="w-full h-full p-2 flex items-center justify-center">
+                            <SafeSvgPreview
+                              content={item.file.content}
+                              alt={item.file.name}
+                              className="max-h-full max-w-full object-contain"
+                            />
+                          </div>
                         ) : (
                           <img
-                            src={item.file.content.startsWith('data:') ? item.file.content : `/assets/${item.file.name}`}
+                            src={
+                              isSafeImageDataUrl(item.file.content)
+                                ? item.file.content
+                                : `/assets/${encodeURIComponent(item.file.name)}`
+                            }
                             alt={item.file.name}
                             className="max-h-full max-w-full object-contain"
                           />
@@ -485,14 +551,21 @@ export const AssetManagerPanel: React.FC<AssetManagerPanelProps> = ({
             {/* Preview Box */}
             <div className="p-4 flex flex-col items-center justify-center bg-[#0d1117] min-h-[160px] border-b border-[#30363d]">
               {selectedAsset.categoryGroup === 'image' ? (
-                selectedAsset.file.path.endsWith('.svg') ? (
-                  <div
-                    className="max-h-48 max-w-full flex items-center justify-center p-2"
-                    dangerouslySetInnerHTML={{ __html: selectedAsset.file.content }}
-                  />
+                isSvgAsset(selectedAsset.file) ? (
+                  <div className="max-h-48 max-w-full flex items-center justify-center p-2">
+                    <SafeSvgPreview
+                      content={selectedAsset.file.content}
+                      alt={selectedAsset.file.name}
+                      className="max-h-44 max-w-full object-contain rounded border border-[#30363d]"
+                    />
+                  </div>
                 ) : (
                   <img
-                    src={selectedAsset.file.content.startsWith('data:') ? selectedAsset.file.content : `/assets/${selectedAsset.file.name}`}
+                    src={
+                      isSafeImageDataUrl(selectedAsset.file.content)
+                        ? selectedAsset.file.content
+                        : `/assets/${encodeURIComponent(selectedAsset.file.name)}`
+                    }
                     alt={selectedAsset.file.name}
                     className="max-h-48 max-w-full object-contain rounded border border-[#30363d]"
                   />

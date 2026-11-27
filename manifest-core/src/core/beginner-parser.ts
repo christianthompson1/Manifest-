@@ -3,6 +3,8 @@ import {
   AssignTarget,
   BinaryOp,
   CapabilitySummaryDecl,
+  CommentNode,
+  CommentStyle,
   ConstDecl,
   EnumDecl,
   EnumVariantDecl,
@@ -35,11 +37,36 @@ const TWO_CHAR_OPS = new Set(['==', '!=', '<=', '>=', '&&', '||', '->', '=>', ':
 const SINGLE_OPS = new Set(['+', '-', '*', '/', '%', '<', '>', '!', '=', '?']);
 const PUNCTS = new Set(['{', '}', '(', ')', '[', ']', ';', ',', ':', '.']);
 
-function tokenizeBeginner(source: string): BToken[] {
+function decodeEscape(source: string, indexRef: { i: number }, advance: (n?: number) => void): string {
+  const esc = source[indexRef.i];
+  if (esc === 'n') { advance(1); return '\n'; }
+  if (esc === 't') { advance(1); return '\t'; }
+  if (esc === 'r') { advance(1); return '\r'; }
+  if (esc === '0') { advance(1); return '\0'; }
+  if (esc === '\\') { advance(1); return '\\'; }
+  if (esc === '"') { advance(1); return '"'; }
+  if (esc === "'") { advance(1); return "'"; }
+  if (esc === 'x' && /^[0-9a-fA-F]{2}/.test(source.slice(indexRef.i + 1, indexRef.i + 3))) {
+    const code = parseInt(source.slice(indexRef.i + 1, indexRef.i + 3), 16);
+    advance(3);
+    return String.fromCharCode(code);
+  }
+  if (esc === 'u' && /^[0-9a-fA-F]{4}/.test(source.slice(indexRef.i + 1, indexRef.i + 5))) {
+    const code = parseInt(source.slice(indexRef.i + 1, indexRef.i + 5), 16);
+    advance(5);
+    return String.fromCharCode(code);
+  }
+  advance(1);
+  return esc;
+}
+
+function tokenizeBeginner(source: string): { tokens: BToken[]; comments: CommentNode[] } {
   const tokens: BToken[] = [];
+  const comments: CommentNode[] = [];
   let i = 0;
   let line = 1;
   let col = 1;
+  let lastCodeLine = 0;
 
   const advance = (n = 1) => {
     for (let k = 0; k < n; k++) {
@@ -53,6 +80,13 @@ function tokenizeBeginner(source: string): BToken[] {
     }
   };
 
+  const pushToken = (tok: BToken) => {
+    tokens.push(tok);
+    if (tok.kind !== 'newline' && tok.kind !== 'eof') {
+      lastCodeLine = tok.line;
+    }
+  };
+
   while (i < source.length) {
     const ch = source[i];
 
@@ -62,19 +96,81 @@ function tokenizeBeginner(source: string): BToken[] {
     }
 
     if (ch === '\n') {
-      tokens.push({ kind: 'newline', value: '\n', upper: '\n', line, col });
+      pushToken({ kind: 'newline', value: '\n', upper: '\n', line, col });
       advance(1);
       continue;
     }
 
-    // Comments: -- , // , # (when not hex color), NOTE:
+    // Block comments /* ... */
+    if (ch === '/' && source[i + 1] === '*') {
+      const startLine = line;
+      const startCol = col;
+      advance(2);
+      let body = '';
+      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) {
+        if (source[i] !== '\r') body += source[i];
+        advance(1);
+      }
+      if (i >= source.length) {
+        throw new ManifestError('Unterminated block comment', startLine, startCol, 'lexer');
+      }
+      advance(2);
+      comments.push({
+        kind: 'block',
+        style: 'block',
+        body,
+        line: startLine,
+        column: startCol,
+        endLine: line,
+        endColumn: col,
+        trailing: lastCodeLine === startLine,
+      });
+      continue;
+    }
+
+    // Comments: -- , // , /// , # , NOTE:
     if (
       (ch === '-' && source[i + 1] === '-') ||
       (ch === '/' && source[i + 1] === '/') ||
       ch === '#' ||
       /^NOTE:/i.test(source.slice(i, i + 5))
     ) {
-      while (i < source.length && source[i] !== '\n') advance(1);
+      const startLine = line;
+      const startCol = col;
+      let style: CommentStyle = '//';
+      if (ch === '-' && source[i + 1] === '-') {
+        style = '--';
+        advance(2);
+      } else if (ch === '/' && source[i + 1] === '/') {
+        if (source[i + 2] === '/') {
+          style = '///';
+          advance(3);
+        } else {
+          style = '//';
+          advance(2);
+        }
+      } else if (ch === '#') {
+        style = '#';
+        advance(1);
+      } else {
+        style = 'NOTE:';
+        advance(5);
+      }
+      let body = '';
+      while (i < source.length && source[i] !== '\n') {
+        if (source[i] !== '\r') body += source[i];
+        advance(1);
+      }
+      comments.push({
+        kind: 'line',
+        style,
+        body,
+        line: startLine,
+        column: startCol,
+        endLine: startLine,
+        endColumn: col,
+        trailing: lastCodeLine === startLine,
+      });
       continue;
     }
 
@@ -88,15 +184,8 @@ function tokenizeBeginner(source: string): BToken[] {
         if (source[i] === '\\') {
           advance(1);
           if (i >= source.length) break;
-          const esc = source[i];
-          if (esc === 'n') str += '\n';
-          else if (esc === 't') str += '\t';
-          else if (esc === 'r') str += '\r';
-          else if (esc === '\\') str += '\\';
-          else if (esc === '"') str += '"';
-          else if (esc === "'") str += "'";
-          else str += esc;
-          advance(1);
+          const idxRef = { i };
+          str += decodeEscape(source, idxRef, advance);
         } else {
           str += source[i];
           advance(1);
@@ -106,7 +195,7 @@ function tokenizeBeginner(source: string): BToken[] {
         throw new ManifestError('Unterminated string literal', startLine, startCol, 'lexer');
       }
       advance(1);
-      tokens.push({ kind: 'string', value: str, upper: str, line: startLine, col: startCol });
+      pushToken({ kind: 'string', value: str, upper: str, line: startLine, col: startCol });
       continue;
     }
 
@@ -128,7 +217,7 @@ function tokenizeBeginner(source: string): BToken[] {
           advance(1);
         }
       }
-      tokens.push({
+      pushToken({
         kind: isFloat ? 'float' : 'int',
         value: num,
         upper: num,
@@ -140,19 +229,19 @@ function tokenizeBeginner(source: string): BToken[] {
 
     const two = source.slice(i, i + 2);
     if (TWO_CHAR_OPS.has(two)) {
-      tokens.push({ kind: 'op', value: two, upper: two, line, col });
+      pushToken({ kind: 'op', value: two, upper: two, line, col });
       advance(2);
       continue;
     }
 
     if (SINGLE_OPS.has(ch)) {
-      tokens.push({ kind: 'op', value: ch, upper: ch, line, col });
+      pushToken({ kind: 'op', value: ch, upper: ch, line, col });
       advance(1);
       continue;
     }
 
     if (PUNCTS.has(ch)) {
-      tokens.push({ kind: 'punct', value: ch, upper: ch, line, col });
+      pushToken({ kind: 'punct', value: ch, upper: ch, line, col });
       advance(1);
       continue;
     }
@@ -171,7 +260,7 @@ function tokenizeBeginner(source: string): BToken[] {
         id += source[i];
         advance(1);
       }
-      tokens.push({
+      pushToken({
         kind: 'ident',
         value: id,
         upper: id.toUpperCase(),
@@ -185,19 +274,20 @@ function tokenizeBeginner(source: string): BToken[] {
   }
 
   tokens.push({ kind: 'eof', value: '', upper: '', line, col });
-  return tokens;
+  return { tokens, comments };
 }
 
 export class BeginnerParser {
   private tokens: BToken[];
+  private comments: CommentNode[];
   private pos = 0;
   private file?: string;
-  private isLegacyApp = false;
-  private hasWebUI = false;
   private hasSolanaContract = false;
 
   constructor(source: string, file?: string) {
-    this.tokens = tokenizeBeginner(source);
+    const lexed = tokenizeBeginner(source);
+    this.tokens = lexed.tokens;
+    this.comments = lexed.comments;
     this.file = file;
   }
 
@@ -205,6 +295,7 @@ export class BeginnerParser {
     this.skipNewlines();
     const first = this.peek();
     let moduleName = 'main';
+    let headerSpan: SourceSpan | undefined;
     const imports: ImportDecl[] = [];
     const capabilities: CapabilitySummaryDecl = { requires: [], provides: [], denies: [] };
     const structs: StructDecl[] = [];
@@ -222,15 +313,12 @@ export class BeginnerParser {
     }
 
     if (this.checkKw('MODULE')) {
-      this.next();
+      const modStart = this.next();
       moduleName = this.parseDottedIdent();
+      headerSpan = this.makeSpan(modStart, this.prev());
       this.skipNewlines();
     } else if (this.checkKw('APP')) {
-      this.next();
-      this.isLegacyApp = true;
-      const nameTok = this.expectKind('string', 'application name string');
-      moduleName = nameTok.value.replace(/[^a-zA-Z0-9_]/g, '_') || 'app';
-      this.skipNewlines();
+      this.throwLegacyRemovedError(this.peek(), 'APP');
     }
 
     while (!this.isEof()) {
@@ -242,59 +330,32 @@ export class BeginnerParser {
         continue;
       }
 
-      if (this.checkKw('USE')) {
-        this.parseLegacyUse(capabilities);
-        continue;
-      }
-
       if (this.checkKw('REQUIRES') || this.checkKw('PROVIDES') || this.checkKw('DENIES')) {
         this.parseCapabilityDecl(capabilities);
         continue;
       }
 
-      // Legacy / domain-specific blocks (`PAGE`, `COMPONENT`, `STYLE`, `ROUTE`, `SERVER`, `PROGRAM`, `CSS`, `JS`, `RUST`)
-      if (
-        this.checkKw('PAGE') ||
-        this.checkKw('COMPONENT') ||
-        this.checkKw('STYLE') ||
-        this.checkKw('CSS') ||
-        this.checkKw('JS')
-      ) {
-        this.hasWebUI = true;
-        this.isLegacyApp = true;
-        this.skipBalancedEndBlock();
-        continue;
-      }
-      if (this.checkKw('ROUTE')) {
-        this.hasWebUI = true;
-        this.isLegacyApp = true;
-        this.skipLine();
-        continue;
-      }
-      if (this.checkKw('PROGRAM') || this.checkKw('RUST')) {
+      if (this.checkKw('PROGRAM')) {
         this.hasSolanaContract = true;
-        this.isLegacyApp = true;
-        this.skipBalancedEndBlock();
-        continue;
-      }
-      if (this.checkKw('SERVER')) {
-        this.isLegacyApp = true;
+        this.next();
+        if (this.peek().kind === 'ident') {
+          moduleName = this.expectIdent().value;
+        }
+        this.pos--;
         this.skipBalancedEndBlock();
         continue;
       }
 
-      if (this.checkKw('WHEN')) {
-        this.next();
-        const ev = this.parseDottedIdent();
-        this.skipNewlines();
-        const body = this.parseBlockUntilEnd();
-        this.expectKw('END');
-        if (ev === 'app.starts') {
-          topLevelStmts.push(...body);
-        } else {
-          this.hasWebUI = true;
+      const legacyTop = [
+        'APP', 'PAGE', 'COMPONENT', 'STYLE', 'CSS', 'JS', 'ROUTE', 'SERVER', 'ENDPOINT',
+        'USE', 'WHEN', 'STATE', 'ACTION', 'DEFINE',
+        'HEADING', 'TEXT', 'BUTTON', 'INPUT', 'IMAGE', 'PROGRESS', 'BADGE', 'ICON',
+        'SELECT', 'CHECKBOX', 'TEXTAREA', 'FORM', 'TABLE', 'OPTION',
+      ];
+      for (const kw of legacyTop) {
+        if (this.checkKw(kw)) {
+          this.throwLegacyRemovedError(this.peek(), kw);
         }
-        continue;
       }
 
       const isExport = this.eatKw('EXPORT');
@@ -315,35 +376,28 @@ export class BeginnerParser {
         constants.push(this.parseConstDecl(isExport));
         continue;
       }
-      if (
-        this.checkKw('ASYNC') ||
-        this.checkKw('FUNCTION') ||
-        this.checkKw('ACTION') ||
-        this.checkKw('DEFINE')
-      ) {
+      if (this.checkKw('ASYNC') || this.checkKw('FUNCTION')) {
         functions.push(this.parseFnDecl(isExport));
         continue;
       }
-      if (this.checkKw('LET') || this.checkKw('MUTABLE') || this.checkKw('STATE')) {
+      if (this.checkKw('LET') || this.checkKw('MUTABLE')) {
         const v = this.parseVarDecl(isExport);
         globals.push(v);
         topLevelStmts.push({ kind: 'VarStmt', decl: v, span: v.span });
         continue;
       }
 
-      topLevelStmts.push(this.parseStmt(globals));
+      topLevelStmts.push(this.parseStmt());
     }
 
-    const last = this.peek();
+    const last = this.prev();
     return {
       kind: 'SemanticModule',
       profile: 'beginner',
       moduleName,
-      isLegacyApp: this.isLegacyApp,
-      hasDomainExtensions: {
-        webUI: this.hasWebUI,
-        solanaContract: this.hasSolanaContract,
-      },
+      headerSpan,
+      comments: this.comments,
+      isSolanaContract: this.hasSolanaContract,
       imports,
       capabilities,
       structs,
@@ -357,29 +411,14 @@ export class BeginnerParser {
     };
   }
 
-  private parseLegacyUse(capabilities: CapabilitySummaryDecl): void {
-    const start = this.expectKw('USE');
-    if (this.eatKw('LIBRARY')) {
-      const libTok = this.expectKind('string', 'library name');
-      capabilities.requires.push({ name: `lib.${libTok.value}`, span: this.makeSpan(start, libTok) });
-      this.skipNewlines();
-      return;
-    }
-    const targetTok = this.expectIdent();
-    const upper = targetTok.upper;
-    if (upper === 'WEB') {
-      this.hasWebUI = true;
-      capabilities.requires.push({ name: 'ui', span: this.makeSpan(start, targetTok) });
-    } else if (upper === 'SOLANA') {
-      this.hasSolanaContract = true;
-      capabilities.requires.push({ name: 'chain', span: this.makeSpan(start, targetTok) });
-    } else {
-      capabilities.requires.push({
-        name: targetTok.value.toLowerCase(),
-        span: this.makeSpan(start, targetTok),
-      });
-    }
-    this.skipNewlines();
+  private throwLegacyRemovedError(tok: BToken, keyword: string): never {
+    throw new ManifestError(
+      `E_LEGACY_V0_REMOVED: Legacy Manifest v0.x syntax '${keyword}' was removed in Manifest v1.0. Use canonical Manifest v1.0 syntax ('MODULE', 'LET', 'MUTABLE', 'FUNCTION ... END') or standalone 'PROGRAM <Name>'.`,
+      tok.line,
+      tok.col,
+      'parser',
+      "Run 'manifest migrate <file>' to convert v0.x source to canonical Manifest v1.0."
+    );
   }
 
   private parseImport(): ImportDecl {
@@ -596,10 +635,9 @@ export class BeginnerParser {
   }
 
   private parseVarDecl(exported: boolean): VarDecl {
-    const start = this.next(); // LET | MUTABLE | STATE
+    const start = this.next(); // LET | MUTABLE
     const mutable =
       start.upper === 'MUTABLE' ||
-      start.upper === 'STATE' ||
       this.eatKw('MUTABLE') ||
       this.eatKw('MUT');
     const name = this.expectIdent().value;
@@ -619,11 +657,7 @@ export class BeginnerParser {
   private parseFnDecl(exported: boolean): FnDecl {
     const start = this.peek();
     const isAsync = this.eatKw('ASYNC');
-    const kw = this.next(); // FUNCTION | ACTION | DEFINE
-    if (kw.upper === 'DEFINE') {
-      this.eatKw('FUNCTION');
-    }
-    const isAction = kw.upper === 'ACTION';
+    this.expectKw('FUNCTION');
     const name = this.expectIdent().value;
     const typeParams = this.parseTypeParams();
 
@@ -631,27 +665,11 @@ export class BeginnerParser {
     if (this.eatPunct('(')) {
       params = this.parseParenParams();
       this.expectPunct(')');
-    } else if (isAction) {
-      // Legacy ACTION space-separated parameters: `ACTION add a b`
-      while (
-        !this.isNewline() &&
-        !this.isEof() &&
-        !this.checkOp('->') &&
-        !this.checkKw('RETURNS') &&
-        !this.checkKw('EFFECTS')
-      ) {
-        const pTok = this.expectIdent();
-        let pType: TypeNode = { kind: 'PrimitiveType', name: 'any', span: this.makeSpan(pTok, pTok) };
-        if (this.eatPunct(':')) {
-          pType = this.parseTypeNode();
-        }
-        params.push({ name: pTok.value, type: pType, span: this.makeSpan(pTok, this.prev()) });
-      }
     }
 
     let returnType: TypeNode = {
       kind: 'PrimitiveType',
-      name: isAction && this.isLegacyApp ? 'any' : 'void',
+      name: 'void',
       span: this.makeSpan(start, this.prev()),
     };
     if (this.eatOp('->') || this.eatKw('RETURNS')) {
@@ -733,9 +751,21 @@ export class BeginnerParser {
     return stmts;
   }
 
-  private parseStmt(topLevelGlobals?: VarDecl[]): SemanticStmt {
+  private parseStmt(): SemanticStmt {
     this.skipNewlines();
     const start = this.peek();
+
+    const legacyStmt = [
+      'STATE', 'ACTION', 'DEFINE', 'WHEN', 'USE',
+      'PAGE', 'COMPONENT', 'CONTAINER', 'CARD', 'NAV', 'NAVBAR', 'HEADER', 'FOOTER', 'MODAL',
+      'HEADING', 'TEXT', 'BUTTON', 'INPUT', 'IMAGE', 'PROGRESS', 'BADGE', 'ICON',
+      'SELECT', 'CHECKBOX', 'TEXTAREA', 'FORM', 'TABLE', 'OPTION',
+    ];
+    for (const kw of legacyStmt) {
+      if (this.checkKw(kw)) {
+        this.throwLegacyRemovedError(start, kw);
+      }
+    }
 
     if (this.checkKw('LET') || this.checkKw('MUTABLE')) {
       const decl = this.parseVarDecl(false);
@@ -755,25 +785,6 @@ export class BeginnerParser {
       const value = this.parseExpr();
       this.eatPunct(';');
       this.skipNewlines();
-
-      // In legacy APP top-level scripts, `SET x TO 1` initializes `x` if not yet declared
-      if (
-        this.isLegacyApp &&
-        topLevelGlobals &&
-        targetExpr.kind === 'Identifier' &&
-        !topLevelGlobals.some((g) => g.name === targetExpr.name)
-      ) {
-        const decl: VarDecl = {
-          name: targetExpr.name,
-          mutable: true,
-          exported: false,
-          typeAnnotation: { kind: 'InferredType', span: targetExpr.span },
-          init: value,
-          span: this.makeSpan(start, this.prev()),
-        };
-        topLevelGlobals.push(decl);
-        return { kind: 'VarStmt', decl, span: decl.span };
-      }
 
       const target = this.exprToAssignTarget(targetExpr);
       return {
@@ -1510,6 +1521,9 @@ export class BeginnerParser {
   }
 
   private prev(): BToken {
+    for (let k = this.pos - 1; k >= 0; k--) {
+      if (this.tokens[k].kind !== 'newline') return this.tokens[k];
+    }
     return this.tokens[Math.max(0, this.pos - 1)];
   }
 

@@ -111,7 +111,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
             name: 'manifest.toml',
             path: 'manifest.toml',
             language: 'toml',
-            content: `[app]\nname = "ImportedProject"\nversion = "0.4.0"\nentry = "src/main.manifest"\ntarget = "js"\n`,
+            content: `[package]\nname = "ImportedProject"\nversion = "1.0.0"\nentry = "src/main.manifest"\ntarget = "mvm"\n`,
           });
         }
 
@@ -179,7 +179,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
             <div className="flex items-center gap-2">
               <span className="font-semibold text-sm text-[#ffffff] tracking-tight">Manifest Studio</span>
               <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#252526] text-[#4ec9b0] border border-[#2d2d2d]">
-                v0.4
+                v1.0
               </span>
             </div>
           </div>
@@ -300,7 +300,7 @@ export const WelcomeScreen: React.FC<WelcomeScreenProps> = ({
               <span>Compiler Diagnostics &amp; Testbench</span>
             </button>
           </div>
-          <span>Phase 1 + 2 + 3 Integrated Build</span>
+          <span>Manifest v1.0 + Rust MVM</span>
         </div>
       </div>
     </div>

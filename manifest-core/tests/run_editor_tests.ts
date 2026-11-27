@@ -26,7 +26,7 @@ function runEditorAndSyncTests() {
   const orchestrator = ExecutionOrchestrator.getInstance();
 
   // Test 1: CRLF normalization simulation
-  const crlfStr = 'APP "Test"\r\nPAGE Home\r\n    TEXT "Hello"\r\nEND\r\n';
+  const crlfStr = 'MODULE Test\r\nFUNCTION main() RETURNS Int\r\n    RETURN 0\r\nEND\r\n';
   const normalized = crlfStr.replace(/\r\n/g, '\n');
   assert(!normalized.includes('\r'), 'CRLF normalization removes carriage returns');
   assert(normalized.split('\n').length === 5, 'Normalized text maintains exact line count');
@@ -62,7 +62,7 @@ function runEditorAndSyncTests() {
         name: 'main.manifest',
         path: 'src/main.manifest',
         language: 'manifest',
-        content: 'APP "ManifestApp"\nPAGE Home\n    TEXT "Hi"\nEND\n',
+        content: 'module manifest_app;\nfn main() -> i64 {\n    return 0;\n}\n',
       },
     ],
     createdAt: Date.now(),
@@ -114,7 +114,7 @@ function runEditorAndSyncTests() {
         name: 'main.manifest',
         path: 'src/main.manifest',
         language: 'manifest',
-        content: 'APP "ManifestApp"\n',
+        content: 'module manifest_app;\nfn main() -> i64 { return 0; }\n',
       },
     ],
     createdAt: Date.now(),

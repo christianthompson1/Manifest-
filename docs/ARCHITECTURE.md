@@ -4,16 +4,13 @@
 
 Manifest Studio is an integrated development environment and multi-target compiler/VM workspace built around two tightly verified layers:
 
-1. **The Manifest Language Toolchain & Rust Virtual Machine (`manifest-core/` + `mvm/`)**:
-   - Dual-profile surface syntax (**Beginner Profile** and **Professional Profile**) normalizing into one canonical `SemanticModule` AST.
-   - Multi-file `import`/`export` module graph resolver, static `TypeChecker`, and fixed-point transitive `Capability & Effect Analyzer`.
-   - Target-independent **Typed Manifest IR (`MIRModule`)** with semantics-preserving optimization passes.
-   - Binary **`.mbc` v1.0 Bytecode** emitter, static bytecode verifier, and disassembler.
-   - **Rust Manifest Virtual Machine (`mvm-core`, `#![forbid(unsafe_code)]`)** compiled both to native CLI (`mvm/target/release/mvm`) and WebAssembly (`public/wasm/mvm_wasm.wasm`) for identical execution in Studio and CLI.
-   - Additional backends for **JavaScript / Web** (`web-js`), **Direct WebAssembly** (`wasm`), **Native Rust** (`native`), and **Solana Anchor SBF** (`solana-sbf`).
+1. **The Authoritative Rust Compiler & Virtual Machine (`mvm/` + `manifest-core/`)**:
+   - **Authoritative Rust Compiler (`mvm/crates/manifest-compiler`)**: Canonical lexing, Beginner & Professional parsing, multi-file `import`/`export` module graph resolution, static `TypeChecker`, fixed-point transitive `Capability & Effect Analyzer`, Typed Manifest IR (`MIRModule`) + optimizer, and `.mbc` v1.0 bytecode compilation/disassembly exported via `mvm-wasm` (`public/wasm/mvm_wasm.wasm`) and native `mvm-cli`.
+   - **Rust Manifest Virtual Machine (`mvm-core`, `#![forbid(unsafe_code)]`)**: Static bytecode verifier and bounded interpreter compiled to both native CLI and WebAssembly.
+   - **Target Backends & Standalone Solana (`manifest-core/`)**: Backends for **JavaScript / Web** (`web-js`), **Direct WebAssembly** (`wasm`), **Native Rust** (`native`), **Solana Anchor SBF** (`solana-sbf` for standalone `PROGRAM ... END` contracts), plus explicit opt-in v0.x -> v1.0 migration (`migration/v0-to-v1-migrator.ts`).
 2. **The Manifest Studio IDE (`src/studio/`)**:
-   - React 19 + CodeMirror 6 workspace with visible **Syntax Profile** (`Auto`, `Beginner`, `Professional`), **Format**, and **Compiler Target** selectors, separated **Run** vs **Build** lifecycle, real-time editor diagnostics/hover tooltips, and Developer Inspector tabs (**Output**, **Bytecode (.mbc)**, **Capabilities**, **Typed IR**, **DOM / State**, **Preview HTML**).
-   - Multi-language execution orchestrator supporting Manifest (`.manifest` & `.mbc`), multi-file Static Web (`.html`/`.css`/`.js`), standalone WebAssembly binaries (`.wasm`), and Solana contract simulation—while explicitly refusing unimplemented source runtimes (`.py`, `.rs`, `.ts`, `.c`, `.go`, `.java`).
+   - React 19 + CodeMirror 6 workspace with visible **Syntax Profile** (`Auto`, `Beginner`, `Professional`), **Format**, and **Compiler Target** selectors, separated **Run** vs **Build** lifecycle, real-time Rust-backed editor diagnostics/hover tooltips, and Developer Inspector tabs (**Output**, **Bytecode (.mbc)**, **Capabilities**, **Typed IR**, **State**, **Preview HTML**).
+   - Multi-language execution orchestrator supporting Manifest (`.manifest` & `.mbc`), multi-file Static Web (`.html`/`.css`/`.js`), standalone WebAssembly binaries (`.wasm`), and Solana contract simulation—while explicitly refusing unimplemented source runtimes (`.py`, `.rs`, `.ts`, `.c`, `.go`, `.java`) and rejecting removed v0.x syntax with `E_LEGACY_V0_REMOVED`.
 
 ---
 
@@ -85,22 +82,25 @@ Manifest Studio is an integrated development environment and multi-target compil
 ## 3. Repository Navigation & Subsystems
 
 - **`manifest-core/`**:
+  - `src/engine/`: `rust-engine.ts` (bridge to `mvm-wasm` authoritative Rust compiler exports).
   - `src/core/`: `profile.ts`, `ast-v2.ts`, `beginner-parser.ts`, `professional-parser.ts`, `parse-unified.ts`, `formatter.ts`.
   - `src/semantics/`: `types.ts`, `module-resolver.ts`, `type-checker.ts`, `capability-analyzer.ts`.
-  - `src/ir/`: `typed-ir.ts`, `typed-ir-builder.ts`, `ir-optimizer.ts` (v1.0 Typed MIR) and `ir.ts`, `ir-builder.ts` (legacy UI/Solana IR).
+  - `src/ir/`: `typed-ir.ts`, `typed-ir-builder.ts`, `ir-optimizer.ts` (v1.0 Typed MIR schema & TS reference oracle).
   - `src/bytecode/`: `mbc-format.ts`, `mbc-compiler.ts`, `mbc-reader.ts`.
   - `src/vm/`: `mvm-runner.ts`, `mvm-wasm-bytes.ts`.
   - `src/targets/`: `target-registry.ts`, `wasm-target.ts`, `web-js-target.ts`, `native-target.ts`.
-  - `src/runtime/`: `semantic-evaluator.ts` (deterministic MIR reference evaluator) and `runtime.ts` (legacy AST interpreter).
-  - `src/solana/`: `solana-ir.ts`, `anchor-generator.ts`, `solana-simulator.ts`.
-  - `src/pipeline.ts` & `src/cli.ts`: Unified build/run/check/format/disassemble/verify API and CLI.
+  - `src/runtime/`: `semantic-evaluator.ts` (deterministic MIR reference evaluator).
+  - `src/solana/`: `solana-ir.ts`, `solana-program-parser.ts`, `solana-compiler.ts`, `anchor-generator.ts`, `solana-simulator.ts`, `litesvm-runner.ts`.
+  - `src/migration/`: `v0-to-v1-migrator.ts` (explicit opt-in migration CLI/helper).
+  - `src/pipeline.ts` & `src/cli.ts`: Unified build/run/check/format/migrate/disassemble/verify API and CLI.
 - **`mvm/`**:
+  - `crates/manifest-compiler/`: Authoritative Rust Manifest v1.0 frontend, resolver, type/capability checker, MIR optimizer, and `.mbc` bytecode compiler.
   - `crates/mvm-core/`: Safe Rust bytecode decoder, static verifier, arena heap, capability gate, SHA-256/math/string/FS host, and VM loop.
-  - `crates/mvm-cli/`: Native `mvm` executable (`run`, `verify`, `disasm`).
-  - `crates/mvm-wasm/`: WebAssembly FFI wrapper compiled to `public/wasm/mvm_wasm.wasm`.
+  - `crates/mvm-cli/`: Native `mvm` executable (`check`, `build`, `run`, `verify`, `disasm`, `targets`, `version`).
+  - `crates/mvm-wasm/`: WebAssembly FFI wrapper exporting both Rust compiler (`mvm_check_source`, `mvm_compile_source`, `mvm_inspect_ir`) and VM (`mvm_run`, `mvm_verify`, `mvm_disasm`) compiled to `public/wasm/mvm_wasm.wasm`.
 - **`src/studio/`**:
   - `Studio.tsx`: Top-level workspace state, IndexedDB hydration guard, Syntax Profile & Compiler Target selectors, Format action, dirty-tab tracking (`•`), and separated Run/Build handlers.
-  - `compiler-service.ts`: Bridges `compileManifestV1` and legacy UI/Solana compilation, encoding binary `.mbc` and `.wasm` outputs as base64 data URLs.
+  - `compiler-service.ts`: Bridges `compileManifestV1` and standalone Solana compilation, encoding binary `.mbc` and `.wasm` outputs as base64 data URLs.
   - `execution/`: `execution-orchestrator.ts`, `manifest-execution-provider.ts`, `static-web-execution-provider.ts`, `wasm-execution-provider.ts`.
   - `editor/`: `CodeMirrorEditor.tsx`, `manifest-language.ts`, `manifest-autocomplete.ts` (completions + `manifestHoverTooltip`), `manifest-linter.ts`.
   - `preview/PreviewPanel.tsx`: Sandboxed preview + Bytecode, Capabilities, and Typed IR inspector views.

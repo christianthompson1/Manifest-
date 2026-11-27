@@ -74,6 +74,7 @@ export interface RootProvider {
   getStackRoots(): MvmValue[];
   getGlobalRoots(): MvmValue[];
   getFrameRoots(): MvmValue[];
+  getTempRoots?(): MvmValue[];
 }
 
 export interface GcStatistics {
@@ -83,21 +84,94 @@ export interface GcStatistics {
   currentLive: number;
   peakLive: number;
   maxHeapLimit: number;
+  allocatedBytes: number;
+  peakBytes: number;
+  bytesReclaimed: number;
+  maxHeapBytes: number;
+  gcThresholdObjects: number;
+  gcThresholdBytes: number;
+}
+
+export const DEFAULT_MAX_HEAP_BYTES = 16 * 1024 * 1024;
+const OBJECT_HEADER_BYTES = 32;
+const VALUE_SLOT_BYTES = 16;
+const MAP_ENTRY_OVERHEAD_BYTES = 32;
+const UTF8_ENCODER = new TextEncoder();
+
+function utf8ByteLength(s: string): number {
+  return UTF8_ENCODER.encode(s).length;
+}
+
+export function estimateMvmValueBytes(val: MvmValue): number {
+  if (val.kind === 'str') {
+    return VALUE_SLOT_BYTES + utf8ByteLength(val.value);
+  }
+  return VALUE_SLOT_BYTES;
+}
+
+export function estimateMvmObjectBytes(obj: MvmAllocObject | MvmHeapObject): number {
+  let total = OBJECT_HEADER_BYTES;
+  switch (obj.kind) {
+    case 'array':
+      for (const item of obj.items) {
+        total += estimateMvmValueBytes(item);
+      }
+      break;
+    case 'map':
+      for (const [k, v] of obj.entries.entries()) {
+        total += MAP_ENTRY_OVERHEAD_BYTES + utf8ByteLength(k) + estimateMvmValueBytes(v);
+      }
+      break;
+    case 'struct':
+      for (const f of obj.fields) {
+        total += estimateMvmValueBytes(f);
+      }
+      break;
+    case 'enum':
+      for (const p of obj.payload) {
+        total += estimateMvmValueBytes(p);
+      }
+      break;
+    case 'bytes':
+      total += obj.buffer.length;
+      break;
+  }
+  return total;
 }
 
 export class MvmHeapArena {
   private objects: (MvmHeapObject | null)[] = [];
+  private objectSizes: number[] = [];
   private freeList: number[] = [];
   private liveCount = 0;
   private peakLive = 0;
+  private allocatedBytes = 0;
+  private peakBytes = 0;
+  private bytesReclaimed = 0;
   private collections = 0;
   private objectsAllocated = 0;
   private objectsReclaimed = 0;
+  private gcThresholdObjects: number;
+  private gcThresholdBytes: number;
 
-  constructor(public readonly maxObjects: number = 65536) {}
+  constructor(
+    public readonly maxObjects: number = 65536,
+    public readonly maxBytes: number = DEFAULT_MAX_HEAP_BYTES
+  ) {
+    this.gcThresholdObjects =
+      maxObjects === 0 ? 0 : Math.min(maxObjects, Math.max(1, Math.floor(maxObjects / 2)));
+    this.gcThresholdBytes =
+      maxBytes === 0
+        ? 0
+        : Math.min(maxBytes, Math.max(OBJECT_HEADER_BYTES, Math.floor(maxBytes / 2)));
+  }
 
   public getLiveCount(): number {
     return this.liveCount;
+  }
+
+  public getAllocatedBytes(): number {
+    return this.allocatedBytes;
   }
 
   public getStats(): GcStatistics {
@@ -108,24 +182,78 @@ export class MvmHeapArena {
       currentLive: this.liveCount,
       peakLive: this.peakLive,
       maxHeapLimit: this.maxObjects,
+      allocatedBytes: this.allocatedBytes,
+      peakBytes: this.peakBytes,
+      bytesReclaimed: this.bytesReclaimed,
+      maxHeapBytes: this.maxBytes,
+      gcThresholdObjects: this.gcThresholdObjects,
+      gcThresholdBytes: this.gcThresholdBytes,
     };
   }
 
+  private updateGcThresholds(): void {
+    if (this.maxObjects === 0) {
+      this.gcThresholdObjects = 0;
+    } else {
+      const headroom = Math.max(this.liveCount * 2, this.liveCount + 16);
+      this.gcThresholdObjects = Math.min(headroom, this.maxObjects);
+    }
+
+    if (this.maxBytes === 0) {
+      this.gcThresholdBytes = 0;
+    } else {
+      const byteHeadroom = Math.max(this.allocatedBytes * 2, this.allocatedBytes + 4096);
+      this.gcThresholdBytes = Math.min(byteHeadroom, this.maxBytes);
+    }
+  }
+
+  private maybeGcBeforeGrowth(growthBytes: number, roots?: RootProvider): void {
+    if (!roots) return;
+    const hitsHard = this.allocatedBytes + growthBytes > this.maxBytes;
+    const hitsSoft = this.allocatedBytes + growthBytes > this.gcThresholdBytes;
+    if (hitsHard || hitsSoft) {
+      this.collectGarbage(roots);
+      this.updateGcThresholds();
+    }
+  }
+
   /**
-   * Allocates a new heap object. If the heap limit is reached, triggers
-   * a mark-and-sweep collection using the supplied root provider.
-   * If live count remains at or above maxObjects, throws an allocation error.
+   * Allocates a new heap object. Triggers mark-and-sweep GC at soft/hard thresholds
+   * before failing with a controlled object or byte limit error.
    */
   public alloc(obj: MvmAllocObject, roots?: RootProvider): number {
-    if (this.liveCount >= this.maxObjects) {
-      if (roots) {
+    if (this.maxObjects === 0) {
+      throw new Error(`E_MVM_MEMORY_LIMIT: MVM heap limit exceeded (0/0 objects)`);
+    }
+
+    const objBytes = estimateMvmObjectBytes(obj);
+    if (objBytes > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Heap object requires ${objBytes} bytes, exceeding heap limit (${this.allocatedBytes}/${this.maxBytes} bytes used)`
+      );
+    }
+
+    if (roots) {
+      const hitsHardLimit =
+        this.liveCount >= this.maxObjects || this.allocatedBytes + objBytes > this.maxBytes;
+      const hitsSoftLimit =
+        this.liveCount >= this.gcThresholdObjects ||
+        this.allocatedBytes + objBytes > this.gcThresholdBytes;
+      if (hitsHardLimit || hitsSoftLimit) {
         this.collectGarbage(roots);
+        this.updateGcThresholds();
       }
-      if (this.liveCount >= this.maxObjects) {
-        throw new Error(
-          `E_MVM_MEMORY_LIMIT: MVM heap limit exceeded (${this.liveCount}/${this.maxObjects} objects)`
-        );
-      }
+    }
+
+    if (this.liveCount >= this.maxObjects) {
+      throw new Error(
+        `E_MVM_MEMORY_LIMIT: MVM heap limit exceeded (${this.liveCount}/${this.maxObjects} objects)`
+      );
+    }
+    if (this.allocatedBytes + objBytes > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Heap byte limit exceeded (requested ${objBytes}, used ${this.allocatedBytes}/${this.maxBytes} bytes)`
+      );
     }
 
     const fullObj: MvmHeapObject = { ...obj, marked: false } as MvmHeapObject;
@@ -134,18 +262,146 @@ export class MvmHeapArena {
     if (this.freeList.length > 0) {
       id = this.freeList.pop()!;
       this.objects[id] = fullObj;
+      this.objectSizes[id] = objBytes;
     } else {
       id = this.objects.length;
       this.objects.push(fullObj);
+      this.objectSizes.push(objBytes);
     }
 
     this.liveCount++;
+    this.allocatedBytes += objBytes;
     this.objectsAllocated++;
     if (this.liveCount > this.peakLive) {
       this.peakLive = this.liveCount;
     }
+    if (this.allocatedBytes > this.peakBytes) {
+      this.peakBytes = this.allocatedBytes;
+    }
 
     return id;
+  }
+
+  public arrayPush(id: number, val: MvmValue, roots?: RootProvider): void {
+    const arr = this.getArray(id);
+    const added = estimateMvmValueBytes(val);
+    if (added > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Array push requires ${added} bytes, exceeding heap limit (${this.allocatedBytes}/${this.maxBytes} bytes)`
+      );
+    }
+    this.maybeGcBeforeGrowth(added, roots);
+    const targetArr = this.getArray(id);
+    if (this.allocatedBytes + added > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Array push requires ${added} bytes (${this.allocatedBytes}/${this.maxBytes} bytes used)`
+      );
+    }
+    targetArr.items.push(val);
+    this.objectSizes[id] += added;
+    this.allocatedBytes += added;
+    if (this.allocatedBytes > this.peakBytes) {
+      this.peakBytes = this.allocatedBytes;
+    }
+    void arr;
+  }
+
+  public arraySet(id: number, idx: number, val: MvmValue, roots?: RootProvider): void {
+    const arr = this.getArray(id);
+    if (!Number.isSafeInteger(idx) || idx < 0 || idx >= arr.items.length) {
+      throw new Error(
+        `E_MVM_OUT_OF_BOUNDS: Array index ${idx} out of bounds (length ${arr.items.length})`
+      );
+    }
+    const oldBytes = estimateMvmValueBytes(arr.items[idx]);
+    const newBytes = estimateMvmValueBytes(val);
+    const netIncrease = Math.max(0, newBytes - oldBytes);
+    if (netIncrease > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Array assignment requires ${netIncrease} additional bytes, exceeding heap limit (${this.allocatedBytes}/${this.maxBytes})`
+      );
+    }
+    if (netIncrease > 0) {
+      this.maybeGcBeforeGrowth(netIncrease, roots);
+    }
+    const nextTotal = this.allocatedBytes - oldBytes + newBytes;
+    if (nextTotal > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Array assignment exceeds heap limit (${this.allocatedBytes}/${this.maxBytes})`
+      );
+    }
+    const targetArr = this.getArray(id);
+    targetArr.items[idx] = val;
+    this.objectSizes[id] = Math.max(OBJECT_HEADER_BYTES, this.objectSizes[id] - oldBytes + newBytes);
+    this.allocatedBytes = nextTotal;
+    if (this.allocatedBytes > this.peakBytes) {
+      this.peakBytes = this.allocatedBytes;
+    }
+  }
+
+  public mapSet(id: number, key: string, val: MvmValue, roots?: RootProvider): void {
+    const m = this.getMap(id);
+    const prev = m.entries.get(key);
+    const oldBytes = prev !== undefined ? estimateMvmValueBytes(prev) : 0;
+    const newBytes =
+      prev !== undefined
+        ? estimateMvmValueBytes(val)
+        : MAP_ENTRY_OVERHEAD_BYTES + utf8ByteLength(key) + estimateMvmValueBytes(val);
+    const netIncrease = Math.max(0, newBytes - oldBytes);
+    if (netIncrease > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Map insert requires ${netIncrease} additional bytes, exceeding heap limit (${this.allocatedBytes}/${this.maxBytes})`
+      );
+    }
+    if (netIncrease > 0) {
+      this.maybeGcBeforeGrowth(netIncrease, roots);
+    }
+    const nextTotal = this.allocatedBytes - oldBytes + newBytes;
+    if (nextTotal > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Map insert exceeds heap limit (${this.allocatedBytes}/${this.maxBytes})`
+      );
+    }
+    const targetMap = this.getMap(id);
+    targetMap.entries.set(key, val);
+    this.objectSizes[id] = Math.max(OBJECT_HEADER_BYTES, this.objectSizes[id] - oldBytes + newBytes);
+    this.allocatedBytes = nextTotal;
+    if (this.allocatedBytes > this.peakBytes) {
+      this.peakBytes = this.allocatedBytes;
+    }
+  }
+
+  public fieldSet(id: number, fieldIdx: number, val: MvmValue, roots?: RootProvider): void {
+    const st = this.getStruct(id);
+    if (fieldIdx < 0 || fieldIdx >= st.fields.length) {
+      throw new Error(
+        `E_MVM_OUT_OF_BOUNDS: Field index ${fieldIdx} out of bounds on struct '${st.name}'`
+      );
+    }
+    const oldBytes = estimateMvmValueBytes(st.fields[fieldIdx]);
+    const newBytes = estimateMvmValueBytes(val);
+    const netIncrease = Math.max(0, newBytes - oldBytes);
+    if (netIncrease > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Struct field assignment requires ${netIncrease} additional bytes, exceeding heap limit (${this.allocatedBytes}/${this.maxBytes})`
+      );
+    }
+    if (netIncrease > 0) {
+      this.maybeGcBeforeGrowth(netIncrease, roots);
+    }
+    const nextTotal = this.allocatedBytes - oldBytes + newBytes;
+    if (nextTotal > this.maxBytes) {
+      throw new Error(
+        `E_MVM_HEAP_BYTES_LIMIT: Struct field assignment exceeds heap limit (${this.allocatedBytes}/${this.maxBytes})`
+      );
+    }
+    const targetSt = this.getStruct(id);
+    targetSt.fields[fieldIdx] = val;
+    this.objectSizes[id] = Math.max(OBJECT_HEADER_BYTES, this.objectSizes[id] - oldBytes + newBytes);
+    this.allocatedBytes = nextTotal;
+    if (this.allocatedBytes > this.peakBytes) {
+      this.peakBytes = this.allocatedBytes;
+    }
   }
 
   public get(id: number): MvmHeapObject {
@@ -197,16 +453,16 @@ export class MvmHeapArena {
   }
 
   /**
-   * Mark-and-sweep garbage collection:
-   * 1. Mark phase: Traversing all stack roots, global roots, and call-frame local roots.
-   * 2. Sweep phase: Reclaiming all unmarked objects into the free-list.
+   * Iterative, cycle-safe Mark-and-Sweep garbage collection:
+   * 1. Mark phase: Scans operand stack, globals, active call-frame locals, and transient temp roots.
+   * 2. Sweep phase: Reclaims unmarked slots into freeList and updates byte/object accounting.
    */
   public collectGarbage(roots: RootProvider): { reclaimed: number; liveAfter: number } {
     this.collections++;
 
-    // 1. Mark Phase
-    const markValue = (val: MvmValue): void => {
-      let refId: number | null = null;
+    const worklist: number[] = [];
+    const enqueue = (val: MvmValue): void => {
+      let refId: number;
       switch (val.kind) {
         case 'array_ref':
         case 'map_ref':
@@ -218,44 +474,40 @@ export class MvmHeapArena {
         default:
           return;
       }
-
-      if (refId === null || refId < 0 || refId >= this.objects.length) return;
+      if (refId < 0 || refId >= this.objects.length) return;
       const obj = this.objects[refId];
       if (!obj || obj.marked) return;
-
       obj.marked = true;
-
-      // Recursively mark children
-      switch (obj.kind) {
-        case 'array':
-          for (const item of obj.items) markValue(item);
-          break;
-        case 'map':
-          for (const item of obj.entries.values()) markValue(item);
-          break;
-        case 'struct':
-          for (const field of obj.fields) markValue(field);
-          break;
-        case 'enum':
-          for (const arg of obj.payload) markValue(arg);
-          break;
-        case 'bytes':
-          // Raw binary bytes have no child references
-          break;
-      }
+      worklist.push(refId);
     };
 
-    // Mark stack roots
-    for (const v of roots.getStackRoots()) {
-      markValue(v);
+    for (const v of roots.getStackRoots()) enqueue(v);
+    for (const v of roots.getGlobalRoots()) enqueue(v);
+    for (const v of roots.getFrameRoots()) enqueue(v);
+    if (roots.getTempRoots) {
+      for (const v of roots.getTempRoots()) enqueue(v);
     }
-    // Mark global roots
-    for (const v of roots.getGlobalRoots()) {
-      markValue(v);
-    }
-    // Mark call frame roots
-    for (const v of roots.getFrameRoots()) {
-      markValue(v);
+
+    while (worklist.length > 0) {
+      const id = worklist.pop()!;
+      const obj = this.objects[id];
+      if (!obj) continue;
+      switch (obj.kind) {
+        case 'array':
+          for (const item of obj.items) enqueue(item);
+          break;
+        case 'map':
+          for (const item of obj.entries.values()) enqueue(item);
+          break;
+        case 'struct':
+          for (const field of obj.fields) enqueue(field);
+          break;
+        case 'enum':
+          for (const arg of obj.payload) enqueue(arg);
+          break;
+        case 'bytes':
+          break;
+      }
     }
 
     // 2. Sweep Phase
@@ -265,14 +517,16 @@ export class MvmHeapArena {
       if (obj === null) continue;
 
       if (!obj.marked) {
-        // Unreachable: reclaim slot into freeList
+        const reclaimedSize = this.objectSizes[i] || 0;
         this.objects[i] = null;
+        this.objectSizes[i] = 0;
         this.freeList.push(i);
         this.liveCount--;
+        this.allocatedBytes = Math.max(0, this.allocatedBytes - reclaimedSize);
         this.objectsReclaimed++;
+        this.bytesReclaimed += reclaimedSize;
         reclaimed++;
       } else {
-        // Reachable: reset mark flag for next collection cycle
         obj.marked = false;
       }
     }
@@ -281,10 +535,10 @@ export class MvmHeapArena {
   }
 
   /**
-   * Formats an MVM value for display or debug output.
+   * Formats an MVM value for display or debug output without diverging on cycles.
    */
-  public formatValue(val: MvmValue, depth = 0): string {
-    if (depth > 6) return '...';
+  public formatValue(val: MvmValue, depth = 0, activeIds: Set<number> = new Set()): string {
+    if (depth > 16) return '...';
     switch (val.kind) {
       case 'void':
         return 'void';
@@ -304,36 +558,52 @@ export class MvmHeapArena {
         return `<Bytes#${val.id}>`;
       }
       case 'array_ref': {
+        if (activeIds.has(val.id)) return `<Cycle#Array${val.id}>`;
         const arr = this.objects[val.id];
         if (arr && arr.kind === 'array') {
-          return `[${arr.items.map((it) => this.formatValue(it, depth + 1)).join(', ')}]`;
+          activeIds.add(val.id);
+          const formatted = `[${arr.items.map((it) => this.formatValue(it, depth + 1, activeIds)).join(', ')}]`;
+          activeIds.delete(val.id);
+          return formatted;
         }
         return `<Array#${val.id}>`;
       }
       case 'map_ref': {
+        if (activeIds.has(val.id)) return `<Cycle#Map${val.id}>`;
         const m = this.objects[val.id];
         if (m && m.kind === 'map') {
+          activeIds.add(val.id);
           const pairs: string[] = [];
           for (const [k, v] of m.entries.entries()) {
-            pairs.push(`${k}: ${this.formatValue(v, depth + 1)}`);
+            pairs.push(`${k}: ${this.formatValue(v, depth + 1, activeIds)}`);
           }
+          activeIds.delete(val.id);
           return `{${pairs.join(', ')}}`;
         }
         return `<Map#${val.id}>`;
       }
       case 'struct_ref': {
+        if (activeIds.has(val.id)) return `<Cycle#Struct${val.id}>`;
         const s = this.objects[val.id];
         if (s && s.kind === 'struct') {
-          return `${s.name} { ${s.fields.map((f) => this.formatValue(f, depth + 1)).join(', ')} }`;
+          activeIds.add(val.id);
+          const formatted = `${s.name} { ${s.fields.map((f) => this.formatValue(f, depth + 1, activeIds)).join(', ')} }`;
+          activeIds.delete(val.id);
+          return formatted;
         }
         return `<Struct#${val.id}>`;
       }
       case 'enum_ref': {
+        if (activeIds.has(val.id)) return `<Cycle#Enum${val.id}>`;
         const e = this.objects[val.id];
         if (e && e.kind === 'enum') {
-          return e.payload.length === 0
-            ? e.variantName
-            : `${e.variantName}(${e.payload.map((p) => this.formatValue(p, depth + 1)).join(', ')})`;
+          activeIds.add(val.id);
+          const formatted =
+            e.payload.length === 0
+              ? e.variantName
+              : `${e.variantName}(${e.payload.map((p) => this.formatValue(p, depth + 1, activeIds)).join(', ')})`;
+          activeIds.delete(val.id);
+          return formatted;
         }
         return `<Enum#${val.id}>`;
       }
@@ -341,69 +611,114 @@ export class MvmHeapArena {
   }
 
   /**
-   * Deep structural equality comparison between two MVM values.
+   * Coinductive, cycle-safe deep structural equality comparison between two MVM values.
    */
   public equals(a: MvmValue, b: MvmValue): boolean {
-    if (a.kind !== b.kind) return false;
-    switch (a.kind) {
-      case 'void':
-        return true;
-      case 'i64':
-        return a.value === (b as typeof a).value;
-      case 'f64':
-        return a.value === (b as typeof a).value;
-      case 'bool':
-        return a.value === (b as typeof a).value;
-      case 'str':
-        return a.value === (b as typeof a).value;
-      case 'bytes_ref': {
-        const bA = this.getBytes(a.id);
-        const bB = this.getBytes((b as typeof a).id);
-        if (bA.buffer.length !== bB.buffer.length) return false;
-        for (let i = 0; i < bA.buffer.length; i++) {
-          if (bA.buffer[i] !== bB.buffer[i]) return false;
+    const worklist: Array<{ left: MvmValue; right: MvmValue }> = [{ left: a, right: b }];
+    const visitedPairs = new Set<string>();
+
+    while (worklist.length > 0) {
+      const { left, right } = worklist.pop()!;
+      if (left.kind !== right.kind) return false;
+
+      switch (left.kind) {
+        case 'void':
+          break;
+        case 'i64':
+          if (left.value !== (right as typeof left).value) return false;
+          break;
+        case 'f64':
+          if (left.value !== (right as typeof left).value) return false;
+          break;
+        case 'bool':
+          if (left.value !== (right as typeof left).value) return false;
+          break;
+        case 'str':
+          if (left.value !== (right as typeof left).value) return false;
+          break;
+        case 'bytes_ref': {
+          const idA = left.id;
+          const idB = (right as typeof left).id;
+          const bA = this.getBytes(idA);
+          const bB = this.getBytes(idB);
+          if (idA === idB) break;
+          if (bA.buffer.length !== bB.buffer.length) return false;
+          for (let i = 0; i < bA.buffer.length; i++) {
+            if (bA.buffer[i] !== bB.buffer[i]) return false;
+          }
+          break;
         }
-        return true;
-      }
-      case 'array_ref': {
-        const arrA = this.getArray(a.id);
-        const arrB = this.getArray((b as typeof a).id);
-        if (arrA.items.length !== arrB.items.length) return false;
-        for (let i = 0; i < arrA.items.length; i++) {
-          if (!this.equals(arrA.items[i], arrB.items[i])) return false;
+        case 'array_ref': {
+          const idA = left.id;
+          const idB = (right as typeof left).id;
+          const arrA = this.getArray(idA);
+          const arrB = this.getArray(idB);
+          if (idA === idB) break;
+          const pairKey = `a:${idA}:${idB}`;
+          if (visitedPairs.has(pairKey)) break;
+          visitedPairs.add(pairKey);
+          if (arrA.items.length !== arrB.items.length) return false;
+          for (let i = 0; i < arrA.items.length; i++) {
+            worklist.push({ left: arrA.items[i], right: arrB.items[i] });
+          }
+          break;
         }
-        return true;
-      }
-      case 'map_ref': {
-        const mapA = this.getMap(a.id);
-        const mapB = this.getMap((b as typeof a).id);
-        if (mapA.entries.size !== mapB.entries.size) return false;
-        for (const [k, valA] of mapA.entries.entries()) {
-          const valB = mapB.entries.get(k);
-          if (!valB || !this.equals(valA, valB)) return false;
+        case 'map_ref': {
+          const idA = left.id;
+          const idB = (right as typeof left).id;
+          const mapA = this.getMap(idA);
+          const mapB = this.getMap(idB);
+          if (idA === idB) break;
+          const pairKey = `m:${idA}:${idB}`;
+          if (visitedPairs.has(pairKey)) break;
+          visitedPairs.add(pairKey);
+          if (mapA.entries.size !== mapB.entries.size) return false;
+          for (const [k, valA] of mapA.entries.entries()) {
+            if (!mapB.entries.has(k)) return false;
+            worklist.push({ left: valA, right: mapB.entries.get(k)! });
+          }
+          break;
         }
-        return true;
-      }
-      case 'struct_ref': {
-        const stA = this.getStruct(a.id);
-        const stB = this.getStruct((b as typeof a).id);
-        if (stA.structIdx !== stB.structIdx || stA.fields.length !== stB.fields.length) return false;
-        for (let i = 0; i < stA.fields.length; i++) {
-          if (!this.equals(stA.fields[i], stB.fields[i])) return false;
+        case 'struct_ref': {
+          const idA = left.id;
+          const idB = (right as typeof left).id;
+          const stA = this.getStruct(idA);
+          const stB = this.getStruct(idB);
+          if (idA === idB) break;
+          const pairKey = `s:${idA}:${idB}`;
+          if (visitedPairs.has(pairKey)) break;
+          visitedPairs.add(pairKey);
+          if (stA.structIdx !== stB.structIdx || stA.fields.length !== stB.fields.length) {
+            return false;
+          }
+          for (let i = 0; i < stA.fields.length; i++) {
+            worklist.push({ left: stA.fields[i], right: stB.fields[i] });
+          }
+          break;
         }
-        return true;
-      }
-      case 'enum_ref': {
-        const enA = this.getEnum(a.id);
-        const enB = this.getEnum((b as typeof a).id);
-        if (enA.enumIdx !== enB.enumIdx || enA.variantIdx !== enB.variantIdx || enA.payload.length !== enB.payload.length) {
-          return false;
+        case 'enum_ref': {
+          const idA = left.id;
+          const idB = (right as typeof left).id;
+          const enA = this.getEnum(idA);
+          const enB = this.getEnum(idB);
+          if (idA === idB) break;
+          const pairKey = `e:${idA}:${idB}`;
+          if (visitedPairs.has(pairKey)) break;
+          visitedPairs.add(pairKey);
+          if (
+            enA.enumIdx !== enB.enumIdx ||
+            enA.variantIdx !== enB.variantIdx ||
+            enA.payload.length !== enB.payload.length
+          ) {
+            return false;
+          }
+          for (let i = 0; i < enA.payload.length; i++) {
+            worklist.push({ left: enA.payload[i], right: enB.payload[i] });
+          }
+          break;
         }
-        for (let i = 0; i < enA.payload.length; i++) {
-          if (!this.equals(enA.payload[i], enB.payload[i])) return false;
-        }
-        return true;
       }
     }
+    return true;
   }
 }

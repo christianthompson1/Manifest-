@@ -1,153 +1,65 @@
-APP "Manifest Commerce Dashboard"
+module commerce_dashboard;
 
-requires [dom, storage, net];
+requires console;
+denies net, fs;
 
-// Global Dashboard State
-STATE active_route TO "dashboard"
-STATE current_theme TO "dark"
-STATE search_query TO ""
-STATE selected_category TO "all"
-STATE is_modal_open TO false
+struct Product {
+    sku: str,
+    name: str,
+    unit_price_cents: i64,
+    stock: i64,
+}
 
-// Metrics
-STATE total_revenue TO 128450
-STATE total_orders TO 1420
-STATE total_products TO 86
-STATE return_rate TO 1.2
+enum OrderOutcome {
+    Accepted(i64),
+    Rejected(str),
+}
 
-// Form State for Adding / Editing Product
-STATE form_name TO ""
-STATE form_sku TO ""
-STATE form_category TO "Electronics"
-STATE form_price TO 0
-STATE form_stock TO 0
-STATE form_error TO ""
+fn price_order(product: Product, qty: i64) -> OrderOutcome {
+    if qty <= 0 {
+        return OrderOutcome::Rejected("quantity must be positive");
+    }
+    if qty > product.stock {
+        return OrderOutcome::Rejected("insufficient inventory");
+    }
+    return OrderOutcome::Accepted(product.unit_price_cents * qty);
+}
 
-ACTION toggle_theme
-    IF current_theme == "dark" THEN
-        SET current_theme TO "light"
-    ELSE
-        SET current_theme TO "dark"
-    END
-END
+fn main() -> i64 effects(console) {
+    let headphones = Product {
+        sku: "PROD-1001",
+        name: "Studio Monitor Headphones",
+        unit_price_cents: 14900,
+        stock: 42,
+    };
+    let keyboard = Product {
+        sku: "PROD-1002",
+        name: "Ergonomic Mechanical Keyboard",
+        unit_price_cents: 18950,
+        stock: 18,
+    };
 
-ACTION open_add_modal
-    SET form_name TO ""
-    SET form_sku TO ""
-    SET form_category TO "Electronics"
-    SET form_price TO 99
-    SET form_stock TO 25
-    SET form_error TO ""
-    SET is_modal_open TO true
-END
+    let order_a: OrderOutcome = price_order(headphones, 2);
+    let order_b: OrderOutcome = price_order(keyboard, 1);
 
-ACTION close_modal
-    SET is_modal_open TO false
-END
+    let mut total_cents: i64 = 0;
+    match order_a {
+        OrderOutcome::Accepted(sub) => {
+            total_cents = total_cents + sub;
+        },
+        OrderOutcome::Rejected(msg) => {
+            console.print("Order A rejected: " + msg);
+        },
+    }
+    match order_b {
+        OrderOutcome::Accepted(sub) => {
+            total_cents = total_cents + sub;
+        },
+        OrderOutcome::Rejected(msg) => {
+            console.print("Order B rejected: " + msg);
+        },
+    }
 
-ACTION save_product
-    IF form_name == "" THEN
-        SET form_error TO "Product name is required"
-        RETURN
-    END
-    IF form_price <= 0 THEN
-        SET form_error TO "Price must be greater than zero"
-        RETURN
-    END
-    SET total_products TO total_products + 1
-    SET is_modal_open TO false
-END
-
-ACTION set_category(cat)
-    SET selected_category TO cat
-END
-
-ACTION set_search(term)
-    SET search_query TO term
-END
-
-ACTION navigate_to(route_name)
-    SET active_route TO route_name
-END
-
-// Pages and Layout
-PAGE Dashboard
-    NAVBAR
-        BRAND "Manifest Commerce"
-        LINK "Overview" WHEN CLICK CALL navigate_to("dashboard") END
-        LINK "Catalog" WHEN CLICK CALL navigate_to("products") END
-        LINK "Orders" WHEN CLICK CALL navigate_to("orders") END
-        BUTTON "Theme" WHEN CLICK CALL toggle_theme END
-    END
-
-    CONTAINER
-        GRID columns: 4
-            CARD title: "Total Revenue"
-                METRIC "$128,450" change: "+14.2%"
-            END
-            CARD title: "Total Orders"
-                METRIC "1,420" change: "+8.1%"
-            END
-            CARD title: "Active Products"
-                METRIC "86" change: "+4"
-            END
-            CARD title: "Return Rate"
-                METRIC "1.2%" change: "-0.3%"
-            END
-        END
-
-        CONTAINER class: "catalog-section"
-            HEADING "Product Inventory"
-            TOOLBAR
-                INPUT type: "text" placeholder: "Search products..."
-                    WHEN INPUT CALL set_search(EVENT.value) END
-                END
-                SELECT value: selected_category
-                    OPTION "All Categories" value: "all"
-                    OPTION "Electronics" value: "Electronics"
-                    OPTION "Apparel" value: "Apparel"
-                    OPTION "Home & Living" value: "Home"
-                    WHEN CHANGE CALL set_category(EVENT.value) END
-                END
-                BUTTON "Add Product" class: "btn-primary"
-                    WHEN CLICK CALL open_add_modal END
-                END
-            END
-
-            TABLE id: "product-table"
-                ROW header: true
-                    COL "SKU"
-                    COL "Product Name"
-                    COL "Category"
-                    COL "Price"
-                    COL "Stock Level"
-                    COL "Status"
-                END
-                ROW
-                    COL "PROD-1001"
-                    COL "Studio Monitor Headphones"
-                    COL "Electronics"
-                    COL "$149.00"
-                    COL "42 units"
-                    COL "In Stock"
-                END
-                ROW
-                    COL "PROD-1002"
-                    COL "Ergonomic Mechanical Keyboard"
-                    COL "Electronics"
-                    COL "$189.50"
-                    COL "18 units"
-                    COL "In Stock"
-                END
-                ROW
-                    COL "PROD-1003"
-                    COL "Merino Wool Everyday Hoodie"
-                    COL "Apparel"
-                    COL "$110.00"
-                    COL "55 units"
-                    COL "In Stock"
-                END
-            END
-        END
-    END
-END
+    console.print("Manifest Commerce Dashboard total (cents): " + std::conv::to_str(total_cents));
+    return total_cents;
+}

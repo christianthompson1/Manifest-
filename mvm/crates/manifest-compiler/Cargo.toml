@@ -1,0 +1,8 @@
+[package]
+name = "manifest-compiler"
+version = "1.0.0"
+edition = "2021"
+description = "Authoritative Rust compiler frontend, semantic analyzer, MIR optimizer, and MBC emitter for Manifest v1"
+
+[dependencies]
+mvm-core = { path = "../mvm-core" }

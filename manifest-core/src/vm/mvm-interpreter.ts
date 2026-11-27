@@ -11,13 +11,19 @@
  */
 
 import {
-  DecodedMbcInstruction,
   DecodedMbcModule,
-  MbcConstKind,
   MbcOpcode,
 } from '../bytecode/mbc-format.ts';
 import { decodeMbcContainer } from '../bytecode/mbc-reader.ts';
-import { MvmHeapArena, MvmValue, RootProvider, GcStatistics } from './mvm-heap.ts';
+import {
+  DEFAULT_MAX_HEAP_BYTES,
+  GcStatistics,
+  MvmHeapArena,
+  MvmValue,
+  RootProvider,
+} from './mvm-heap.ts';
+import { sha256Utf8Hex } from '../stdlib/sha256.ts';
+import { checkedF64ToI64 } from '../stdlib/num-conv.ts';
 
 const I64_MIN = -9223372036854775808n;
 const I64_MAX = 9223372036854775807n;
@@ -28,6 +34,7 @@ export interface MvmInterpreterOptions {
   maxCallDepth?: number;
   maxStackSlots?: number;
   maxHeapObjects?: number;
+  maxHeapBytes?: number;
   entryFunction?: string;
   virtualFiles?: Record<string, string>;
   onConsoleLog?: (line: string) => void;
@@ -62,6 +69,23 @@ interface CallFrame {
   locals: MvmValue[];
 }
 
+function emptyGcStats(maxHeapObjects: number, maxHeapBytes: number): GcStatistics {
+  return {
+    collections: 0,
+    objectsAllocated: 0,
+    objectsReclaimed: 0,
+    currentLive: 0,
+    peakLive: 0,
+    maxHeapLimit: maxHeapObjects,
+    allocatedBytes: 0,
+    peakBytes: 0,
+    bytesReclaimed: 0,
+    maxHeapBytes,
+    gcThresholdObjects: maxHeapObjects === 0 ? 0 : Math.max(1, Math.floor(maxHeapObjects / 2)),
+    gcThresholdBytes: maxHeapBytes === 0 ? 0 : Math.max(32, Math.floor(maxHeapBytes / 2)),
+  };
+}
+
 export class MvmInterpreter {
   public static execute(
     moduleOrBytes: DecodedMbcModule | Uint8Array,
@@ -74,6 +98,7 @@ export class MvmInterpreter {
     const maxCallDepth = options.maxCallDepth ?? 512;
     const maxStackSlots = options.maxStackSlots ?? 16_384;
     const maxHeapObjects = options.maxHeapObjects ?? 65_536;
+    const maxHeapBytes = options.maxHeapBytes ?? DEFAULT_MAX_HEAP_BYTES;
 
     let mod: DecodedMbcModule;
     if (moduleOrBytes instanceof Uint8Array) {
@@ -88,14 +113,7 @@ export class MvmInterpreter {
           stdout,
           steps: 0,
           heapObjects: 0,
-          gcStats: {
-            collections: 0,
-            objectsAllocated: 0,
-            objectsReclaimed: 0,
-            currentLive: 0,
-            peakLive: 0,
-            maxHeapLimit: maxHeapObjects,
-          },
+          gcStats: emptyGcStats(maxHeapObjects, maxHeapBytes),
           error: `E_MVM_DECODE_FAILED: ${err?.message || String(err)}`,
           virtualFiles: vfs,
         };
@@ -115,14 +133,7 @@ export class MvmInterpreter {
           stdout,
           steps: 0,
           heapObjects: 0,
-          gcStats: {
-            collections: 0,
-            objectsAllocated: 0,
-            objectsReclaimed: 0,
-            currentLive: 0,
-            peakLive: 0,
-            maxHeapLimit: maxHeapObjects,
-          },
+          gcStats: emptyGcStats(maxHeapObjects, maxHeapBytes),
           error: `E_MVM_CAPABILITY_DENIED: Execution denied by module policy for capability '${d}'`,
           virtualFiles: vfs,
         };
@@ -142,14 +153,7 @@ export class MvmInterpreter {
           stdout,
           steps: 0,
           heapObjects: 0,
-          gcStats: {
-            collections: 0,
-            objectsAllocated: 0,
-            objectsReclaimed: 0,
-            currentLive: 0,
-            peakLive: 0,
-            maxHeapLimit: maxHeapObjects,
-          },
+          gcStats: emptyGcStats(maxHeapObjects, maxHeapBytes),
           error: `E_MVM_MISSING_FN: Entry function '${options.entryFunction}' not found`,
           virtualFiles: vfs,
         };
@@ -168,14 +172,7 @@ export class MvmInterpreter {
           stdout,
           steps: 0,
           heapObjects: 0,
-          gcStats: {
-            collections: 0,
-            objectsAllocated: 0,
-            objectsReclaimed: 0,
-            currentLive: 0,
-            peakLive: 0,
-            maxHeapLimit: maxHeapObjects,
-          },
+          gcStats: emptyGcStats(maxHeapObjects, maxHeapBytes),
           error: `E_MVM_MISSING_FN: No entry function 'main' found in module`,
           virtualFiles: vfs,
         };
@@ -184,16 +181,19 @@ export class MvmInterpreter {
     }
 
     // Initialize runtime structures
-    const heap = new MvmHeapArena(maxHeapObjects);
+    const heap = new MvmHeapArena(maxHeapObjects, maxHeapBytes);
     const globals: MvmValue[] = new Array(mod.globalCount).fill({ kind: 'void' });
+    const globalInitialized: boolean[] = new Array(mod.globalCount).fill(false);
     const stack: MvmValue[] = [];
     const frames: CallFrame[] = [];
+    const tempRoots: MvmValue[] = [];
     let stepsExecuted = 0;
 
     const rootProvider: RootProvider = {
       getStackRoots: () => stack,
       getGlobalRoots: () => globals,
       getFrameRoots: () => frames.flatMap((f) => f.locals),
+      getTempRoots: () => tempRoots,
     };
 
     const push = (v: MvmValue): void => {
@@ -330,6 +330,12 @@ export class MvmInterpreter {
 
           case MbcOpcode.LOAD_GLOBAL: {
             const gIdx = inst.operands[0];
+            if (!globalInitialized[gIdx]) {
+              throw new MvmRuntimeTrap(
+                'E_MVM_UNINITIALIZED_GLOBAL',
+                `Read of uninitialized module global slot ${gIdx}`
+              );
+            }
             push(globals[gIdx] ?? { kind: 'void' });
             break;
           }
@@ -337,6 +343,7 @@ export class MvmInterpreter {
           case MbcOpcode.STORE_GLOBAL: {
             const gIdx = inst.operands[0];
             globals[gIdx] = pop();
+            globalInitialized[gIdx] = true;
             break;
           }
 
@@ -470,7 +477,14 @@ export class MvmInterpreter {
           case MbcOpcode.F64_TO_I64: {
             const a = pop();
             if (a.kind !== 'f64') throw new MvmRuntimeTrap('E_MVM_TYPE_ERROR', 'Expected f64');
-            push({ kind: 'i64', value: BigInt(Math.trunc(a.value)) });
+            try {
+              push({ kind: 'i64', value: checkedF64ToI64(a.value) });
+            } catch (err: any) {
+              throw new MvmRuntimeTrap(
+                'E_MVM_NUMERIC_CONVERSION',
+                err?.message || `Cannot convert f64 (${a.value}) to i64`
+              );
+            }
             break;
           }
 
@@ -663,9 +677,14 @@ export class MvmInterpreter {
               throw new MvmRuntimeTrap('E_MVM_INVALID_CALL', `Invalid host import #${impIdx}`);
             }
 
-            // Capability enforcement: check if granted
+            // Capability enforcement: check if granted (exact or explicit parent dot-boundary; never child-to-parent)
             const reqCap = imp.capability;
-            if (!granted.has(reqCap) && !granted.has(reqCap.split('.')[0])) {
+            const hostAllowed =
+              reqCap === 'pure' ||
+              Array.from(granted).some(
+                (g) => g === reqCap || reqCap.startsWith(`${g}.`)
+              );
+            if (!hostAllowed) {
               throw new MvmRuntimeTrap(
                 'E_MVM_CAPABILITY_DENIED',
                 `Access to host capability '${reqCap}' required by '${imp.symbol}' was denied by host policy`
@@ -742,15 +761,16 @@ export class MvmInterpreter {
                 }
                 break;
               }
-              case 'std::crypto::sha256': {
-                const text = hostArgs[0]?.kind === 'str' ? hostArgs[0].value : '';
-                // Deterministic string hash
-                let hash = 0x811c9dc5;
-                for (let i = 0; i < text.length; i++) {
-                  hash ^= text.charCodeAt(i);
-                  hash = Math.imul(hash, 0x01000193);
+              case 'crypto.hash':
+              case 'std::crypto::sha256':
+              case 'std::crypto::hash': {
+                if (hostArgs.length !== 1 || hostArgs[0]?.kind !== 'str') {
+                  throw new MvmRuntimeTrap(
+                    'E_MVM_TYPE_ERROR',
+                    `${imp.symbol} expects a single str argument`
+                  );
                 }
-                push({ kind: 'str', value: (hash >>> 0).toString(16).padStart(8, '0') });
+                push({ kind: 'str', value: sha256Utf8Hex(hostArgs[0].value) });
                 break;
               }
               default:
@@ -785,8 +805,13 @@ export class MvmInterpreter {
             for (let i = 0; i < count; i++) {
               items.unshift(pop());
             }
-            const id = heap.alloc({ kind: 'array', items }, rootProvider);
-            push({ kind: 'array_ref', id });
+            tempRoots.push(...items);
+            try {
+              const id = heap.alloc({ kind: 'array', items }, rootProvider);
+              push({ kind: 'array_ref', id });
+            } finally {
+              tempRoots.length = 0;
+            }
             break;
           }
 
@@ -815,15 +840,13 @@ export class MvmInterpreter {
             if (arrVal.kind !== 'array_ref' || idxVal.kind !== 'i64') {
               throw new MvmRuntimeTrap('E_MVM_TYPE_ERROR', 'ARRAY_SET expects array_ref and i64 index');
             }
-            const arr = heap.getArray(arrVal.id);
             const idx = Number(idxVal.value);
-            if (idx < 0 || idx >= arr.items.length) {
-              throw new MvmRuntimeTrap(
-                'E_MVM_OUT_OF_BOUNDS',
-                `Array index ${idx} out of bounds (length ${arr.items.length})`
-              );
+            tempRoots.push(arrVal, val);
+            try {
+              heap.arraySet(arrVal.id, idx, val, rootProvider);
+            } finally {
+              tempRoots.length = 0;
             }
-            arr.items[idx] = val;
             break;
           }
 
@@ -849,8 +872,12 @@ export class MvmInterpreter {
             if (arrVal.kind !== 'array_ref') {
               throw new MvmRuntimeTrap('E_MVM_TYPE_ERROR', 'ARRAY_PUSH expects array_ref');
             }
-            const arr = heap.getArray(arrVal.id);
-            arr.items.push(val);
+            tempRoots.push(arrVal, val);
+            try {
+              heap.arrayPush(arrVal.id, val, rootProvider);
+            } finally {
+              tempRoots.length = 0;
+            }
             push({ kind: 'void' });
             break;
           }
@@ -858,14 +885,23 @@ export class MvmInterpreter {
           case MbcOpcode.MAP_NEW: {
             const pairCount = inst.operands[0];
             const entries = new Map<string, MvmValue>();
+            const poppedPairs: Array<{ k: MvmValue; v: MvmValue }> = [];
             for (let i = 0; i < pairCount; i++) {
               const v = pop();
               const k = pop();
-              const keyStr = k.kind === 'str' ? k.value : heap.formatValue(k);
-              entries.set(keyStr, v);
+              poppedPairs.push({ k, v });
+              tempRoots.push(k, v);
             }
-            const id = heap.alloc({ kind: 'map', entries }, rootProvider);
-            push({ kind: 'map_ref', id });
+            try {
+              for (const pair of poppedPairs) {
+                const keyStr = pair.k.kind === 'str' ? pair.k.value : heap.formatValue(pair.k);
+                entries.set(keyStr, pair.v);
+              }
+              const id = heap.alloc({ kind: 'map', entries }, rootProvider);
+              push({ kind: 'map_ref', id });
+            } finally {
+              tempRoots.length = 0;
+            }
             break;
           }
 
@@ -877,7 +913,10 @@ export class MvmInterpreter {
             }
             const m = heap.getMap(mapVal.id);
             const keyStr = keyVal.kind === 'str' ? keyVal.value : heap.formatValue(keyVal);
-            push(m.entries.get(keyStr) ?? { kind: 'void' });
+            if (!m.entries.has(keyStr)) {
+              throw new MvmRuntimeTrap('E_MVM_KEY_NOT_FOUND', `Map key '${keyStr}' not found`);
+            }
+            push(m.entries.get(keyStr)!);
             break;
           }
 
@@ -888,9 +927,13 @@ export class MvmInterpreter {
             if (mapVal.kind !== 'map_ref') {
               throw new MvmRuntimeTrap('E_MVM_TYPE_ERROR', 'MAP_SET expects map_ref');
             }
-            const m = heap.getMap(mapVal.id);
-            const keyStr = keyVal.kind === 'str' ? keyVal.value : heap.formatValue(keyVal);
-            m.entries.set(keyStr, val);
+            tempRoots.push(mapVal, keyVal, val);
+            try {
+              const keyStr = keyVal.kind === 'str' ? keyVal.value : heap.formatValue(keyVal);
+              heap.mapSet(mapVal.id, keyStr, val, rootProvider);
+            } finally {
+              tempRoots.length = 0;
+            }
             push({ kind: 'void' });
             break;
           }
@@ -917,16 +960,21 @@ export class MvmInterpreter {
             for (let i = 0; i < stDesc.fields.length; i++) {
               fields.unshift(pop());
             }
-            const id = heap.alloc(
-              {
-                kind: 'struct',
-                structIdx,
-                name: stDesc.name,
-                fields,
-              },
-              rootProvider
-            );
-            push({ kind: 'struct_ref', id });
+            tempRoots.push(...fields);
+            try {
+              const id = heap.alloc(
+                {
+                  kind: 'struct',
+                  structIdx,
+                  name: stDesc.name,
+                  fields,
+                },
+                rootProvider
+              );
+              push({ kind: 'struct_ref', id });
+            } finally {
+              tempRoots.length = 0;
+            }
             break;
           }
 
@@ -954,14 +1002,12 @@ export class MvmInterpreter {
             if (target.kind !== 'struct_ref') {
               throw new MvmRuntimeTrap('E_MVM_TYPE_ERROR', 'FIELD_SET expects struct_ref');
             }
-            const st = heap.getStruct(target.id);
-            if (fieldIdx >= st.fields.length) {
-              throw new MvmRuntimeTrap(
-                'E_MVM_OUT_OF_BOUNDS',
-                `Field index ${fieldIdx} out of bounds on struct '${st.name}'`
-              );
+            tempRoots.push(target, val);
+            try {
+              heap.fieldSet(target.id, fieldIdx, val, rootProvider);
+            } finally {
+              tempRoots.length = 0;
             }
-            st.fields[fieldIdx] = val;
             break;
           }
 
@@ -977,17 +1023,22 @@ export class MvmInterpreter {
             for (let i = 0; i < vrDesc.arity; i++) {
               payload.unshift(pop());
             }
-            const id = heap.alloc(
-              {
-                kind: 'enum',
-                enumIdx,
-                variantIdx,
-                variantName: `${enDesc.name}::${vrDesc.name}`,
-                payload,
-              },
-              rootProvider
-            );
-            push({ kind: 'enum_ref', id });
+            tempRoots.push(...payload);
+            try {
+              const id = heap.alloc(
+                {
+                  kind: 'enum',
+                  enumIdx,
+                  variantIdx,
+                  variantName: `${enDesc.name}::${vrDesc.name}`,
+                  payload,
+                },
+                rootProvider
+              );
+              push({ kind: 'enum_ref', id });
+            } finally {
+              tempRoots.length = 0;
+            }
             break;
           }
 

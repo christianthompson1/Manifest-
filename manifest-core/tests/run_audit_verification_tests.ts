@@ -2,8 +2,8 @@
  * Manifest Studio - Integrated Engineering Audit Verification Suite
  *
  * Verifies:
- * 1. Differential Behavioral Parity: AST Interpreter (Runtime) vs JS Target Compiler (JSTargetCompiler)
- * 2. Two-Pass Semantic Validator & IR/Codegen Completeness (Unary, IndexAccess, Badge/Progress/Icon/Escapes)
+ * 1. Differential Behavioral Parity: Rust MVM vs TS MIR Evaluator vs Web-JS Target
+ * 2. Rust Compiler Engine Diagnostics & Legacy v0.x Rejection (`E_LEGACY_V0_REMOVED`)
  * 3. Deterministic Entry Selection, Unsupported Language Refusal, & Async Run Superseding
  * 4. Multi-File Static Web Bundling, CSS url() Assets, Missing Asset Warnings, & Standalone JS Harness
  * 5. Real WebAssembly (.wasm) Binary Execution Provider (env.*, WASI fd_write stdout, error boundaries)
@@ -11,12 +11,10 @@
  */
 
 import {
-  executeManifest,
-  compileManifest,
-  inspectManifest,
-  Lexer,
-  Parser,
-  Validator,
+  checkManifestSource,
+  compileManifestV1,
+  evaluateMIRModule,
+  runManifestOnRustMvm,
 } from '../src/index.ts';
 import { ExecutionOrchestrator } from '../../src/studio/execution/execution-orchestrator.ts';
 import { StaticWebExecutionProvider } from '../../src/studio/execution/static-web-execution-provider.ts';
@@ -31,114 +29,18 @@ import { buildProjectTree } from '../../src/studio/explorer/ProjectTree.tsx';
 import { exportProjectToZip, importProjectFromZip } from '../../src/studio/services/zip-service.ts';
 import { ManifestProject, ProjectFile } from '../../src/studio/types.ts';
 
-function createMockDOM() {
-  class MockElement {
-    tagName: string;
-    className = '';
-    id = '';
-    textContent = '';
-    src = '';
-    alt = '';
-    type = '';
-    placeholder = '';
-    value = '';
-    children: MockElement[] = [];
-    parentNode: MockElement | null = null;
-    onclick: ((e: any) => any) | null = null;
-    oninput: ((e: any) => any) | null = null;
-    style: Record<string, any>;
-
-    constructor(tagName: string) {
-      this.tagName = tagName.toUpperCase();
-      const props: Record<string, string> = {};
-      this.style = new Proxy(props, {
-        set(target, prop: string, val) {
-          target[prop] = String(val);
-          return true;
-        },
-        get(target, prop: string) {
-          if (prop === 'setProperty') {
-            return (k: string, v: string) => {
-              target[k] = String(v);
-            };
-          }
-          if (prop === 'getPropertyValue') {
-            return (k: string) => target[k] || '';
-          }
-          return target[prop] || '';
-        },
-      });
-    }
-
-    appendChild(child: MockElement) {
-      child.parentNode = this;
-      this.children.push(child);
-      return child;
-    }
-
-    addEventListener() {}
-
-    set innerHTML(val: string) {
-      if (val === '') {
-        this.children = [];
-        this.textContent = '';
-      } else {
-        this.textContent = val;
-      }
-    }
-
-    querySelector(selector: string): MockElement | null {
-      for (const child of this.children) {
-        if (selector.startsWith('.') && child.className.split(/\s+/).includes(selector.slice(1))) {
-          return child;
-        }
-        if (selector.startsWith('#') && child.id === selector.slice(1)) {
-          return child;
-        }
-        if (child.tagName.toLowerCase() === selector.toLowerCase()) {
-          return child;
-        }
-        const nested = child.querySelector(selector);
-        if (nested) return nested;
-      }
-      return null;
-    }
+async function runCompiledWebJsProgram(source: string): Promise<{ outputs: string[]; returnValue: string }> {
+  const compiled = await compileManifestV1(source, { target: 'web-js' });
+  if (!compiled.success || !compiled.jsCode) {
+    throw new Error(`Web-JS compilation failed: ${compiled.diagnostics.map((d) => d.message).join('; ')}`);
   }
-
-  const body = new MockElement('body');
-  const head = new MockElement('head');
-  return {
-    MockElement,
-    mockDocument: {
-      body,
-      head,
-      createElement: (tag: string) => new MockElement(tag),
-    },
-  };
-}
-
-async function runCompiledJSProgram(source: string): Promise<{ outputs: string[]; state: Record<string, any>; mountRoot: any }> {
-  const compiled = await compileManifest(source, 'js');
-  if (!compiled.success || !compiled.outputCode) {
-    throw new Error(`JS compilation failed: ${compiled.diagnostics.map((d) => d.message).join('; ')}`);
-  }
-  const { mockDocument, MockElement } = createMockDOM();
-  const mountRoot = mockDocument.createElement('div');
-  const outputs: string[] = [];
-
   const executableCode =
-    compiled.outputCode
-      .replace('export const __manifest =', 'const __manifest =')
-      .replace('export async function startApp', 'async function startApp') +
-    '\nreturn { startApp, __manifest };';
+    compiled.jsCode.replace('export function __runManifestModule', 'function __runManifestModule') +
+    '\nreturn __runManifestModule();';
 
-  const fn = new Function('document', 'Element', executableCode);
-  const mod = fn(mockDocument, MockElement);
-  await mod.startApp(mountRoot, {
-    onOutput: (msg: string) => outputs.push(msg),
-  });
-
-  return { outputs, state: { ...mod.__manifest.state }, mountRoot };
+  const fn = new Function(executableCode);
+  const res = fn();
+  return { outputs: Array.isArray(res.stdout) ? res.stdout : [], returnValue: String(res.returnValue) };
 }
 
 /**
@@ -217,210 +119,202 @@ export async function runAuditVerificationTests(): Promise<{ passed: number; fai
   console.log('\n--- Running Integrated Audit & Parity Verification Tests ---');
 
   // ============================================================================
-  // 1. DIFFERENTIAL PARITY: INTERPRETER vs JS TARGET COMPILER
+  // 1. DIFFERENTIAL PARITY: RUST MVM vs MIR REFERENCE ORACLE vs WEB-JS TARGET
   // ============================================================================
-  const differentialPrograms: Array<{ name: string; source: string; expected: string[] }> = [
+  const differentialPrograms: Array<{
+    name: string;
+    source: string;
+    expectedStdout: string[];
+    expectedReturn: string;
+  }> = [
     {
-      name: 'Unary operators (-, NOT) and array indexing (items[i])',
-      source: `
-        APP "ParityUnaryIndex"
-        SET nums TO [10, 25, 40]
-        SET flag TO false
-        WHEN app.starts
-            SET neg TO -nums[1]
-            IF NOT flag
-                SHOW neg
-                SHOW nums[0] + nums[2]
-            END
-        END
-      `,
-      expected: ['-25', '50'],
-    },
-    {
-      name: 'ACTION control flow (IF/ELSE, REPEAT, FOR EACH) + forward CALL',
-      source: `
-        APP "ParityActionControlFlow"
-        WHEN app.starts
-            SET res TO CALL summarize [2, 4, 6]
-            SHOW res
-        END
+      name: 'Unary operators (-, !) and array indexing (nums[i])',
+      source: `module parity_unary;
+requires console;
 
-        ACTION summarize values
-            SET acc TO 0
-            FOR EACH v IN values
-                IF v > 3
-                    REPEAT 2 TIMES
-                        SET acc TO acc + v
-                    END
-                ELSE
-                    SET acc TO acc + 1
-                END
-            END
-            RETURN acc
-        END
-      `,
-      expected: ['21'],
+fn main() -> i64 effects(console) {
+    let nums: Array<i64> = [10, 25, 40];
+    let flag: bool = false;
+    let neg: i64 = -nums[1];
+    if !flag {
+        console.print(neg);
+        console.print(nums[0] + nums[2]);
+    }
+    return nums[0] + nums[2];
+}`,
+      expectedStdout: ['-25', '50'],
+      expectedReturn: '50',
     },
     {
-      name: 'Recursive ACTION (factorial) with lexical parameter isolation',
-      source: `
-        APP "ParityRecursion"
-        SET n TO 999
-        ACTION fact n
-            IF n <= 1
-                RETURN 1
-            END
-            SET prev TO CALL fact (n - 1)
-            RETURN n * prev
-        END
-        WHEN app.starts
-            SET sixFact TO CALL fact 6
-            SHOW sixFact
-            SHOW n
-        END
-      `,
-      expected: ['720', '999'],
+      name: 'Control flow (if/else, for-in, while) + forward fn call',
+      source: `module parity_flow;
+requires console;
+
+fn main() -> i64 effects(console) {
+    let values: Array<i64> = [2, 4, 6];
+    let res: i64 = summarize(values);
+    console.print(res);
+    return res;
+}
+
+fn summarize(values: Array<i64>) -> i64 {
+    let mut acc: i64 = 0;
+    for v in values {
+        if v > 3 {
+            let mut k: i64 = 0;
+            while k < 2 {
+                acc = acc + v;
+                k = k + 1;
+            }
+        } else {
+            acc = acc + 1;
+        }
+    }
+    return acc;
+}`,
+      expectedStdout: ['21'],
+      expectedReturn: '21',
     },
     {
-      name: 'TRY / IF FAILED catching division by zero identically',
-      source: `
-        APP "ParityTryDivZero"
-        WHEN app.starts
-            TRY
-                SET bad TO 100 / 0
-                SHOW bad
-            IF FAILED
-                SHOW "CAUGHT_DIV_ZERO"
-            END
-        END
-      `,
-      expected: ['CAUGHT_DIV_ZERO'],
+      name: 'Recursive factorial with lexical parameter isolation',
+      source: `module parity_rec;
+requires console;
+
+fn fact(n: i64) -> i64 {
+    if n <= 1 {
+        return 1;
+    }
+    let prev: i64 = fact(n - 1);
+    return n * prev;
+}
+
+fn main() -> i64 effects(console) {
+    let n: i64 = 999;
+    let six_fact: i64 = fact(6);
+    console.print(six_fact);
+    console.print(n);
+    return six_fact;
+}`,
+      expectedStdout: ['720', '999'],
+      expectedReturn: '720',
     },
   ];
 
   for (const prog of differentialPrograms) {
     try {
-      const interpRes = await executeManifest(prog.source, { validate: true });
-      const jsRes = await runCompiledJSProgram(prog.source);
-      const interpMatch = JSON.stringify(interpRes.output) === JSON.stringify(prog.expected);
-      const parityMatch = JSON.stringify(interpRes.output) === JSON.stringify(jsRes.outputs);
+      const checked = await checkManifestSource(prog.source);
+      const mirEval = evaluateMIRModule(checked.mir!, { grantedCapabilities: ['console'] });
+      const mvmRun = await runManifestOnRustMvm(prog.source, { grantedCapabilities: ['console'] });
+      const webJsRun = await runCompiledWebJsProgram(prog.source);
+      const mirMatch =
+        mirEval.ok &&
+        JSON.stringify(mirEval.stdout) === JSON.stringify(prog.expectedStdout) &&
+        String(mirEval.returnValue) === prog.expectedReturn;
+      const mvmMatch =
+        mvmRun.ok &&
+        JSON.stringify(mvmRun.stdout) === JSON.stringify(prog.expectedStdout) &&
+        mvmRun.returnValue === prog.expectedReturn;
+      const webMatch =
+        JSON.stringify(webJsRun.outputs) === JSON.stringify(prog.expectedStdout) &&
+        webJsRun.returnValue === prog.expectedReturn;
       assert(
-        interpMatch && parityMatch,
-        `1. Differential Parity [${prog.name}]: Interpreter=${JSON.stringify(interpRes.output)} == JS=${JSON.stringify(jsRes.outputs)}`
+        mirMatch && mvmMatch && webMatch,
+        `1. Differential Parity [${prog.name}]: MVM=${mvmRun.returnValue} == MIR=${mirEval.returnValue} == WebJS=${webJsRun.returnValue}`
       );
     } catch (err: any) {
       assert(false, `1. Differential Parity [${prog.name}] threw: ${err.message}`);
     }
   }
 
-  // Recursion depth guard test
+  // Deterministic division by zero trap across MVM, MIR evaluator, and Web-JS
   try {
-    const infRecSource = `
-      APP "InfRecursion"
-      ACTION ping x
-          RETURN CALL ping (x + 1)
-      END
-      WHEN app.starts
-          CALL ping 1
-      END
-    `;
-    let caughtInterp = false;
+    const divZeroSrc = `module parity_div_zero;
+fn main() -> i64 {
+    return 100 / 0;
+}`;
+    const checkedDz = await checkManifestSource(divZeroSrc);
+    const mirDz = evaluateMIRModule(checkedDz.mir!, { grantedCapabilities: [] });
+    const mvmDz = await runManifestOnRustMvm(divZeroSrc, { grantedCapabilities: [] });
+    let webDzError = '';
     try {
-      await executeManifest(infRecSource, { validate: true });
+      await runCompiledWebJsProgram(divZeroSrc);
     } catch (e: any) {
-      caughtInterp = String(e.message || e).includes('Maximum recursion depth');
+      webDzError = String(e.message || e);
     }
-    let caughtJs = false;
-    try {
-      await runCompiledJSProgram(infRecSource);
-    } catch (e: any) {
-      caughtJs = String(e.message || e).includes('Maximum recursion depth');
-    }
-    assert(caughtInterp && caughtJs, '1. Recursion depth guard (>200) protects both Interpreter and Compiled JS');
+    assert(
+      !mirDz.ok && !mvmDz.ok && /zero/i.test(mvmDz.error || '') && /zero/i.test(webDzError),
+      '1. Division by zero traps deterministically across Rust MVM, MIR evaluator, and Web-JS'
+    );
+  } catch (err: any) {
+    assert(false, `1. Division by zero parity check failed: ${err.message}`);
+  }
+
+  // Recursion / call-depth guard test
+  try {
+    const infRecSource = `module inf_recursion;
+fn ping(x: i64) -> i64 {
+    return ping(x + 1);
+}
+fn main() -> i64 {
+    return ping(1);
+}`;
+    const checkedInf = await checkManifestSource(infRecSource);
+    const mirInf = evaluateMIRModule(checkedInf.mir!, { grantedCapabilities: [], maxSteps: 10000 });
+    const mvmInf = await runManifestOnRustMvm(infRecSource, { grantedCapabilities: [], maxSteps: 10000 });
+    assert(
+      !mirInf.ok && !mvmInf.ok,
+      '1. Recursion/execution budget guard protects both MIR evaluator and Rust MVM'
+    );
   } catch (err: any) {
     assert(false, `1. Recursion guard check failed: ${err.message}`);
   }
 
-  // UI Primitives IR + JS Target lowering check (Badge, Progress, Icon, CssEscape)
-  try {
-    const uiPrimitivesSrc = `
-      APP "AllPrimitives"
-      PAGE Home
-          BADGE "Beta"
-          PROGRESS 75
-          ICON "rocket"
-          CSS ".custom-box { border: 1px solid red; }"
-      END
-    `;
-    const uiRun = await runCompiledJSProgram(uiPrimitivesSrc);
-    assert(uiRun.mountRoot.querySelector('.manifest-badge') !== null, '1. JS Target renders BADGE DOM element');
-    assert(uiRun.mountRoot.querySelector('.manifest-progress') !== null, '1. JS Target renders PROGRESS DOM element');
-    assert(uiRun.mountRoot.querySelector('.manifest-icon') !== null, '1. JS Target renders ICON DOM element');
-  } catch (err: any) {
-    assert(false, `1. UI primitives lowering failed: ${err.message}`);
-  }
-
   // ============================================================================
-  // 2. TWO-PASS SEMANTIC VALIDATOR CHECKS
+  // 2. RUST COMPILER ENGINE DIAGNOSTIC CHECKS
   // ============================================================================
   {
-    const undefCall = inspectManifest(`
-      APP "UndefCall"
-      WHEN app.starts
-          CALL doesNotExist 10
-      END
-    `);
+    const undefCall = await checkManifestSource(`module undef_call;
+fn main() -> i64 {
+    return does_not_exist(10);
+}`);
     assert(
-      Boolean(undefCall.validation && !undefCall.validation.isValid && undefCall.validation.issues.some((i) => i.message.includes('doesNotExist'))),
-      '2. Validator rejects CALL to undeclared ACTION "doesNotExist"'
+      !undefCall.ok && undefCall.diagnostics.some((d) => d.severity === 'error' && d.message.includes('does_not_exist')),
+      '2. Rust engine rejects call to undeclared fn "does_not_exist"'
     );
 
-    const dupAction = inspectManifest(`
-      APP "DupAction"
-      ACTION work x
-          RETURN x
-      END
-      ACTION work y
-          RETURN y
-      END
-    `);
+    const dupFn = await checkManifestSource(`module dup_fn;
+fn work(x: i64) -> i64 { return x; }
+fn work(y: i64) -> i64 { return y; }
+fn main() -> i64 { return 0; }`);
     assert(
-      Boolean(dupAction.validation && !dupAction.validation.isValid && dupAction.validation.issues.some((i) => i.message.includes('Duplicate ACTION'))),
-      '2. Validator rejects duplicate ACTION declarations'
+      !dupFn.ok && dupFn.diagnostics.some((d) => d.severity === 'error' && (d.code?.includes('DUPLICATE') || d.message.toLowerCase().includes('duplicate'))),
+      '2. Rust engine rejects duplicate fn declarations'
     );
 
-    const topReturn = inspectManifest(`
-      APP "TopReturn"
-      RETURN 42
-    `);
+    const badRet = await checkManifestSource(`module bad_ret;
+fn main() -> i64 {
+    return "not_an_int";
+}`);
     assert(
-      Boolean(topReturn.validation && !topReturn.validation.isValid && topReturn.validation.issues.some((i) => i.message.includes('RETURN'))),
-      '2. Validator rejects RETURN statement outside an ACTION'
+      !badRet.ok && badRet.diagnostics.some((d) => d.severity === 'error'),
+      '2. Rust engine rejects return type mismatch (str vs i64)'
     );
 
-    const badRoute = inspectManifest(`
-      APP "BadRoute"
-      PAGE Home
-          TEXT "Hi"
-      END
-      ROUTE "/ghost" -> GhostPage
-    `);
+    const deniedCap = await checkManifestSource(`module denied_cap;
+denies console;
+fn main() -> i64 {
+    console.print("blocked");
+    return 0;
+}`);
     assert(
-      Boolean(badRoute.validation && !badRoute.validation.isValid && badRoute.validation.issues.some((i) => i.message.includes('GhostPage'))),
-      '2. Validator rejects ROUTE pointing to undefined PAGE "GhostPage"'
+      !deniedCap.ok && deniedCap.diagnostics.some((d) => d.severity === 'error' && d.code?.includes('CAPABILITY')),
+      '2. Rust engine rejects usage of explicitly denied capability'
     );
 
-    const divZeroWarn = inspectManifest(`
-      APP "DivZeroWarn"
-      SET val TO 50 / 0
-    `);
+    const legacyRejected = await checkManifestSource(`APP "LegacyV0"\nPAGE Home\n    TEXT "Hello"\nEND`);
     assert(
-      Boolean(
-        divZeroWarn.validation &&
-          divZeroWarn.validation.isValid &&
-          divZeroWarn.validation.issues.some((i) => i.severity === 'warning' && i.message.includes('Division or modulo by literal zero'))
-      ),
-      '2. Validator emits warning for literal division by zero outside TRY block'
+      !legacyRejected.ok && legacyRejected.diagnostics.some((d) => d.code === 'E_LEGACY_V0_REMOVED'),
+      '2. Rust engine rejects legacy v0.x syntax with E_LEGACY_V0_REMOVED'
     );
   }
 
@@ -437,13 +331,13 @@ export async function runAuditVerificationTests(): Promise<{ passed: number; fai
       createdAt: Date.now(),
       updatedAt: Date.now(),
       files: [
-        makeFile('src/main.manifest', 'APP "Main"\nWHEN app.starts\nSHOW "FROM_MAIN_MANIFEST"\nEND', 'manifest'),
-        makeFile('src/other.manifest', 'APP "Other"\nWHEN app.starts\nSHOW "FROM_OTHER_MANIFEST"\nEND', 'manifest'),
+        makeFile('src/main.manifest', 'module main;\nrequires console;\nfn main() -> i64 effects(console) {\n  console.print("FROM_MAIN_MANIFEST");\n  return 0;\n}', 'manifest'),
+        makeFile('src/other.manifest', 'module other;\nrequires console;\nfn main() -> i64 effects(console) {\n  console.print("FROM_OTHER_MANIFEST");\n  return 0;\n}', 'manifest'),
         makeFile('scripts/train.py', 'print("hello python")', 'python'),
         makeFile('native/lib.rs', 'pub fn main() {}', 'rust'),
         makeFile('firmware/core.c', 'int main() { return 0; }', 'c'),
         makeFile('web/client.ts', 'const x: number = 1;', 'typescript'),
-        makeFile('manifest.toml', 'name = "Mixed"\nentry = "src/main.manifest"', 'toml'),
+        makeFile('manifest.toml', 'name = "Mixed"\nentry = "src/main.manifest"\ntarget = "web-js"', 'toml'),
       ],
     };
 
@@ -481,7 +375,7 @@ export async function runAuditVerificationTests(): Promise<{ passed: number; fai
       ...mixedProject,
       activeFilePath: 'manifest.toml',
       files: [
-        makeFile('src/main.manifest', 'APP "Main"\nWHEN app.starts\nSHOW "MAIN"\nEND', 'manifest'),
+        makeFile('src/main.manifest', 'module main;\nrequires console;\nfn main() -> i64 effects(console) {\n  console.print("MAIN");\n  return 0;\n}', 'manifest'),
         makeFile('manifest.toml', 'name = "Broken"\nentry = "src/deleted.manifest"', 'toml'),
       ],
     };
@@ -651,8 +545,8 @@ export async function runAuditVerificationTests(): Promise<{ passed: number; fai
   // ============================================================================
   {
     const treeFiles: ProjectFile[] = [
-      makeFile('src/main.manifest', 'APP "Tree"', 'manifest'),
-      makeFile('src/components/Navbar.manifest', 'CONTAINER\nEND', 'manifest'),
+      makeFile('src/main.manifest', 'module tree;\nfn main() -> i64 { return 0; }', 'manifest'),
+      makeFile('src/components/Navbar.manifest', 'module navbar;\nexport fn label() -> str { return "ok"; }', 'manifest'),
       makeFile('assets/icons/logo.svg', '<svg></svg>', 'html', false),
       makeFile('empty_folder/.gitkeep', '', 'plaintext', false),
       makeFile('bin/module.wasm', encodeWasmDataUrl(STARTER_WASM_BYTES), 'wasm', true),

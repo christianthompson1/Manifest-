@@ -220,15 +220,26 @@ export type SemanticExpr =
   | { kind: 'AwaitExpr'; operand: SemanticExpr; span: SourceSpan }
   | { kind: 'TryPropagateExpr'; operand: SemanticExpr; span: SourceSpan };
 
+export type CommentStyle = '//' | '///' | '--' | '#' | 'NOTE:' | 'block';
+
+export interface CommentNode {
+  kind: 'line' | 'block';
+  style: CommentStyle;
+  body: string;
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
+  trailing: boolean;
+}
+
 export interface SemanticModule {
   kind: 'SemanticModule';
   profile: SyntaxProfile;
   moduleName: string;
-  isLegacyApp: boolean;
-  hasDomainExtensions: {
-    webUI: boolean;
-    solanaContract: boolean;
-  };
+  headerSpan?: SourceSpan;
+  comments?: CommentNode[];
+  isSolanaContract: boolean;
   imports: ImportDecl[];
   capabilities: CapabilitySummaryDecl;
   structs: StructDecl[];

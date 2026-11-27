@@ -20,50 +20,32 @@ const CONTROL_KEYWORDS = new Set([
 const DEFINITION_KEYWORDS = new Set([
   'MODULE', 'FUNCTION', 'RETURNS', 'LET', 'MUTABLE', 'CONSTANT',
   'STRUCT', 'ENUM', 'TRAIT', 'REQUIRES', 'PROVIDES', 'DENIES', 'EFFECTS', 'PURE', 'ASYNC',
-  'APP', 'PAGE', 'ACTION', 'COMPONENT', 'CONTAINER', 'SERVER', 'ENDPOINT',
-  'USE', 'METHOD', 'ROUTE', 'CARD', 'NAV', 'HEADER', 'FOOTER', 'MODAL',
-  'PROGRAM', 'ACCOUNT', 'INSTRUCTION', 'CSS', 'JS', 'RUST', 'LIBRARY',
-  'SOLANA', 'WALLET', 'DEPLOY', 'PDA', 'TOKEN', 'TRANSFER',
+  'PROGRAM', 'ACCOUNT', 'INSTRUCTION',
   'module', 'fn', 'let', 'mut', 'const', 'struct', 'enum', 'trait',
   'requires', 'provides', 'denies', 'effects', 'pure', 'async', 'pub'
 ]);
 
 // Statement & action keywords -> tags.keyword (Blue #569cd6)
 const STATEMENT_KEYWORDS = new Set([
-  'SET', 'TO', 'SHOW', 'CALL', 'STATE', 'STYLE', 'LAYOUT', 'DIRECTION',
-  'ANIMATE', 'SIGNER', 'CONNECT', 'DISCONNECT', 'INVOKE'
+  'SET', 'TO', 'SHOW', 'SIGNER', 'INVOKE'
 ]);
 
 // Logical operators & prepositions -> tags.operatorKeyword (Blue #569cd6)
 const OPERATOR_KEYWORDS = new Set([
-  'AND', 'OR', 'NOT', 'IN', 'INTO', 'BIND', 'ALT', 'WITH', 'AS', 'IS'
+  'AND', 'OR', 'NOT', 'IN', 'INTO', 'WITH', 'AS', 'IS'
 ]);
 
-// UI Primitives & Types -> tags.typeName (Teal #4ec9b0)
+// Canonical Manifest v1.0 & Solana Types -> tags.typeName (Teal #4ec9b0)
 const TYPE_AND_PRIMITIVE_KEYWORDS = new Set([
-  'Int', 'Float', 'Bool', 'Void', 'Array', 'Map', 'Result', 'Option',
+  'Int', 'Float', 'Bool', 'Str', 'Void', 'Array', 'Map', 'Result', 'Option',
   'i64', 'f64', 'bool', 'str', 'void',
-  'INT', 'FLOAT', 'BOOL', 'VOID', 'ARRAY', 'MAP', 'RESULT',
-  'TEXT', 'BUTTON', 'INPUT', 'IMAGE', 'FORM', 'LIST', 'LINK',
-  'TEXTAREA', 'CHECKBOX', 'SELECT',
-  'TABLE', 'DIALOG', 'TABS', 'MENU', 'SIDEBAR', 'AVATAR', 'BADGE',
-  'PROGRESS', 'ICON', 'VIDEO', 'AUDIO',
-  'NUMBER', 'BOOLEAN', 'OBJECT', 'ADDRESS', 'PUBKEY'
+  'INT', 'FLOAT', 'BOOL', 'STR', 'VOID', 'ARRAY', 'MAP', 'RESULT', 'OPTION',
+  'NUMBER', 'BOOLEAN', 'ADDRESS', 'PUBKEY', 'u64', 'u8', 'u16', 'u32', 'Pubkey'
 ]);
 
-// Style Properties & Layout values -> tags.propertyName (Light Blue #9cdcfe)
-const STYLE_PROPERTIES = new Set([
-  'WIDTH', 'HEIGHT', 'MIN_WIDTH', 'MAX_WIDTH', 'MIN_HEIGHT', 'MAX_HEIGHT',
-  'BACKGROUND', 'COLOR', 'FONT_SIZE', 'FONT_WEIGHT', 'FONT_FAMILY', 'LINE_HEIGHT',
-  'LETTER_SPACING', 'POSITION', 'Z_INDEX',
-  'PADDING', 'MARGIN', 'GAP', 'BORDER', 'BORDER_WIDTH', 'BORDER_COLOR', 'RADIUS', 'BORDER_RADIUS',
-  'OPACITY', 'SHADOW', 'ALIGN', 'JUSTIFY', 'DISPLAY', 'OVERFLOW', 'CURSOR',
-  'FLEX', 'GRID', 'COLUMN', 'ROW', 'MOBILE', 'TABLET', 'DESKTOP', 'CENTER', 'START', 'BETWEEN', 'AROUND', 'EVENLY'
-]);
-
-// Event identifiers -> tags.special(tags.variableName) (Yellow #dcdcaa)
+// Event/Result variants -> tags.special(tags.variableName) (Yellow #dcdcaa)
 const EVENT_KEYWORDS = new Set([
-  'CLICK', 'SUBMIT', 'CHANGE', 'LOAD', 'INPUT_EVENT', 'Ok', 'Err', 'Some', 'None'
+  'Ok', 'Err', 'Some', 'None'
 ]);
 
 // Literal atoms -> tags.atom (Blue #569cd6)
@@ -200,10 +182,6 @@ export const manifestStreamParser = {
 
       if (word === upper && OPERATOR_KEYWORDS.has(upper)) {
         return 'operatorKeyword';
-      }
-
-      if (word === upper && STYLE_PROPERTIES.has(upper)) {
-        return 'propertyName';
       }
 
       if (EVENT_KEYWORDS.has(word) || (word === upper && EVENT_KEYWORDS.has(upper))) {

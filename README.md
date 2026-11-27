@@ -14,8 +14,8 @@ Manifest is a general-purpose programming language with its own formal semantics
 2. **Backend, CLI, and automation/scripting** — explicit `fs.read`, `fs.write`, `net`, `db`, `time`, `crypto`, and `console` capabilities enforced at both compile time and runtime.
 3. **Data processing & algorithmic workloads** — checked 64-bit integer arithmetic (`i64`), IEEE-754 floats (`f64`), typed arrays, maps, and pure effect-verified pipelines.
 4. **Systems & portable execution** — lowering to `.mbc` bytecode on the Rust Manifest Virtual Machine (`mvm`), standalone W3C WebAssembly (`.wasm`), or standalone memory-safe Rust source for native host compilation (`rustc`).
-5. **Web application development** — capability-restricted JavaScript modules and declarative UI (`APP` / `PAGE`) mounted inside a strict `<iframe sandbox="allow-scripts">` preview.
-6. **Smart-contract development** — Solana Anchor Rust + IDL synthesis with deterministic account and invariant simulation (`PROGRAM`).
+5. **Web application development** — capability-restricted ES JavaScript modules (`web-js`) mounted inside a strict `<iframe sandbox="allow-scripts">` preview, alongside multi-file static web projects (`index.html`, CSS, JS).
+6. **Smart-contract development** — standalone Solana smart contracts (`PROGRAM ... END`) compiled to Anchor Rust + IDL with deterministic LiteSVM and account/invariant simulation.
 7. **Desktop & game logic foundations** — embeddable `#![forbid(unsafe_code)]` Rust VM (`mvm-core`) with deterministic step budgets and host FFI capability gates.
 
 ---
@@ -35,8 +35,8 @@ Both profiles interoperate across multi-file `import` / `export` graphs and can 
 
 | Path | Responsibility |
 |---|---|
-| [`manifest-core/`](./manifest-core/README.md) | Dual-profile lexers/parsers, formatter, multi-file module resolver, static type checker, capability & effect analyzer, Typed MIR + optimizer, `.mbc` v1.0 bytecode compiler/verifier/disassembler, WASM/Web-JS/Native/Solana backends, and CLI (`manifest-core/src/cli.ts`). |
-| `mvm/` | **Rust Manifest Virtual Machine** Cargo workspace: `mvm-core` (`#![forbid(unsafe_code)]` decoder, static stack/jump/capability verifier, bounded execution engine), `mvm-cli` (native `mvm` binary), and `mvm-wasm` (`public/wasm/mvm_wasm.wasm` embedded in Studio and Node). |
+| [`manifest-core/`](./manifest-core/README.md) | Authoritative Rust compiler bridge (`engine/rust-engine.ts`), cross-profile formatter, TypeScript reference oracle (`core/`, `semantics/`, `ir/`, `bytecode/`), WASM/Web-JS/Native/Solana backends, explicit v0.x migrator (`migration/`), and CLI (`manifest-core/src/cli.ts`). |
+| `mvm/` | **Authoritative Manifest Compiler & Rust Virtual Machine** Cargo workspace: `manifest-compiler` (canonical lexer, Beginner/Professional parsers, multi-file resolver, type checker, capability/effect verifier, Typed MIR + optimizer, `.mbc` v1.0 emitter), `mvm-core` (`#![forbid(unsafe_code)]` verifier & bounded VM), `mvm-cli` (native `mvm` binary), and `mvm-wasm` (`public/wasm/mvm_wasm.wasm`). |
 | `src/studio/` | React 19 + CodeMirror 6 IDE with Syntax Profile & Compiler Target selectors, separated **Run** vs **Build** workflows, `.mbc` / Typed IR / Capabilities inspector tabs, multi-project IndexedDB storage, and binary-safe ZIP import/export. |
 | `examples/` | Verified `.manifest` programs organized by `beginner/`, `professional/`, `web/`, `backend/`, and `contracts/`. |
 | `docs/` | Authoritative specifications, architecture documentation, security model, target matrix, verification baseline, and benchmarks. |
@@ -68,25 +68,25 @@ Both profiles interoperate across multi-file `import` / `export` graphs and can 
 # 1. Type-check TypeScript across manifest-core and Manifest Studio
 npm run lint
 
-# 2. Run full Manifest v0.1–v1.0, Rust MVM, WASM, Solana LiteSVM, Orchestrator & Editor test suites
+# 2. Run Stage 6/7 Rust engine, canonical v1.0, Solana LiteSVM, Orchestrator, Editor & v1.0 upgrade test suites
 npm run manifest:test
 
-# 3. Run Track A Security, Compiler Correctness & Honesty regression suite
+# 3. Run Stage 6 & Stage 7 verification suites directly
+npm run manifest:test:stage6
+npm run manifest:test:stage7
+
+# 4. Run Track A & Batch 1 security/honesty regression suites
 npx tsx manifest-core/tests/run_track_a_tests.ts
+npx tsx manifest-core/tests/run_batch1_security_and_honesty_tests.ts
 
-# 4. Run Phase 3 Unified Compiler Pipeline & Parity test suite
-npm run manifest:test:phase3
-
-# 5. Run Phase 4 & Phase 5 MVM Runtime Maturity, Mark-and-Sweep GC & Package System test suite
-npm run manifest:test:phase45
-
-# 6. Run compiler, TS evaluator, Direct WASM, and Rust MVM benchmarks
+# 5. Run compiler, TS evaluator, Direct WASM, and Rust MVM benchmarks
 npm run manifest:bench
 
-# 7. Use the Manifest v1.0 CLI directly
+# 6. Use the Manifest v1.0 CLI directly (including explicit opt-in v0.x migration)
 npm run manifest:run -- check examples/professional/01_algorithms_and_enums.manifest
 npm run manifest:run -- run examples/professional/01_algorithms_and_enums.manifest
 npm run manifest:run -- disassemble examples/beginner/01_basics_and_loops.manifest
+npm run manifest:run -- migrate legacy_v0.manifest --profile professional
 npm run manifest:run -- targets
 npm run manifest:run -- package list
 npm run manifest:run -- package verify

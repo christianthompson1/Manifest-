@@ -63,7 +63,7 @@ const ECOSYSTEM_CATALOG: EcosystemItem[] = [
     description: 'Component architecture with fine-grained reactive state signals, keyed Virtual DOM reconciliation, and SPA routing.',
     version: '1.0.0',
     targets: ['web-js'],
-    manifestImport: 'requires [dom]; APP "App Name"; PAGE Home ...',
+    manifestImport: 'import { createState, h, mount } from "manifest-web";',
     details: 'Supports keyed list reconciliation, onMount/onDestroy lifecycle hooks, CircularDependencyError loop protection, and two-way form models.',
   },
   {

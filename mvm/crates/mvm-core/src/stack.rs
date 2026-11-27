@@ -50,4 +50,8 @@ impl OperandStack {
     pub fn truncate(&mut self, len: usize) {
         self.items.truncate(len);
     }
+
+    pub fn as_slice(&self) -> &[Value] {
+        &self.items
+    }
 }

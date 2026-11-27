@@ -85,14 +85,10 @@ import {
   COMPILER_TARGETS,
   formatManifestSource,
   detectSyntaxProfile,
-  isLegacyDomainManifestSource,
+  isSolanaProgramSource,
 } from '../../manifest-core/src/index.ts';
 
-interface StudioProps {
-  onSwitchToTestbench?: () => void;
-}
-
-export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
+export function Studio() {
   const [project, setProject] = useState<ManifestProject>(() => loadProjectFromStorage());
   const [activeFilePath, setActiveFilePath] = useState<string>(
     project.activeFilePath || project.files[0]?.path || 'src/main.manifest'
@@ -350,8 +346,8 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
       showToast('Open a .manifest source file to format');
       return;
     }
-    if (isLegacyDomainManifestSource(activeFile.content)) {
-      showToast('Declarative UI / Solana domain blocks keep their canonical block layout');
+    if (isSolanaProgramSource(activeFile.content)) {
+      showToast('Solana PROGRAM declarations keep their canonical block layout');
       return;
     }
     const targetProf: 'beginner' | 'professional' =
@@ -991,7 +987,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
               <option value="professional">Profile: Professional</option>
             </select>
 
-            {activeFile.language === 'manifest' && !isLegacyDomainManifestSource(activeFile.content) && (
+            {activeFile.language === 'manifest' && !isSolanaProgramSource(activeFile.content) && (
               <button
                 onClick={() => handleFormatManifest()}
                 title="Format active .manifest file in selected Syntax Profile"
@@ -1153,8 +1149,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                 <button
                   onClick={() => {
                     setIsDesktopMoreOpen(false);
-                    if (onSwitchToTestbench) onSwitchToTestbench();
-                    else setIsTestbenchOpen(true);
+                    setIsTestbenchOpen(true);
                   }}
                   className="w-full px-3 py-1.5 text-xs text-[#cccccc] hover:bg-[#2a2d2e] hover:text-white flex items-center gap-2 text-left transition cursor-pointer"
                 >
@@ -1162,7 +1157,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
                   <span>Developer Mode</span>
                 </button>
 
-                {activeFile.language === 'manifest' && !isLegacyDomainManifestSource(activeFile.content) && (
+                {activeFile.language === 'manifest' && !isSolanaProgramSource(activeFile.content) && (
                   <button
                     onClick={() => {
                       setIsDesktopMoreOpen(false);
@@ -1222,7 +1217,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
 
             {/* Developer Tools / Testbench Toggle */}
             <button
-              onClick={onSwitchToTestbench || (() => setIsTestbenchOpen(true))}
+              onClick={() => setIsTestbenchOpen(true)}
               title="Developer Mode: Compiler Inspector & Testbench"
               className="py-1 px-2.5 rounded-md bg-[#252526] hover:bg-[#2d2d2d] text-[#858585] hover:text-[#cccccc] border border-[#2d2d2d] transition cursor-pointer flex items-center gap-1.5 text-xs font-medium min-h-[30px]"
             >
@@ -2099,7 +2094,7 @@ export function Studio({ onSwitchToTestbench }: StudioProps = {}) {
           localStorage.setItem('manifest_studio_seen_welcome_v02', 'true');
           activateWorkspaceProject(importedProj, `Imported ${importedProj.name}`);
         }}
-        onOpenTestbench={onSwitchToTestbench || (() => setIsTestbenchOpen(true))}
+        onOpenTestbench={() => setIsTestbenchOpen(true)}
       />
 
       {/* 8. Project Menu Modal */}

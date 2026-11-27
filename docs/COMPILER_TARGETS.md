@@ -28,8 +28,8 @@ Manifest separates its target-independent **Language Core & Typed IR (`MIRModule
 - **Verification**: Every build runs both TypeScript `verifyMbcBytes` and Rust `mvm_verify` before emitting `.mbc`.
 
 ### 2.2 `web-js` — Capability-Restricted JavaScript / Web
-- **General-Purpose v1.0 Modules (`web-js-target.ts`)**: Lowers `MIRModule` to an isolated ES module using `BigInt` checked 64-bit arithmetic (`__add64`, `__sub64`, `__mul64`, `__div64`) and a runtime capability sandbox (`__caps`). When `net` is not granted, `window.fetch`, `XMLHttpRequest`, `WebSocket`, and `EventSource` are overridden to throw `[Manifest Security] Network capability "net" is not granted` inside the preview iframe.
-- **Declarative UI Modules (`APP` / `PAGE`)**: Lowers reactive UI blocks via `JSTargetCompiler` (`startApp()`).
+- **General-Purpose v1.0 Modules (`web-js-target.ts`)**: Lowers `MIRModule` to an isolated ES module (`__runManifestModule()`) using `BigInt` checked 64-bit arithmetic and a runtime capability sandbox. When `net` is not granted, `fetch`, `XMLHttpRequest`, and `WebSocket` are overridden to throw `CapabilityDenied` inside the preview iframe.
+- **Removed Legacy v0.x Declarative UI**: Legacy `APP` / `PAGE` blocks (`JSTargetCompiler`) were removed in Stage 7 and are explicitly rejected with `E_LEGACY_V0_REMOVED`.
 
 ### 2.3 `wasm` — Direct Standalone WebAssembly (`wasm-target.ts`)
 - **Direct W3C Binary Codegen**: Emits raw W3C WebAssembly v1 binary sections (Type, Import, Function, Memory, Global, Export, Code) plus human-readable `.wat` directly from `MIRModule` and validates every binary via `WebAssembly.validate()`.

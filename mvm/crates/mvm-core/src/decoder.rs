@@ -246,7 +246,17 @@ pub fn decode_mbc(bytes: &[u8]) -> Result<MbcModule, MvmError> {
     let mut exports_raw: Vec<(u32, u8, u32)> = Vec::new();
     let mut global_count = 0u32;
     let mut entry_fn_idx: Option<u32> = None;
-    let mut funcs_raw: Vec<(u32, u16, u16, u16, bool, Vec<u32>, u32, u32)> = Vec::new();
+    struct RawFuncRecord {
+        name_idx: u32,
+        param_count: u16,
+        local_count: u16,
+        max_stack: u16,
+        has_return: bool,
+        eff_indices: Vec<u32>,
+        code_offset: u32,
+        code_length: u32,
+    }
+    let mut funcs_raw: Vec<RawFuncRecord> = Vec::new();
     let mut code_bytes = Vec::new();
     let mut debug_map = Vec::new();
 
@@ -354,16 +364,16 @@ pub fn decode_mbc(bytes: &[u8]) -> Result<MbcModule, MvmError> {
                     }
                     let code_offset = sc.read_u32("code_offset")?;
                     let code_length = sc.read_u32("code_length")?;
-                    funcs_raw.push((
+                    funcs_raw.push(RawFuncRecord {
                         name_idx,
                         param_count,
                         local_count,
                         max_stack,
-                        has_ret,
+                        has_return: has_ret,
                         eff_indices,
                         code_offset,
                         code_length,
-                    ));
+                    });
                 }
             }
             section_tags::CODE => {
@@ -454,7 +464,7 @@ pub fn decode_mbc(bytes: &[u8]) -> Result<MbcModule, MvmError> {
     }
 
     let mut functions = Vec::with_capacity(funcs_raw.len());
-    for (
+    for RawFuncRecord {
         name_idx,
         param_count,
         local_count,
@@ -463,7 +473,7 @@ pub fn decode_mbc(bytes: &[u8]) -> Result<MbcModule, MvmError> {
         eff_indices,
         code_offset,
         code_length,
-    ) in funcs_raw
+    } in funcs_raw
     {
         let name = get_str(name_idx)?;
         let mut effects = Vec::with_capacity(eff_indices.len());

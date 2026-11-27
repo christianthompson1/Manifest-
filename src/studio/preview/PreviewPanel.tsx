@@ -36,6 +36,133 @@ import { runManifestPipeline, decodeMbcFileContent } from '../compiler-service.t
 import { executeMbcInRustVm } from '../../../manifest-core/src/index.ts';
 import { AnchorGenerator } from '../../../manifest-core/src/solana/anchor-generator.ts';
 import { SolanaSimulator } from '../../../manifest-core/src/solana/solana-simulator.ts';
+import { escapeHtml, escapeInlineJsForScriptTag } from '../utils/security-sanitize.ts';
+
+export function generatePreviewErrorHtml(diagnostics: any[] = [], fallbackError?: string): string {
+  const errorItems = diagnostics
+    .map(
+      (d) => `
+      <div style="background:#261619;border-left:4px solid #ef4444;padding:12px;margin-bottom:8px;border-radius:4px;">
+        <div style="color:#f87171;font-weight:600;font-size:13px;">Line ${escapeHtml(d?.line ?? 1)}, Column ${escapeHtml(d?.column ?? 1)}: ${escapeHtml(d?.message)}</div>
+        ${d?.hint ? `<div style="color:#9ca3af;font-size:11px;margin-top:4px;">💡 Hint: ${escapeHtml(d.hint)}</div>` : ''}
+        ${d?.example ? `<div style="color:#60a5fa;font-size:11px;margin-top:4px;font-family:monospace;">Example: ${escapeHtml(d.example)}</div>` : ''}
+      </div>`
+    )
+    .join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Preview Diagnostics</title>
+  <style>
+    body { background: #181818; color: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 24px; margin: 0; }
+    h2 { color: #f87171; font-size: 15px; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <h2>Build / Execution Issues</h2>
+  ${errorItems || `<div style="color:#f87171;padding:12px;background:#261619;border-radius:4px;">${escapeHtml(fallbackError || 'Execution failed.')}</div>`}
+</body>
+</html>`;
+}
+
+export function generatePreviewDocument(
+  buildResult?: BuildResult | null,
+  executionResult?: UnifiedExecutionResult | null
+): string {
+  if (executionResult) {
+    if (executionResult.previewHtml) {
+      return executionResult.previewHtml;
+    }
+    if (!executionResult.success) {
+      return generatePreviewErrorHtml(executionResult.diagnostics, executionResult.error);
+    }
+  }
+
+  if (!buildResult) {
+    return '';
+  }
+
+  if (!buildResult.success) {
+    return generatePreviewErrorHtml(buildResult.diagnostics);
+  }
+
+  if (!buildResult.outputCode) {
+    return '';
+  }
+
+  const appName = buildResult.ir?.appName || 'Manifest Application';
+  const compiledJs = escapeInlineJsForScriptTag(buildResult.outputCode);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(appName)}</title>
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: #1f1f1f;
+      color: #cccccc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      min-height: 100vh;
+      width: 100%;
+      overflow-x: hidden;
+    }
+    #manifest-root {
+      width: 100%;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+  </style>
+</head>
+<body>
+  <div id="manifest-root"></div>
+
+  <script type="module">
+    ${compiledJs}
+
+    try {
+      const root = document.getElementById('manifest-root');
+      const runModule = typeof __runManifestModule === 'function' ? __runManifestModule : null;
+      if (runModule) {
+        const execResult = runModule({
+          root,
+          onOutput: (msg) => {
+            try {
+              window.parent.postMessage({ type: 'manifest-output', payload: String(msg) }, '*');
+            } catch (_) {}
+          },
+          onState: (st) => {
+            try {
+              window.parent.postMessage({ type: 'manifest-state', payload: { ...st } }, '*');
+            } catch (_) {}
+          }
+        });
+        if (execResult && typeof execResult.returnValue !== 'undefined' && root && !root.innerHTML.trim()) {
+          const pre = document.createElement('pre');
+          pre.style.cssText = 'padding:16px;font-family:monospace;font-size:13px;color:#cccccc;white-space:pre-wrap;';
+          pre.textContent = [...(execResult.stdout || []), 'Return: ' + String(execResult.returnValue)].join('\n');
+          root.appendChild(pre);
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      try {
+        window.parent.postMessage({ type: 'manifest-output', payload: 'Runtime Error: ' + (err.message || String(err)) }, '*');
+      } catch (_) {}
+    }
+  </script>
+</body>
+</html>`;
+}
 
 export interface PreviewPanelProps {
   buildResult?: BuildResult | null;
@@ -287,124 +414,9 @@ export const PreviewPanel: React.FC<PreviewPanelProps> = ({
     onClearConsole?.();
   };
 
-  const generateErrorHtml = (diagnostics: any[] = [], fallbackError?: string) => {
-    const errorItems = diagnostics
-      .map(
-        (d) => `
-      <div style="background:#261619;border-left:4px solid #ef4444;padding:12px;margin-bottom:8px;border-radius:4px;">
-        <div style="color:#f87171;font-weight:600;font-size:13px;">Line ${d.line || 1}, Column ${d.column || 1}: ${d.message}</div>
-        ${d.hint ? `<div style="color:#9ca3af;font-size:11px;margin-top:4px;">💡 Hint: ${d.hint}</div>` : ''}
-        ${d.example ? `<div style="color:#60a5fa;font-size:11px;margin-top:4px;font-family:monospace;">Example: ${d.example}</div>` : ''}
-      </div>`
-      )
-      .join('');
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Preview Diagnostics</title>
-  <style>
-    body { background: #181818; color: #e5e7eb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 24px; margin: 0; }
-    h2 { color: #f87171; font-size: 15px; margin-top: 0; }
-  </style>
-</head>
-<body>
-  <h2>Build / Execution Issues</h2>
-  ${errorItems || `<div style="color:#f87171;padding:12px;background:#261619;border-radius:4px;">${fallbackError || 'Execution failed.'}</div>`}
-</body>
-</html>`;
-  };
-
   // Generate self-contained HTML for FULL APPLICATION preview
   const generatePreviewSrcDoc = () => {
-    // 1. Unified execution result has precedence
-    if (executionResult) {
-      if (executionResult.previewHtml) {
-        return executionResult.previewHtml;
-      }
-      if (!executionResult.success) {
-        return generateErrorHtml(executionResult.diagnostics, executionResult.error);
-      }
-    }
-
-    // 2. BuildResult fallback
-    if (!buildResult) {
-      return '';
-    }
-
-    if (!buildResult.success) {
-      return generateErrorHtml(buildResult.diagnostics);
-    }
-
-    if (!buildResult.outputCode) {
-      return '';
-    }
-
-    const appName = buildResult.ir?.appName || 'Manifest Application';
-    const compiledJs = buildResult.outputCode;
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${appName}</title>
-  <style>
-    *, *::before, *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-    body {
-      background-color: #1f1f1f;
-      color: #cccccc;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      min-height: 100vh;
-      width: 100%;
-      overflow-x: hidden;
-    }
-    #manifest-root {
-      width: 100%;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-    }
-  </style>
-</head>
-<body>
-  <!-- Real Manifest Full Application Canvas (Mounted by Manifest Runtime) -->
-  <div id="manifest-root"></div>
-
-  <script type="module">
-    // Injected JavaScript Target Output
-    ${compiledJs}
-
-    try {
-      const root = document.getElementById('manifest-root');
-      if (typeof startApp === 'function') {
-        const appInstance = startApp(root, {
-          onOutput: (msg) => {
-            try {
-              window.parent.postMessage({ type: 'manifest-output', payload: String(msg) }, '*');
-            } catch (_) {}
-          },
-          onState: (st) => {
-            try {
-              window.parent.postMessage({ type: 'manifest-state', payload: { ...st } }, '*');
-            } catch (_) {}
-          }
-        });
-      }
-    } catch (err) {
-      console.error(err);
-      try {
-        window.parent.postMessage({ type: 'manifest-output', payload: 'Runtime Error: ' + (err.message || String(err)) }, '*');
-      } catch (_) {}
-    }
-  </script>
-</body>
-</html>`;
+    return generatePreviewDocument(buildResult, executionResult);
   };
 
   // Generate Rust Anchor code preview for Solana projects or tabs

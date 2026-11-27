@@ -1,4 +1,6 @@
 import { MIRExpr, MIRFunction, MIRModule, MIRStmt } from '../ir/typed-ir.ts';
+import { sha256Utf8Hex } from '../stdlib/sha256.ts';
+import { checkedF64ToI64 } from '../stdlib/num-conv.ts';
 
 export type SemValue =
   | { kind: 'void' }
@@ -44,7 +46,7 @@ type FlowSignal =
   | { kind: 'continue' }
   | { kind: 'return'; value: SemValue };
 
-export function formatSemValue(v: SemValue): string {
+export function formatSemValue(v: SemValue, active: Set<object> = new Set()): string {
   switch (v.kind) {
     case 'void':
       return 'void';
@@ -56,37 +58,134 @@ export function formatSemValue(v: SemValue): string {
       return v.value ? 'true' : 'false';
     case 'str':
       return v.value;
-    case 'array':
-      return `[${v.items.map(formatSemValue).join(', ')}]`;
-    case 'map': {
-      const sorted = Array.from(v.entries.entries()).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-      return `{${sorted.map(([k, val]) => `${k}: ${formatSemValue(val)}`).join(', ')}}`;
+    case 'array': {
+      if (active.has(v)) return '<Cycle>';
+      active.add(v);
+      const formatted = `[${v.items.map((it) => formatSemValue(it, active)).join(', ')}]`;
+      active.delete(v);
+      return formatted;
     }
-    case 'struct':
-      return `${v.structName} { ${v.fields.map(formatSemValue).join(', ')} }`;
-    case 'enum':
-      return v.payload.length === 0
-        ? `${v.enumName}::${v.variantName}`
-        : `${v.enumName}::${v.variantName}(${v.payload.map(formatSemValue).join(', ')})`;
+    case 'map': {
+      if (active.has(v)) return '<Cycle>';
+      active.add(v);
+      const sorted = Array.from(v.entries.entries()).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+      const formatted = `{${sorted.map(([k, val]) => `${k}: ${formatSemValue(val, active)}`).join(', ')}}`;
+      active.delete(v);
+      return formatted;
+    }
+    case 'struct': {
+      if (active.has(v)) return '<Cycle>';
+      active.add(v);
+      const formatted = `${v.structName} { ${v.fields.map((f) => formatSemValue(f, active)).join(', ')} }`;
+      active.delete(v);
+      return formatted;
+    }
+    case 'enum': {
+      if (active.has(v)) return '<Cycle>';
+      active.add(v);
+      const formatted =
+        v.payload.length === 0
+          ? `${v.enumName}::${v.variantName}`
+          : `${v.enumName}::${v.variantName}(${v.payload.map((p) => formatSemValue(p, active)).join(', ')})`;
+      active.delete(v);
+      return formatted;
+    }
   }
 }
 
 function valuesEqual(a: SemValue, b: SemValue): boolean {
-  if (a.kind !== b.kind) return false;
-  switch (a.kind) {
-    case 'void':
-      return true;
-    case 'i64':
-      return a.value === (b as typeof a).value;
-    case 'f64':
-      return a.value === (b as typeof a).value;
-    case 'bool':
-      return a.value === (b as typeof a).value;
-    case 'str':
-      return a.value === (b as typeof a).value;
-    default:
-      return a === b;
+  const worklist: Array<{ left: SemValue; right: SemValue }> = [{ left: a, right: b }];
+  const objIds = new WeakMap<object, number>();
+  let nextObjId = 1;
+  const getId = (obj: object): number => {
+    let id = objIds.get(obj);
+    if (!id) {
+      id = nextObjId++;
+      objIds.set(obj, id);
+    }
+    return id;
+  };
+  const visitedPairs = new Set<string>();
+
+  while (worklist.length > 0) {
+    const { left, right } = worklist.pop()!;
+    if (left.kind !== right.kind) return false;
+
+    switch (left.kind) {
+      case 'void':
+        break;
+      case 'i64':
+        if (left.value !== (right as typeof left).value) return false;
+        break;
+      case 'f64':
+        if (left.value !== (right as typeof left).value) return false;
+        break;
+      case 'bool':
+        if (left.value !== (right as typeof left).value) return false;
+        break;
+      case 'str':
+        if (left.value !== (right as typeof left).value) return false;
+        break;
+      case 'array': {
+        const rb = right as typeof left;
+        if (left === rb) break;
+        const pairKey = `${getId(left)}:${getId(rb)}`;
+        if (visitedPairs.has(pairKey)) break;
+        visitedPairs.add(pairKey);
+        if (left.items.length !== rb.items.length) return false;
+        for (let i = 0; i < left.items.length; i++) {
+          worklist.push({ left: left.items[i], right: rb.items[i] });
+        }
+        break;
+      }
+      case 'map': {
+        const rb = right as typeof left;
+        if (left === rb) break;
+        const pairKey = `${getId(left)}:${getId(rb)}`;
+        if (visitedPairs.has(pairKey)) break;
+        visitedPairs.add(pairKey);
+        if (left.entries.size !== rb.entries.size) return false;
+        for (const [k, valA] of left.entries.entries()) {
+          if (!rb.entries.has(k)) return false;
+          worklist.push({ left: valA, right: rb.entries.get(k)! });
+        }
+        break;
+      }
+      case 'struct': {
+        const rb = right as typeof left;
+        if (left === rb) break;
+        const pairKey = `${getId(left)}:${getId(rb)}`;
+        if (visitedPairs.has(pairKey)) break;
+        visitedPairs.add(pairKey);
+        if (left.structName !== rb.structName || left.fields.length !== rb.fields.length) {
+          return false;
+        }
+        for (let i = 0; i < left.fields.length; i++) {
+          worklist.push({ left: left.fields[i], right: rb.fields[i] });
+        }
+        break;
+      }
+      case 'enum': {
+        const rb = right as typeof left;
+        if (left === rb) break;
+        const pairKey = `${getId(left)}:${getId(rb)}`;
+        if (visitedPairs.has(pairKey)) break;
+        visitedPairs.add(pairKey);
+        if (
+          left.enumName !== rb.enumName ||
+          left.variantTag !== rb.variantTag ||
+          left.payload.length !== rb.payload.length
+        ) {
+          return false;
+        }
+        for (let i = 0; i < left.payload.length; i++) {
+          worklist.push({ left: left.payload[i], right: rb.payload[i] });
+        }
+        break;
+      }
+    }
   }
+  return true;
 }
 
 function checkI64(n: bigint, op: string): bigint {
@@ -117,6 +216,7 @@ export function evaluateMIRModule(
   }
 
   const globals: SemValue[] = mir.globals.map(() => V_VOID);
+  const globalInitialized: boolean[] = mir.globals.map(() => false);
 
   const checkCapability = (cap: string, sym: string): void => {
     if (cap === 'pure') return;
@@ -168,6 +268,7 @@ export function evaluateMIRModule(
           break;
         case 'StoreGlobal':
           globals[stmt.slot] = evalExpr(stmt.value, locals, depth);
+          globalInitialized[stmt.slot] = true;
           break;
         case 'ArraySet': {
           const arr = evalExpr(stmt.array, locals, depth);
@@ -283,6 +384,9 @@ export function evaluateMIRModule(
       case 'LoadLocal':
         return locals[expr.slot] || V_VOID;
       case 'LoadGlobal':
+        if (!globalInitialized[expr.slot]) {
+          throw new EvalAbort(`Read of uninitialized module variable '${expr.name}'`);
+        }
         return globals[expr.slot] || V_VOID;
       case 'Unary': {
         const v = evalExpr(expr.operand, locals, depth);
@@ -299,7 +403,11 @@ export function evaluateMIRModule(
           return { kind: 'f64', value: Number(v.value) };
         }
         if (expr.castKind === 'f64_to_i64' && v.kind === 'f64') {
-          return { kind: 'i64', value: BigInt(Math.trunc(v.value)) };
+          try {
+            return { kind: 'i64', value: checkedF64ToI64(v.value) };
+          } catch (err: any) {
+            throw new EvalAbort(err?.message || `Numeric conversion trap (${v.value})`);
+          }
         }
         return { kind: 'str', value: formatSemValue(v) };
       }
@@ -530,7 +638,7 @@ function evalIntrinsic(
 ): SemValue {
   switch (symbol) {
     case 'console.print':
-      stdout.push(args.map(formatSemValue).join(' '));
+      stdout.push(args.map((arg) => formatSemValue(arg)).join(' '));
       return V_VOID;
     case 'std::math::abs':
       if (args[0]?.kind === 'i64') {
@@ -581,78 +689,15 @@ function evalIntrinsic(
       vfs[p] = content;
       return { kind: 'bool', value: true };
     }
-    case 'crypto.hash': {
-      // Pure JS SHA-256 matching FIPS 180-4 / Rust MVM
-      const text = args[0] ? formatSemValue(args[0]) : '';
-      return { kind: 'str', value: sha256HexSync(text) };
+    case 'crypto.hash':
+    case 'std::crypto::sha256':
+    case 'std::crypto::hash': {
+      if (args.length !== 1 || args[0]?.kind !== 'str') {
+        throw new EvalAbort(`${symbol} expects a single str argument`);
+      }
+      return { kind: 'str', value: sha256Utf8Hex(args[0].value) };
     }
     default:
       return { kind: 'str', value: '' };
   }
-}
-
-function sha256HexSync(asciiOrUtf8: string): string {
-  const bytes = new TextEncoder().encode(asciiOrUtf8);
-  const K = new Uint32Array([
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-  ]);
-  const H = new Uint32Array([
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-  ]);
-  const bitLen = bytes.length * 8;
-  const padLen = ((bytes.length + 9 + 63) & ~63);
-  const msg = new Uint8Array(padLen);
-  msg.set(bytes);
-  msg[bytes.length] = 0x80;
-  const dv = new DataView(msg.buffer);
-  dv.setUint32(padLen - 8, Math.floor(bitLen / 0x100000000), false);
-  dv.setUint32(padLen - 4, bitLen >>> 0, false);
-
-  const W = new Uint32Array(64);
-  const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
-
-  for (let off = 0; off < padLen; off += 64) {
-    for (let i = 0; i < 16; i++) W[i] = dv.getUint32(off + i * 4, false);
-    for (let i = 16; i < 64; i++) {
-      const s0 = rotr(W[i - 15], 7) ^ rotr(W[i - 15], 18) ^ (W[i - 15] >>> 3);
-      const s1 = rotr(W[i - 2], 17) ^ rotr(W[i - 2], 19) ^ (W[i - 2] >>> 10);
-      W[i] = (W[i - 16] + s0 + W[i - 7] + s1) >>> 0;
-    }
-    let [a, b, c, d, e, f, g, h] = H;
-    for (let i = 0; i < 64; i++) {
-      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
-      const ch = (e & f) ^ (~e & g);
-      const temp1 = (h + S1 + ch + K[i] + W[i]) >>> 0;
-      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
-      const maj = (a & b) ^ (a & c) ^ (b & c);
-      const temp2 = (S0 + maj) >>> 0;
-      h = g;
-      g = f;
-      f = e;
-      e = (d + temp1) >>> 0;
-      d = c;
-      c = b;
-      b = a;
-      a = (temp1 + temp2) >>> 0;
-    }
-    H[0] = (H[0] + a) >>> 0;
-    H[1] = (H[1] + b) >>> 0;
-    H[2] = (H[2] + c) >>> 0;
-    H[3] = (H[3] + d) >>> 0;
-    H[4] = (H[4] + e) >>> 0;
-    H[5] = (H[5] + f) >>> 0;
-    H[6] = (H[6] + g) >>> 0;
-    H[7] = (H[7] + h) >>> 0;
-  }
-  return Array.from(H)
-    .map((x) => x.toString(16).padStart(8, '0'))
-    .join('');
 }

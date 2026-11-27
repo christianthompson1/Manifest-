@@ -2,7 +2,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { SyntaxProfile } from './core/profile.ts';
-import { disassembleMbcBytes, verifyMbcBytes } from './bytecode/mbc-reader.ts';
+import { migrateV0ToV1 } from './migration/v0-to-v1-migrator.ts';
 import {
   checkManifestSource,
   compileManifestV1,
@@ -89,6 +89,7 @@ Usage:
   manifest bytecode <file.manifest> [--out <file.mbc>]
   manifest disassemble <file.manifest|file.mbc>
   manifest verify <file.mbc>
+  manifest migrate <file.manifest> [--profile beginner|professional] [--out <file.manifest>]
   manifest targets
   manifest package init [name]
   manifest package list
@@ -113,6 +114,7 @@ async function main(): Promise<void> {
     'bytecode',
     'disassemble',
     'verify',
+    'migrate',
     'targets',
     'package',
     'add',
@@ -249,13 +251,27 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  if (command === 'migrate') {
+    const source = fs.readFileSync(file, 'utf-8');
+    const targetProf = flags.profile === 'professional' ? 'professional' : 'beginner';
+    const res = migrateV0ToV1(source, { targetProfile: targetProf });
+    if (flags.out) {
+      fs.writeFileSync(flags.out, res.migratedSource, 'utf-8');
+      console.log(`Migrated '${file}' -> '${flags.out}' (${res.changes.length} change(s), target hint: ${res.targetHint})`);
+    } else {
+      process.stdout.write(res.migratedSource);
+    }
+    for (const w of res.warnings) {
+      console.error(`[MIGRATE WARNING] ${w}`);
+    }
+    return;
+  }
+
   if (command === 'verify') {
     const bytes = new Uint8Array(fs.readFileSync(file));
-    const tsRes = verifyMbcBytes(bytes);
     const rustRes = await verifyMbcInRustVm(bytes);
-    if (!tsRes.valid || !rustRes.ok) {
+    if (!rustRes.ok) {
       console.error(`Verification FAILED for '${file}':`);
-      for (const e of tsRes.errors) console.error(`  - ${e}`);
       if (rustRes.error) console.error(`  - [Rust MVM] ${rustRes.error}`);
       process.exit(1);
     }
@@ -269,7 +285,11 @@ async function main(): Promise<void> {
     if (file.endsWith('.mbc')) {
       const bytes = new Uint8Array(fs.readFileSync(file));
       const rustDis = await disassembleMbcInRustVm(bytes);
-      console.log(rustDis.ok && rustDis.disassembly ? rustDis.disassembly : disassembleMbcBytes(bytes));
+      if (!rustDis.ok || !rustDis.disassembly) {
+        console.error(`Disassembly FAILED for '${file}': ${rustDis.error || 'Unknown error'}`);
+        process.exit(1);
+      }
+      console.log(rustDis.disassembly);
       return;
     }
     const source = fs.readFileSync(file, 'utf-8');
@@ -289,7 +309,7 @@ async function main(): Promise<void> {
 
   if (command === 'check') {
     const source = fs.readFileSync(file, 'utf-8');
-    const res = checkManifestSource(source, {
+    const res = await checkManifestSource(source, {
       profile: flags.profile,
       entryFile: path.basename(file),
       files: loadWorkspaceFiles(file),
@@ -306,7 +326,7 @@ async function main(): Promise<void> {
 
   if (command === 'ir') {
     const source = fs.readFileSync(file, 'utf-8');
-    const res = checkManifestSource(source, {
+    const res = await checkManifestSource(source, {
       profile: flags.profile,
       entryFile: path.basename(file),
       files: loadWorkspaceFiles(file),
@@ -456,20 +476,6 @@ async function main(): Promise<void> {
     }
 
     // Default: run on Rust Manifest Virtual Machine (`mvm`)
-    // Check if legacy UI/Solana file first
-    const check = checkManifestSource(source, {
-      profile: flags.profile,
-      entryFile: path.basename(file),
-      files: loadWorkspaceFiles(file),
-    });
-    if (check.isDomainExtension) {
-      // Fallback to legacy AST Runtime for declarative APP/CONTRACT scripts
-      const { executeManifest } = await import('./index.ts');
-      const legacyRes = await executeManifest(source);
-      for (const l of legacyRes.output) console.log(l);
-      return;
-    }
-
     const runRes = await runManifestOnRustMvm(source, {
       profile: flags.profile,
       entryFile: path.basename(file),

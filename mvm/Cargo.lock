@@ -3,9 +3,17 @@
 version = 4
 
 [[package]]
+name = "manifest-compiler"
+version = "1.0.0"
+dependencies = [
+ "mvm-core",
+]
+
+[[package]]
 name = "mvm-cli"
 version = "1.0.0"
 dependencies = [
+ "manifest-compiler",
  "mvm-core",
 ]
 
@@ -17,5 +25,6 @@ version = "1.0.0"
 name = "mvm-wasm"
 version = "1.0.0"
 dependencies = [
+ "manifest-compiler",
  "mvm-core",
 ]

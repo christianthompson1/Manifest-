@@ -33,9 +33,17 @@ import { exportProjectToZip, importProjectFromZip } from '../../src/studio/servi
 import { collectManifestEditorDiagnostics } from '../../src/studio/editor/manifest-linter.ts';
 import { ManifestProject } from '../../src/studio/types.ts';
 import { EditorState } from '@codemirror/state';
+import {
+  VerificationEntry,
+  computeAggregateCounts,
+  reconcileCountsValid,
+} from '../src/verification/result-model.ts';
 
 let passed = 0;
 let failed = 0;
+let skipped = 0;
+let unsupported = 0;
+let notRun = 0;
 
 function assert(condition: boolean, label: string): void {
   if (condition) {
@@ -45,6 +53,236 @@ function assert(condition: boolean, label: string): void {
     console.error(`  ✗ FAIL: ${label}`);
     failed++;
   }
+}
+
+function recordSkipped(label: string, reason: string): void {
+  console.log(`  ⊘ SKIPPED: ${label} (${reason})`);
+  skipped++;
+}
+
+export async function runBackendConformanceCheck(options?: {
+  mvmBinExists?: boolean;
+  hasCargo?: boolean;
+  hasRustc?: boolean;
+}): Promise<VerificationEntry[]> {
+  const conformanceProg = `
+module six_way_conformance;
+requires [console];
+denies [net];
+
+export fn collatz_steps(start: i64) -> i64 {
+    let mut n: i64 = start;
+    let mut steps: i64 = 0;
+    while n > 1 {
+        if (n % 2) == 0 {
+            n = n / 2;
+        } else {
+            n = 3 * n + 1;
+        }
+        steps = steps + 1;
+    }
+    return steps;
+}
+
+export fn main() -> i64 effects(console) {
+    let res: i64 = collatz_steps(27);
+    console.print(res);
+    return res;
+}
+`;
+
+  const entries: VerificationEntry[] = [];
+
+  // (A) TypeScript MIR Reference Evaluator
+  const confCheck = await checkManifestSource(conformanceProg);
+  const refEval = evaluateMIRModule(confCheck.mir!, { grantedCapabilities: ['console'] });
+  entries.push({
+    id: 'ts-mir',
+    name: 'TS-MIR Reference Evaluator',
+    backend: 'ts-mir',
+    compilation: confCheck.ok ? 'compiled' : 'failed',
+    execution: 'executed',
+    status: String(refEval.returnValue) === '111' ? 'passed' : 'failed',
+    output: String(refEval.returnValue),
+    error: String(refEval.returnValue) === '111' ? undefined : `Expected 111, got ${refEval.returnValue}`,
+  });
+
+  // (B) Rust MVM via WebAssembly (mvm_wasm.wasm)
+  const wasmMvmRun = await runManifestOnRustMvm(conformanceProg);
+  entries.push({
+    id: 'rust-mvm-wasm',
+    name: 'Rust MVM WASM',
+    backend: 'rust-mvm-wasm',
+    compilation: wasmMvmRun.build.success ? 'compiled' : 'failed',
+    execution: 'executed',
+    status: wasmMvmRun.ok && wasmMvmRun.returnValue === '111' ? 'passed' : 'failed',
+    output: wasmMvmRun.returnValue,
+    error: wasmMvmRun.ok ? undefined : wasmMvmRun.error,
+  });
+
+  // (C) Native Rust MVM CLI (/mvm/target/release/mvm)
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-v1-test-'));
+  try {
+    const mbcFile = path.join(tmpDir, 'conformance.mbc');
+    fs.writeFileSync(mbcFile, wasmMvmRun.build.mbcBytes!);
+    const mvmBinPath = path.resolve('mvm/target/release/mvm');
+    let hasCargo = options?.hasCargo;
+    if (hasCargo === undefined) {
+      hasCargo = false;
+      try {
+        const cargoCmd = fs.existsSync('/usr/local/bin/cargo') ? '/usr/local/bin/cargo' : 'cargo';
+        execFileSync(cargoCmd, ['--version'], { stdio: 'ignore' });
+        hasCargo = true;
+      } catch {}
+    }
+
+    const binExists = options?.mvmBinExists ?? fs.existsSync(mvmBinPath);
+    if (!binExists && hasCargo) {
+      const cargoCmd = fs.existsSync('/usr/local/bin/cargo') ? '/usr/local/bin/cargo' : 'cargo';
+      execFileSync(cargoCmd, ['build', '--release', '--manifest-path', 'mvm/Cargo.toml'], { stdio: 'pipe' });
+    }
+
+    const canRunNativeMvm = options?.mvmBinExists ?? fs.existsSync(mvmBinPath);
+    if (canRunNativeMvm) {
+      const nativeMvmStdout = execFileSync(
+        mvmBinPath,
+        ['run', mbcFile, '--allow', 'console'],
+        { encoding: 'utf-8' }
+      );
+      const nativeMvmMatch = nativeMvmStdout.match(/=>\s*([^\r\n]+)/);
+      const nativeMvmRet = nativeMvmMatch ? nativeMvmMatch[1].trim() : '';
+      entries.push({
+        id: 'native-mvm-cli',
+        name: 'Native MVM CLI',
+        backend: 'native-mvm-cli',
+        compilation: 'compiled',
+        execution: 'executed',
+        status: nativeMvmRet === '111' ? 'passed' : 'failed',
+        output: nativeMvmRet,
+        error: nativeMvmRet === '111' ? undefined : `Expected 111, got ${nativeMvmRet}`,
+      });
+    } else {
+      entries.push({
+        id: 'native-mvm-cli',
+        name: 'Native MVM CLI',
+        backend: 'native-mvm-cli',
+        compilation: 'not-attempted',
+        execution: 'not-run',
+        status: 'skipped',
+        reason: 'Native mvm CLI binary (mvm/target/release/mvm) and cargo are unavailable in host container',
+      });
+    }
+
+    // (D) Direct Standalone WebAssembly (.wasm) Target
+    const directWasmBuild = await compileManifestV1(conformanceProg, { target: 'wasm' });
+    const wasmValid =
+      directWasmBuild.success &&
+      Boolean(directWasmBuild.wasmBytes) &&
+      WebAssembly.validate(directWasmBuild.wasmBytes! as BufferSource);
+    let directWasmRet = '';
+    if (wasmValid) {
+      const wasmLogs: string[] = [];
+      const wasmInst = await WebAssembly.instantiate(directWasmBuild.wasmBytes! as BufferSource, {
+        env: {
+          print_i32: (v: number) => wasmLogs.push(String(v)),
+          print_f64: (v: number) => wasmLogs.push(String(v)),
+          print_i64: (v: bigint) => wasmLogs.push(String(v)),
+        },
+      });
+      directWasmRet = String(((wasmInst.instance.exports as any).main as () => bigint)());
+    }
+    entries.push({
+      id: 'direct-wasm',
+      name: 'Direct Standalone WebAssembly',
+      backend: 'direct-wasm',
+      compilation: wasmValid ? 'compiled' : 'failed',
+      execution: wasmValid ? 'executed' : 'not-run',
+      status: wasmValid && directWasmRet === '111' ? 'passed' : 'failed',
+      output: directWasmRet,
+      error: wasmValid && directWasmRet === '111' ? undefined : `Direct WASM invalid or returned ${directWasmRet}`,
+    });
+
+    // (E) Capability-Restricted JavaScript / Web Target
+    const webJsBuild = await compileManifestV1(conformanceProg, { target: 'web-js' });
+    let webJsRet = '';
+    let fetchBlocked = false;
+    const hasNetGuard = Boolean(
+      webJsBuild.success && webJsBuild.jsCode?.includes("CapabilityDenied: 'net' capability is not granted")
+    );
+    if (webJsBuild.success && webJsBuild.jsCode) {
+      const strippedJs = webJsBuild.jsCode.replace(/^export\s+function\s+/gm, 'function ');
+      const webJsRun = new Function(strippedJs + '\nreturn __runManifestModule();')() as {
+        returnValue: string;
+        stdout: string[];
+      };
+      webJsRet = webJsRun.returnValue;
+      try {
+        new Function(strippedJs + '\nreturn fetch("https://example.com");')();
+      } catch (e: any) {
+        fetchBlocked = String(e?.message || e).includes('CapabilityDenied');
+      }
+    }
+    entries.push({
+      id: 'web-js',
+      name: 'Capability-Restricted Web/JS',
+      backend: 'web-js',
+      compilation: webJsBuild.success ? 'compiled' : 'failed',
+      execution: webJsBuild.success ? 'executed' : 'not-run',
+      status: webJsBuild.success && hasNetGuard && fetchBlocked && webJsRet === '111' ? 'passed' : 'failed',
+      output: webJsRet,
+      error:
+        webJsBuild.success && hasNetGuard && fetchBlocked && webJsRet === '111'
+          ? undefined
+          : 'Web-JS guard or return value check failed',
+    });
+
+    // (F) Native Executable Backend via host rustc
+    const nativeRsPath = path.join(tmpDir, 'conformance_native.rs');
+    const nativeBinPath = path.join(tmpDir, 'conformance_native');
+    const nativeRsSource = emitStandaloneRustSource(confCheck.mir!);
+    fs.writeFileSync(nativeRsPath, nativeRsSource, 'utf-8');
+
+    let hasRustc = options?.hasRustc;
+    if (hasRustc === undefined) {
+      hasRustc = false;
+      try {
+        const rustcCmd = fs.existsSync('/usr/local/bin/rustc') ? '/usr/local/bin/rustc' : 'rustc';
+        execFileSync(rustcCmd, ['--version'], { stdio: 'ignore' });
+        hasRustc = true;
+      } catch {}
+    }
+
+    if (hasRustc) {
+      const rustcCmd = fs.existsSync('/usr/local/bin/rustc') ? '/usr/local/bin/rustc' : 'rustc';
+      execFileSync(rustcCmd, ['-O', nativeRsPath, '-o', nativeBinPath], { stdio: 'pipe' });
+      const binCompiled = fs.existsSync(nativeBinPath);
+      const nativeStdout = binCompiled ? execFileSync(nativeBinPath, [], { encoding: 'utf-8' }).trim() : '';
+      entries.push({
+        id: 'native-rustc-elf',
+        name: 'Native Rustc ELF Executable',
+        backend: 'native-rustc-elf',
+        compilation: binCompiled ? 'compiled' : 'failed',
+        execution: binCompiled ? 'executed' : 'not-run',
+        status: binCompiled && nativeStdout.includes('111') ? 'passed' : 'failed',
+        output: nativeStdout.split('\n')[0] || '',
+        error: binCompiled && nativeStdout.includes('111') ? undefined : 'Native ELF compilation or output mismatch',
+      });
+    } else {
+      entries.push({
+        id: 'native-rustc-elf',
+        name: 'Native Rustc ELF Executable',
+        backend: 'native-rustc-elf',
+        compilation: nativeRsSource.length > 50 ? 'generated-source-only' : 'failed',
+        execution: 'not-run',
+        status: 'skipped',
+        reason: 'Host rustc toolchain unavailable; emitted Rust source only without native binary compilation or execution',
+      });
+    }
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  return entries;
 }
 
 async function runSuite() {
@@ -163,7 +401,7 @@ fn main() -> i64 {
     `2.1 Multi-file import with alias + exported const executes on Rust MVM (250 == ${modRun.returnValue})`
   );
 
-  const privCheck = checkManifestSource(
+  const privCheck = await checkManifestSource(
     `module bad_imp;\nimport { secret_internal } from "./lib_rates";\nfn main() -> i64 { return secret_internal(); }`,
     { entryFile: 'src/main.manifest', files: multiFiles }
   );
@@ -176,7 +414,7 @@ fn main() -> i64 {
     'src/a.manifest': `module a;\nimport { fb } from "./b";\nexport fn fa() -> i64 { return fb(); }`,
     'src/b.manifest': `module b;\nimport { fa } from "./a";\nexport fn fb() -> i64 { return fa(); }`,
   };
-  const cycleCheck = checkManifestSource(cycleFiles['src/a.manifest'], {
+  const cycleCheck = await checkManifestSource(cycleFiles['src/a.manifest'], {
     entryFile: 'src/a.manifest',
     files: cycleFiles,
   });
@@ -243,19 +481,19 @@ fn main() -> i64 {
     `3.1 Generics + Struct + Result<T,E> '?' propagation + Match runs on Rust MVM (17 == ${richRun.returnValue})`
   );
 
-  const badAdd = checkManifestSource(`module t1;\nfn main() -> i64 { return 10 + "hello"; }`);
+  const badAdd = await checkManifestSource(`module t1;\nfn main() -> i64 { return 10 + "hello"; }`);
   assert(!badAdd.ok, '3.2 Rejects mismatched binary arithmetic (i64 + str)');
 
-  const badImmut = checkManifestSource(`module t2;\nfn main() -> i64 { let x: i64 = 1; x = 2; return x; }`);
+  const badImmut = await checkManifestSource(`module t2;\nfn main() -> i64 { let x: i64 = 1; x = 2; return x; }`);
   assert(!badImmut.ok, '3.3 Rejects assignment to immutable let binding');
 
-  const badConst = checkManifestSource(`module t3;\nconst MAX: i64 = 5;\nfn main() -> i64 { MAX = 6; return MAX; }`);
+  const badConst = await checkManifestSource(`module t3;\nconst MAX: i64 = 5;\nfn main() -> i64 { MAX = 6; return MAX; }`);
   assert(!badConst.ok, '3.4 Rejects assignment to const declaration');
 
-  const badCond = checkManifestSource(`module t4;\nfn main() -> i64 { if 123 { return 1; } return 0; }`);
+  const badCond = await checkManifestSource(`module t4;\nfn main() -> i64 { if 123 { return 1; } return 0; }`);
   assert(!badCond.ok, '3.5 Rejects non-boolean condition (if 123)');
 
-  const nonExhaustive = checkManifestSource(`
+  const nonExhaustive = await checkManifestSource(`
 module t5;
 enum Color { Red, Green, Blue }
 fn main() -> i64 {
@@ -269,7 +507,7 @@ fn main() -> i64 {
 `);
   assert(!nonExhaustive.ok, '3.6 Rejects non-exhaustive enum match missing Color::Blue');
 
-  const breakOutside = checkManifestSource(`module t6;\nfn main() -> i64 { break; return 0; }`);
+  const breakOutside = await checkManifestSource(`module t6;\nfn main() -> i64 { break; return 0; }`);
   assert(!breakOutside.ok, '3.7 Rejects break statement outside loop');
 
   // ---------------------------------------------------------------------------
@@ -277,7 +515,7 @@ fn main() -> i64 {
   // ---------------------------------------------------------------------------
   console.log('\n--- 4. Capability & Transitive Effect Verifier ---');
 
-  const capConflict = checkManifestSource(`
+  const capConflict = await checkManifestSource(`
 module cap1;
 requires [net];
 denies [net];
@@ -285,7 +523,7 @@ fn main() -> i64 { return 0; }
 `);
   assert(!capConflict.ok, '4.1 Rejects contradictory requires [net] + denies [net]');
 
-  const undeclaredFs = checkManifestSource(`
+  const undeclaredFs = await checkManifestSource(`
 module cap2;
 requires [console];
 fn main() -> i64 {
@@ -296,7 +534,7 @@ fn main() -> i64 {
 `);
   assert(!undeclaredFs.ok, '4.2 Rejects undeclared fs.read_text when module only requires [console]');
 
-  const deniedNet = checkManifestSource(`
+  const deniedNet = await checkManifestSource(`
 module cap3;
 denies [net];
 fn fetch_remote() -> str { return net.get("https://example.com"); }
@@ -304,7 +542,7 @@ fn main() -> i64 { let _x: str = fetch_remote(); return 0; }
 `);
   assert(!deniedNet.ok, '4.3 Rejects denied net capability');
 
-  const transitiveViolation = checkManifestSource(`
+  const transitiveViolation = await checkManifestSource(`
 module cap4;
 requires [console];
 fn leaf_io() { console.print("side effect"); }
@@ -325,7 +563,7 @@ fn main() -> i64 { return must_be_pure(); }
   // ---------------------------------------------------------------------------
   console.log('\n--- 5. Typed MIR Optimizer & Trap Preservation ---');
 
-  const optCheck = checkManifestSource(`
+  const optCheck = await checkManifestSource(`
 module opt_mod;
 fn compute(x: i64) -> i64 {
     let folded: i64 = (10 + 20) * 3;
@@ -463,10 +701,17 @@ fn main() -> i64 {
   );
 
   // ---------------------------------------------------------------------------
-  // 7. Cross-Target Conformance (TS MIR == Rust MVM WASM == Native MVM CLI ==
-  //    Direct .wasm == Sandboxed Web JS == Native rustc ELF Binary)
+  // 7. Cross-Target Conformance (Honest Execution & Skipped Native Backends)
   // ---------------------------------------------------------------------------
-  console.log('\n--- 7. Six-Way Cross-Target Conformance & Planned Target Guards ---');
+  console.log('\n--- 7. Cross-Target Conformance & Planned Target Guards ---');
+
+  const backendEntries = await runBackendConformanceCheck();
+  const tsMirEntry = backendEntries.find((e) => e.id === 'ts-mir')!;
+  const wasmMvmEntry = backendEntries.find((e) => e.id === 'rust-mvm-wasm')!;
+  const nativeMvmEntry = backendEntries.find((e) => e.id === 'native-mvm-cli')!;
+  const directWasmEntry = backendEntries.find((e) => e.id === 'direct-wasm')!;
+  const webJsEntry = backendEntries.find((e) => e.id === 'web-js')!;
+  const nativeElfEntry = backendEntries.find((e) => e.id === 'native-rustc-elf')!;
 
   const conformanceProg = `
 module six_way_conformance;
@@ -494,109 +739,64 @@ export fn main() -> i64 effects(console) {
 }
 `;
 
-  // (A) TypeScript MIR Reference Evaluator
-  const confCheck = checkManifestSource(conformanceProg);
-  const refEval = evaluateMIRModule(confCheck.mir!, { grantedCapabilities: ['console'] });
-
-  // (B) Rust MVM via WebAssembly (mvm_wasm.wasm)
-  const wasmMvmRun = await runManifestOnRustMvm(conformanceProg);
-
-  // (C) Native Rust MVM CLI (/mvm/target/release/mvm — auto-built on fresh clones)
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-v1-test-'));
-  const mbcFile = path.join(tmpDir, 'conformance.mbc');
-  fs.writeFileSync(mbcFile, wasmMvmRun.build.mbcBytes!);
-  const mvmBinPath = path.resolve('mvm/target/release/mvm');
-  let nativeMvmRet = wasmMvmRun.returnValue;
-  let hasCargo = false;
-  try {
-    const cargoCmd = fs.existsSync('/usr/local/bin/cargo') ? '/usr/local/bin/cargo' : 'cargo';
-    execFileSync(cargoCmd, ['--version'], { stdio: 'ignore' });
-    hasCargo = true;
-  } catch {}
-
-  if (!fs.existsSync(mvmBinPath) && hasCargo) {
-    const cargoCmd = fs.existsSync('/usr/local/bin/cargo') ? '/usr/local/bin/cargo' : 'cargo';
-    execFileSync(cargoCmd, ['build', '--release', '--manifest-path', 'mvm/Cargo.toml'], { stdio: 'pipe' });
-  }
-
-  if (fs.existsSync(mvmBinPath)) {
-    const nativeMvmStdout = execFileSync(
-      mvmBinPath,
-      ['run', mbcFile, '--allow', 'console'],
-      { encoding: 'utf-8' }
-    );
-    const nativeMvmMatch = nativeMvmStdout.match(/=>\s*([^\r\n]+)/);
-    nativeMvmRet = nativeMvmMatch ? nativeMvmMatch[1].trim() : '';
-  }
-
-  // (D) Direct Standalone WebAssembly (.wasm) Target
-  const directWasmBuild = await compileManifestV1(conformanceProg, { target: 'wasm' });
   assert(
-    directWasmBuild.success && Boolean(directWasmBuild.wasmBytes) && WebAssembly.validate(directWasmBuild.wasmBytes! as BufferSource),
+    directWasmEntry.compilation === 'compiled' && directWasmEntry.execution === 'executed',
     '7.1 Direct Manifest-to-WASM backend emits valid standalone W3C .wasm binary'
   );
-  const wasmLogs: string[] = [];
-  const wasmInst = await WebAssembly.instantiate(directWasmBuild.wasmBytes! as BufferSource, {
-    env: {
-      print_i32: (v: number) => wasmLogs.push(String(v)),
-      print_f64: (v: number) => wasmLogs.push(String(v)),
-      print_i64: (v: bigint) => wasmLogs.push(String(v)),
-    },
-  });
-  const directWasmRet = String(((wasmInst.instance.exports as any).main as () => bigint)());
-
-  // (E) Capability-Restricted JavaScript / Web Target
-  const webJsBuild = await compileManifestV1(conformanceProg, { target: 'web-js' });
   assert(
-    webJsBuild.success && Boolean(webJsBuild.jsCode?.includes("CapabilityDenied: 'net' capability is not granted")),
+    webJsEntry.compilation === 'compiled',
     '7.2 Web/JS backend injects network lockdown guard when net capability is not granted'
   );
-  const strippedJs = webJsBuild.jsCode!.replace(/^export\s+function\s+/gm, 'function ');
-  const webJsRun = new Function(strippedJs + '\nreturn __runManifestModule();')() as {
-    returnValue: string;
-    stdout: string[];
-  };
-  const webJsRet = webJsRun.returnValue;
-  let fetchBlocked = false;
-  try {
-    new Function(strippedJs + '\nreturn fetch("https://example.com");')();
-  } catch (e: any) {
-    fetchBlocked = String(e?.message || e).includes('CapabilityDenied');
-  }
-  assert(fetchBlocked, '7.3 Web/JS runtime guard actively blocks unauthorized fetch() calls inside module scope');
-
-  // (F) Native Executable Backend via host rustc
-  const nativeRsPath = path.join(tmpDir, 'conformance_native.rs');
-  const nativeBinPath = path.join(tmpDir, 'conformance_native');
-  const nativeRsSource = emitStandaloneRustSource(confCheck.mir!);
-  fs.writeFileSync(nativeRsPath, nativeRsSource, 'utf-8');
-
-  let hasRustc = false;
-  try {
-    const rustcCmd = fs.existsSync('/usr/local/bin/rustc') ? '/usr/local/bin/rustc' : 'rustc';
-    execFileSync(rustcCmd, ['--version'], { stdio: 'ignore' });
-    hasRustc = true;
-  } catch {}
-
-  let nativeStdout = '111';
-  if (hasRustc) {
-    const rustcCmd = fs.existsSync('/usr/local/bin/rustc') ? '/usr/local/bin/rustc' : 'rustc';
-    execFileSync(rustcCmd, ['-O', nativeRsPath, '-o', nativeBinPath], { stdio: 'pipe' });
-    assert(fs.existsSync(nativeBinPath), '7.4 Native backend compiles standalone Rust via host rustc into ELF executable');
-    nativeStdout = execFileSync(nativeBinPath, [], { encoding: 'utf-8' }).trim();
-  } else {
-    assert(nativeRsSource.length > 50, '7.4 Native backend emits standalone Rust source (host rustc not available in container)');
-  }
-
   assert(
-    String(refEval.returnValue) === '111' &&
-      wasmMvmRun.returnValue === '111' &&
-      nativeMvmRet === '111' &&
-      directWasmRet === '111' &&
-      webJsRet === '111' &&
-      nativeStdout.includes('111'),
-    `7.5 Six-way conformance: Collatz(27) == 111 across TS-MIR (${refEval.returnValue}), Rust-MVM-WASM (${wasmMvmRun.returnValue}), Native-MVM-CLI (${nativeMvmRet}), Direct-WASM (${directWasmRet}), Web-JS (${webJsRet}), and Native-ELF (${nativeStdout.split('\n')[0]})`
+    webJsEntry.status === 'passed',
+    '7.3 Web/JS runtime guard actively blocks unauthorized fetch() calls and executes Collatz(27) == 111'
   );
+
+  if (nativeMvmEntry.status === 'skipped') {
+    recordSkipped('7.4a Native MVM CLI execution', nativeMvmEntry.reason || 'binary unavailable');
+  } else {
+    assert(
+      nativeMvmEntry.status === 'passed' && nativeMvmEntry.output === '111',
+      `7.4a Native MVM CLI executes Collatz(27) == ${nativeMvmEntry.output}`
+    );
+  }
+
+  if (nativeElfEntry.status === 'skipped') {
+    assert(
+      nativeElfEntry.compilation === 'generated-source-only' && nativeElfEntry.execution === 'not-run',
+      '7.4b Native backend emits standalone Rust source (host rustc unavailable — native execution skipped)'
+    );
+    recordSkipped('7.4b Native ELF compilation & execution', nativeElfEntry.reason || 'rustc unavailable');
+  } else {
+    assert(
+      nativeElfEntry.status === 'passed' && Boolean(nativeElfEntry.output?.includes('111')),
+      '7.4b Native backend compiles standalone Rust via host rustc into ELF executable and prints 111'
+    );
+  }
+
+  const executedEntries = backendEntries.filter((e) => e.execution === 'executed');
+  const allExecutedMatch111 =
+    executedEntries.length >= 4 &&
+    executedEntries.every((e) => e.status === 'passed' && e.output?.includes('111'));
+  const conformanceSummary = backendEntries
+    .map((e) =>
+      e.execution === 'executed'
+        ? `${e.id}=${e.output}`
+        : `${e.id}=${e.status}(${e.compilation})`
+    )
+    .join(', ');
+  assert(
+    allExecutedMatch111,
+    `7.5 Executed target conformance (${executedEntries.length}/${backendEntries.length} executed): ${conformanceSummary}`
+  );
+
+  const backendCounts = computeAggregateCounts(backendEntries);
+  assert(
+    reconcileCountsValid(backendCounts),
+    `7.5b Backend verification counts reconcile (${backendCounts.passed} passed, ${backendCounts.failed} failed, ${backendCounts.skipped} skipped, total=${backendCounts.total})`
+  );
+  void tsMirEntry;
+  void wasmMvmEntry;
 
   // Planned targets fail honestly
   for (const plannedId of ['evm-solidity', 'move', 'ton-tact']) {
@@ -621,7 +821,11 @@ export fn main() -> i64 effects(console) {
     ['tsx', 'manifest-core/src/cli.ts', 'disassemble', 'examples/beginner/01_basics_and_loops.manifest'],
     { encoding: 'utf-8' }
   );
-  assert(cliDisasmOut.includes('.fn main') && cliDisasmOut.includes('HOST_CALL'), '8.2 CLI `manifest disassemble` prints .mbc bytecode instructions');
+  assert(
+    cliDisasmOut.includes('.fn main') &&
+      (cliDisasmOut.includes('HostCall') || cliDisasmOut.includes('HOST_CALL')),
+    '8.2 CLI `manifest disassemble` prints .mbc bytecode instructions'
+  );
 
   // Verify every single .manifest file in /examples/
   const exampleFiles = [
@@ -658,7 +862,7 @@ export fn main() -> i64 effects(console) {
       );
     } else if (ex.mode === 'web-ui') {
       const res = await compileManifestV1(src, { target: 'web-js', entryFile: ex.path });
-      assert(res.success && Boolean(res.jsCode?.includes('startApp')), `8.3 Example ${ex.path} compiles to reactive Web UI JS`);
+      assert(res.success && Boolean(res.jsCode?.includes('__runManifestModule')), `8.3 Example ${ex.path} compiles to Web-JS bundle`);
     } else if (ex.mode === 'solana') {
       const res = await compileManifestV1(src, { target: 'solana-sbf', entryFile: ex.path });
       assert(res.success && Boolean(res.rustCode?.includes('#[program]')), `8.3 Example ${ex.path} compiles to Solana Anchor Rust + IDL`);
@@ -765,7 +969,7 @@ export fn main() -> i64 effects(console) {
     doc: `module broken_lint;\ndenies [net];\nfn main() -> i64 {\n  let _s: str = net.get("https://x.test");\n  return "wrong_return_type";\n}`,
   });
   const fakeView = { state: badEditorState } as any;
-  const cmDiags = collectManifestEditorDiagnostics(fakeView);
+  const cmDiags = await collectManifestEditorDiagnostics(fakeView);
   assert(
     cmDiags.length >= 2 &&
       cmDiags.some((d) => d.message.includes('E_CAPABILITY_DENIED')) &&
@@ -776,17 +980,20 @@ export fn main() -> i64 effects(console) {
   const brokenUiSyntaxState = EditorState.create({
     doc: `APP "BrokenUI"\nPAGE Home\n  IF x >\nEND`,
   });
-  const brokenUiDiags = collectManifestEditorDiagnostics({ state: brokenUiSyntaxState } as any);
+  const brokenUiDiags = await collectManifestEditorDiagnostics({ state: brokenUiSyntaxState } as any);
   assert(
-    brokenUiDiags.length >= 1 && brokenUiDiags[0].severity === 'error',
-    '8.10 CodeMirror manifestLinter surfaces live syntax errors on legacy APP/PAGE files'
+    brokenUiDiags.length >= 1 &&
+      brokenUiDiags[0].severity === 'error' &&
+      brokenUiDiags.some((d) => d.message.includes('E_LEGACY_V0_REMOVED')),
+    '8.10 CodeMirror manifestLinter rejects legacy APP/PAGE syntax with E_LEGACY_V0_REMOVED'
   );
 
-  // Cleanup temp dir
-  fs.rmSync(tmpDir, { recursive: true, force: true });
-
+  // Cleanup any section-8 temp dir if created
+  const totalChecks = passed + failed + skipped + unsupported + notRun;
   console.log(`\n====================================================================`);
-  console.log(`Manifest v1.0 Upgrade Suite: ${passed}/${passed + failed} assertions passed.`);
+  console.log(
+    `Manifest v1.0 Upgrade Suite: ${passed} passed, ${failed} failed, ${skipped} skipped, ${unsupported} unsupported, ${notRun} not-run (total=${totalChecks}).`
+  );
   console.log(`====================================================================\n`);
 
   if (failed > 0) {
@@ -794,7 +1001,14 @@ export fn main() -> i64 effects(console) {
   }
 }
 
-runSuite().catch((err) => {
-  console.error('Unhandled v1 test failure:', err);
-  process.exit(1);
-});
+const isMainV1Tests =
+  typeof process !== 'undefined' &&
+  Boolean(process.argv[1]) &&
+  process.argv[1].endsWith('run_v1_upgrade_tests.ts');
+
+if (isMainV1Tests) {
+  runSuite().catch((err) => {
+    console.error('Unhandled v1 test failure:', err);
+    process.exit(1);
+  });
+}

@@ -1,21 +1,18 @@
-import { compileMIRToMbc } from './bytecode/mbc-compiler.ts';
-import { disassembleMbcBytes, verifyMbcBytes } from './bytecode/mbc-reader.ts';
-import { compileManifest as compileLegacyManifest } from './compiler/compiler.ts';
-import { SemanticModule } from './core/ast-v2.ts';
-import { printSemanticModule } from './core/formatter.ts';
-import { detectSyntaxProfile, SyntaxProfile } from './core/profile.ts';
-import { ManifestError } from './errors/manifest-error.ts';
-import { optimizeMIR, OptimizationPassStats } from './ir/ir-optimizer.ts';
-import { formatMIRModule, MIRModule } from './ir/typed-ir.ts';
-import { buildTypedIR } from './ir/typed-ir-builder.ts';
-import { evaluateMIRModule, SemanticEvalResult } from './runtime/semantic-evaluator.ts';
+import { formatManifestSource } from './core/formatter.ts';
+import { SyntaxProfile } from './core/profile.ts';
 import {
-  analyzeCapabilitiesAndEffects,
-  CapabilityAuditReport,
-} from './semantics/capability-analyzer.ts';
-import { resolveModuleGraph, WorkspaceFiles } from './semantics/module-resolver.ts';
-import { TypeChecker, TypeCheckResult } from './semantics/type-checker.ts';
-import { SemanticDiagnostic } from './semantics/types.ts';
+  checkManifestInRust,
+  compileManifestInRust,
+  RustAstSummary,
+} from './engine/rust-engine.ts';
+import type { OptimizationPassStats } from './ir/ir-optimizer.ts';
+import type { MIRModule } from './ir/typed-ir.ts';
+import { evaluateMIRModule } from './runtime/semantic-evaluator.ts';
+import type { SemanticEvalResult } from './runtime/semantic-evaluator.ts';
+import type { CapabilityAuditReport } from './semantics/capability-analyzer.ts';
+import type { WorkspaceFiles } from './semantics/module-resolver.ts';
+import type { SemanticDiagnostic } from './semantics/types.ts';
+import { compileSolanaProgramSource } from './solana/solana-compiler.ts';
 import { buildNativeTargetSourceOnly } from './targets/native-target.ts';
 import {
   CompilerTargetArtifact,
@@ -28,7 +25,6 @@ import {
   executeMbcInRustVm,
   MvmExecutionOptions,
   MvmExecutionResponse,
-  verifyMbcInRustVm,
 } from './vm/mvm-runner.ts';
 
 export interface ManifestPipelineOptions {
@@ -41,11 +37,12 @@ export interface ManifestPipelineOptions {
 
 export interface ManifestCheckSummary {
   ok: boolean;
+  compilerEngine?: string;
+  compilerVersion?: string;
   resolvedProfile: SyntaxProfile;
   isDomainExtension: boolean;
-  domainKind?: 'web-ui' | 'solana-contract';
-  ast?: SemanticModule;
-  typeCheck?: TypeCheckResult;
+  domainKind?: 'solana-contract';
+  astSummary?: RustAstSummary;
   capabilityAudit?: CapabilityAuditReport;
   mir?: MIRModule;
   irText?: string;
@@ -55,6 +52,7 @@ export interface ManifestCheckSummary {
 
 export interface ManifestV1BuildResult {
   success: boolean;
+  compilerEngine?: string;
   target: CompilerTargetSpec;
   resolvedProfile: SyntaxProfile;
   diagnostics: SemanticDiagnostic[];
@@ -74,126 +72,127 @@ export interface ManifestV1BuildResult {
 }
 
 /**
- * Runs profile-aware lexing, parsing, multi-file module linking, static type checking,
- * capability/effect analysis, and Typed IR generation + optimization.
+ * Authoritative Stage 6 frontend & IR check: routes lexing, parsing, multi-file module linking,
+ * static type checking, capability/effect analysis, Typed MIR lowering, and optimization
+ * directly through the compiled Rust compiler engine (`manifest-compiler` via `mvm-wasm`).
  */
-export function checkManifestSource(
+export async function checkManifestSource(
   source: string,
   options: ManifestPipelineOptions = {}
-): ManifestCheckSummary {
-  const resolvedProfile = detectSyntaxProfile(source, options.profile);
-  const diagnostics: SemanticDiagnostic[] = [];
-
-  try {
-    const graph = resolveModuleGraph(source, {
-      entryFile: options.entryFile || 'src/main.manifest',
-      profile: resolvedProfile,
-      files: options.files,
-    });
-    diagnostics.push(...graph.diagnostics);
-
-    const ast = graph.mergedModule;
-
-    // Domain extensions (`APP`/`PAGE` Web UI or `PROGRAM` Solana Contract)
-    if (ast.hasDomainExtensions.webUI || ast.hasDomainExtensions.solanaContract) {
-      const domainKind = ast.hasDomainExtensions.solanaContract ? 'solana-contract' : 'web-ui';
-      return {
-        ok: diagnostics.every((d) => d.severity !== 'error'),
-        resolvedProfile: ast.profile,
-        isDomainExtension: true,
-        domainKind,
-        ast,
-        diagnostics,
-      };
-    }
-
-    const typeChecker = new TypeChecker();
-    const typeCheck = typeChecker.check(ast);
-    diagnostics.push(...typeCheck.diagnostics);
-
-    const capabilityAudit = analyzeCapabilitiesAndEffects(ast);
-    diagnostics.push(...capabilityAudit.diagnostics);
-
-    const hasErrors = diagnostics.some((d) => d.severity === 'error');
-    if (hasErrors) {
-      return {
-        ok: false,
-        resolvedProfile: ast.profile,
-        isDomainExtension: false,
-        ast,
-        typeCheck,
-        capabilityAudit,
-        diagnostics,
-      };
-    }
-
-    const rawMir = buildTypedIR(ast, typeCheck, capabilityAudit);
-    let finalMir = rawMir;
-    let optimizationStats: OptimizationPassStats | undefined;
-
-    if (options.optimize !== false) {
-      const opt = optimizeMIR(rawMir);
-      finalMir = opt.module;
-      optimizationStats = opt.stats;
-      diagnostics.push(...opt.warnings);
-    }
-
-    return {
-      ok: true,
-      resolvedProfile: ast.profile,
-      isDomainExtension: false,
-      ast,
-      typeCheck,
-      capabilityAudit,
-      mir: finalMir,
-      irText: formatMIRModule(finalMir),
-      optimizationStats,
-      diagnostics,
-    };
-  } catch (err: any) {
-    if (err instanceof ManifestError) {
-      diagnostics.push({
-        code: 'E_SYNTAX',
-        severity: 'error',
-        message: err.message,
-        line: err.line || 1,
-        column: err.column || 1,
-        file: options.entryFile,
-        hint: err.hint,
-      });
-    } else {
-      diagnostics.push({
-        code: 'E_SYNTAX',
-        severity: 'error',
-        message: err?.message || String(err),
-        line: 1,
-        column: 1,
-        file: options.entryFile,
-      });
-    }
-    return {
-      ok: false,
-      resolvedProfile,
-      isDomainExtension: false,
-      diagnostics,
-    };
-  }
+): Promise<ManifestCheckSummary> {
+  const res = await checkManifestInRust(source, {
+    profile: options.profile,
+    entryFile: options.entryFile,
+    files: options.files,
+    optimize: options.optimize,
+  });
+  return {
+    ok: res.ok,
+    compilerEngine: res.engine,
+    compilerVersion: res.engineVersion,
+    resolvedProfile: res.resolvedProfile,
+    isDomainExtension: res.isDomainExtension,
+    domainKind: res.domainKind,
+    astSummary: res.astSummary,
+    capabilityAudit: res.capabilityAudit,
+    mir: res.mir,
+    irText: res.irText,
+    optimizationStats: res.optimizationStats,
+    diagnostics: res.diagnostics,
+  };
 }
 
 /**
  * Compiles a Manifest program (Beginner or Professional profile) to the selected
- * compilation target (`mvm`, `web-js`, `wasm`, `native`, `solana-sbf`, or planned targets).
+ * compilation target (`mvm`, `web-js`, `wasm`, `native`, `solana-sbf`, or planned targets)
+ * using the authoritative Rust compiler engine.
  */
 export async function compileManifestV1(
   source: string,
   options: ManifestPipelineOptions = {}
 ): Promise<ManifestV1BuildResult> {
   const target = resolveCompilerTarget(options.target);
-  const check = checkManifestSource(source, options);
+
+  if (target.id === 'mvm') {
+    const rustBuild = await compileManifestInRust(source, {
+      profile: options.profile,
+      entryFile: options.entryFile,
+      files: options.files,
+      optimize: options.optimize,
+    });
+
+    if (rustBuild.isDomainExtension) {
+      return {
+        success: false,
+        compilerEngine: rustBuild.engine,
+        target,
+        resolvedProfile: rustBuild.resolvedProfile,
+        diagnostics: rustBuild.diagnostics,
+        artifacts: [],
+        limitations: target.limitations,
+      };
+    }
+
+    if (!rustBuild.ok || !rustBuild.mbcBytes) {
+      return {
+        success: false,
+        compilerEngine: rustBuild.engine,
+        target,
+        resolvedProfile: rustBuild.resolvedProfile,
+        diagnostics: rustBuild.diagnostics,
+        capabilityAudit: rustBuild.capabilityAudit,
+        mir: rustBuild.mir,
+        irText: rustBuild.irText,
+        artifacts: [],
+        limitations: target.limitations,
+      };
+    }
+
+    const modBase = (rustBuild.moduleName || 'main').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const disassembly = rustBuild.disassembly || '';
+    const artifacts: CompilerTargetArtifact[] = [
+      {
+        filename: `build/${modBase}.mbc`,
+        mimeType: 'application/x-manifest-bytecode',
+        isBinary: true,
+        bytes: rustBuild.mbcBytes,
+      },
+      {
+        filename: `build/${modBase}.disasm.txt`,
+        mimeType: 'text/plain',
+        isBinary: false,
+        text: disassembly,
+      },
+      {
+        filename: `build/${modBase}.mir.txt`,
+        mimeType: 'text/plain',
+        isBinary: false,
+        text: rustBuild.irText || '',
+      },
+    ];
+
+    return {
+      success: true,
+      compilerEngine: rustBuild.engine,
+      target,
+      resolvedProfile: rustBuild.resolvedProfile,
+      diagnostics: rustBuild.diagnostics,
+      capabilityAudit: rustBuild.capabilityAudit,
+      mir: rustBuild.mir,
+      irText: rustBuild.irText,
+      mbcBytes: rustBuild.mbcBytes,
+      disassembly,
+      artifacts,
+      limitations: target.limitations,
+    };
+  }
+
+  const check = await checkManifestSource(source, options);
 
   if (target.status === 'planned') {
     return {
       success: false,
+      compilerEngine: check.compilerEngine,
       target,
       resolvedProfile: check.resolvedProfile,
       diagnostics: [
@@ -212,85 +211,36 @@ export async function compileManifestV1(
     };
   }
 
-  // Handle legacy UI `APP` / `PAGE` or `PROGRAM` Solana domain modules transparently
   if (check.isDomainExtension) {
-    const legacyTarget =
-      target.id === 'solana-sbf' || check.domainKind === 'solana-contract' ? 'solana' : 'js';
-    try {
-      const legacy = await compileLegacyManifest(source, legacyTarget, { sourceMaps: true });
-      const legacyDiagnostics: SemanticDiagnostic[] = [
-        ...check.diagnostics,
-        ...legacy.diagnostics.map((d) => ({
-          code: 'E_DOMAIN',
-          severity: d.severity,
-          message: d.message,
-          line: d.line || 1,
-          column: d.column || 1,
-          hint: d.hint,
-        })),
-      ];
-      const artifacts: CompilerTargetArtifact[] = [];
-      if (legacyTarget === 'solana' && legacy.outputCode) {
-        artifacts.push({
-          filename: 'build/lib.rs',
-          mimeType: 'text/x-rust',
-          isBinary: false,
-          text: legacy.outputCode,
-        });
-        const idlArt = legacy.artifacts?.find((a) => a.fileName.endsWith('.json'));
-        if (idlArt) {
-          artifacts.push({
-            filename: 'build/idl.json',
-            mimeType: 'application/json',
-            isBinary: false,
-            text: idlArt.content,
-          });
-        }
-      } else if (legacy.outputCode) {
-        artifacts.push({
-          filename: 'dist/app.js',
-          mimeType: 'text/javascript',
-          isBinary: false,
-          text: legacy.outputCode,
-        });
-      }
-
-      const idlArt = legacy.artifacts?.find((a) => a.fileName.endsWith('.json'));
-      return {
-        success: legacy.success && legacyDiagnostics.every((d) => d.severity !== 'error'),
-        target,
-        resolvedProfile: check.resolvedProfile,
-        diagnostics: legacyDiagnostics,
-        jsCode: legacyTarget === 'js' ? legacy.outputCode : undefined,
-        rustCode: legacyTarget === 'solana' ? legacy.outputCode : undefined,
-        idlJson: legacyTarget === 'solana' ? idlArt?.content : undefined,
-        artifacts,
-        limitations: target.limitations,
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        target,
-        resolvedProfile: check.resolvedProfile,
-        diagnostics: [
-          ...check.diagnostics,
-          {
-            code: 'E_LEGACY_COMPILE',
-            severity: 'error',
-            message: err?.message || String(err),
-            line: err?.line || 1,
-            column: err?.column || 1,
-          },
-        ],
-        artifacts: [],
-        limitations: target.limitations,
-      };
+    if (target.id === 'solana-sbf') {
+      return compileSolanaExtension(source, target, check);
     }
+    return {
+      success: false,
+      compilerEngine: check.compilerEngine,
+      target,
+      resolvedProfile: check.resolvedProfile,
+      diagnostics: check.diagnostics.some((d) => d.severity === 'error')
+        ? check.diagnostics
+        : [
+            ...check.diagnostics,
+            {
+              code: 'E_SOLANA_TARGET_ONLY',
+              severity: 'error',
+              message: `Solana smart contract source ('PROGRAM ... END') must target 'solana-sbf', not '${target.id}'.`,
+              line: 1,
+              column: 1,
+            },
+          ],
+      artifacts: [],
+      limitations: target.limitations,
+    };
   }
 
   if (!check.ok || !check.mir) {
     return {
       success: false,
+      compilerEngine: check.compilerEngine,
       target,
       resolvedProfile: check.resolvedProfile,
       diagnostics: check.diagnostics,
@@ -304,97 +254,11 @@ export async function compileManifestV1(
   const modBase = (mir.moduleName || 'main').replace(/[^a-zA-Z0-9_-]/g, '_');
 
   switch (target.id) {
-    case 'mvm': {
-      const compiled = compileMIRToMbc(mir);
-      const tsVerify = verifyMbcBytes(compiled.bytes);
-      if (!tsVerify.valid) {
-        return {
-          success: false,
-          target,
-          resolvedProfile: check.resolvedProfile,
-          diagnostics: [
-            ...check.diagnostics,
-            ...tsVerify.errors.map((e) => ({
-              code: 'E_MBC_VERIFY',
-              severity: 'error' as const,
-              message: e,
-              line: 1,
-              column: 1,
-            })),
-          ],
-          capabilityAudit: check.capabilityAudit,
-          mir,
-          irText: check.irText,
-          artifacts: [],
-          limitations: target.limitations,
-        };
-      }
-
-      const rustVerify = await verifyMbcInRustVm(compiled.bytes);
-      if (!rustVerify.ok) {
-        return {
-          success: false,
-          target,
-          resolvedProfile: check.resolvedProfile,
-          diagnostics: [
-            ...check.diagnostics,
-            {
-              code: 'E_MVM_VERIFY',
-              severity: 'error',
-              message: rustVerify.error || 'Rust MVM bytecode verification failed',
-              line: 1,
-              column: 1,
-            },
-          ],
-          capabilityAudit: check.capabilityAudit,
-          mir,
-          irText: check.irText,
-          artifacts: [],
-          limitations: target.limitations,
-        };
-      }
-
-      const disassembly = disassembleMbcBytes(compiled.bytes);
-      const artifacts: CompilerTargetArtifact[] = [
-        {
-          filename: `build/${modBase}.mbc`,
-          mimeType: 'application/x-manifest-bytecode',
-          isBinary: true,
-          bytes: compiled.bytes,
-        },
-        {
-          filename: `build/${modBase}.disasm.txt`,
-          mimeType: 'text/plain',
-          isBinary: false,
-          text: disassembly,
-        },
-        {
-          filename: `build/${modBase}.mir.txt`,
-          mimeType: 'text/plain',
-          isBinary: false,
-          text: check.irText || '',
-        },
-      ];
-
-      return {
-        success: true,
-        target,
-        resolvedProfile: check.resolvedProfile,
-        diagnostics: check.diagnostics,
-        capabilityAudit: check.capabilityAudit,
-        mir,
-        irText: check.irText,
-        mbcBytes: compiled.bytes,
-        disassembly,
-        artifacts,
-        limitations: target.limitations,
-      };
-    }
-
     case 'web-js': {
       const web = compileMIRToWebJS(mir);
       return {
         success: true,
+        compilerEngine: check.compilerEngine,
         target,
         resolvedProfile: check.resolvedProfile,
         diagnostics: check.diagnostics,
@@ -427,6 +291,7 @@ export async function compileManifestV1(
       if (!wasmRes.success || !wasmRes.wasmBytes) {
         return {
           success: false,
+          compilerEngine: check.compilerEngine,
           target,
           resolvedProfile: check.resolvedProfile,
           diagnostics: allDiags,
@@ -439,6 +304,7 @@ export async function compileManifestV1(
       }
       return {
         success: true,
+        compilerEngine: check.compilerEngine,
         target,
         resolvedProfile: check.resolvedProfile,
         diagnostics: allDiags,
@@ -469,6 +335,7 @@ export async function compileManifestV1(
       const nat = buildNativeTargetSourceOnly(mir);
       return {
         success: nat.success,
+        compilerEngine: check.compilerEngine,
         target,
         resolvedProfile: check.resolvedProfile,
         diagnostics: [...check.diagnostics, ...nat.diagnostics],
@@ -491,6 +358,7 @@ export async function compileManifestV1(
     case 'solana-sbf': {
       return {
         success: false,
+        compilerEngine: check.compilerEngine,
         target,
         resolvedProfile: check.resolvedProfile,
         diagnostics: [
@@ -515,6 +383,7 @@ export async function compileManifestV1(
     default:
       return {
         success: false,
+        compilerEngine: check.compilerEngine,
         target,
         resolvedProfile: check.resolvedProfile,
         diagnostics: check.diagnostics,
@@ -522,6 +391,28 @@ export async function compileManifestV1(
         limitations: target.limitations,
       };
   }
+}
+
+function compileSolanaExtension(
+  source: string,
+  target: CompilerTargetSpec,
+  check: ManifestCheckSummary
+): ManifestV1BuildResult {
+  const solRes = compileSolanaProgramSource(source);
+  return {
+    success: solRes.success,
+    compilerEngine: check.compilerEngine,
+    target,
+    resolvedProfile: check.resolvedProfile,
+    diagnostics: [
+      ...check.diagnostics.filter((d) => d.code !== 'E_SOLANA_TARGET_ONLY'),
+      ...solRes.diagnostics,
+    ],
+    rustCode: solRes.rustCode,
+    idlJson: solRes.idlJson,
+    artifacts: solRes.artifacts,
+    limitations: target.limitations,
+  };
 }
 
 export interface ManifestV1RunResult {
@@ -559,7 +450,6 @@ export async function runManifestOnRustMvm(
     };
   }
 
-  // Default granted capabilities: if caller doesn't override, grant `console` by default
   const grantedCapabilities = options.grantedCapabilities ?? ['console'];
   const vmResult = await executeMbcInRustVm(build.mbcBytes, {
     ...options,
@@ -579,40 +469,4 @@ export async function runManifestOnRustMvm(
   };
 }
 
-/**
- * Converts Manifest source code between Beginner and Professional profiles,
- * or formats it canonically within its current profile.
- */
-export function formatManifestSource(
-  source: string,
-  targetProfile?: SyntaxProfile
-): { ok: boolean; formatted?: string; error?: string; diagnostics: SemanticDiagnostic[] } {
-  const check = checkManifestSource(source, { profile: 'auto', optimize: false });
-  if (!check.ast) {
-    const firstErr = check.diagnostics.find((d) => d.severity === 'error');
-    return {
-      ok: false,
-      error: firstErr?.message || 'Unable to parse source for formatting',
-      diagnostics: check.diagnostics,
-    };
-  }
-  if (check.isDomainExtension) {
-    return {
-      ok: true,
-      formatted:
-        source
-          .split('\n')
-          .map((l) => l.trimEnd())
-          .join('\n')
-          .trim() + '\n',
-      diagnostics: check.diagnostics,
-    };
-  }
-  return {
-    ok: true,
-    formatted: printSemanticModule(check.ast, targetProfile ?? check.resolvedProfile),
-    diagnostics: check.diagnostics,
-  };
-}
-
-export { evaluateMIRModule };
+export { formatManifestSource, evaluateMIRModule };

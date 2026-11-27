@@ -92,14 +92,16 @@ Even if an external caller crafts a custom `.mbc` file bypassing the TypeScript 
 
 ## 5. `mvm-wasm` Host ABI Bridge
 
-`mvm-wasm` exposes a minimal, deterministic linear-memory C ABI consumed by `manifest-core/src/vm/mvm-runner.ts`:
+`mvm-wasm` exposes a minimal, deterministic linear-memory C ABI (`mvm-wasm-c-v2`, protocol v2) consumed by `manifest-core/src/vm/mvm-runner.ts`:
 - Exports:
   - `memory: WebAssembly.Memory`
-  - `mvm_alloc(len: u32) -> u32` / `mvm_dealloc(ptr: u32, len: u32)`
-  - `mvm_verify(mbc_ptr: u32, mbc_len: u32) -> u32` (writes JSON verification report to output buffer)
-  - `mvm_disassemble(mbc_ptr: u32, mbc_len: u32) -> u32`
-  - `mvm_execute(mbc_ptr: u32, mbc_len: u32, cfg_ptr: u32, cfg_len: u32) -> u32`
-  - `mvm_output_ptr() -> u32` / `mvm_output_len() -> u32`
-  - `mvm_set_host_response(ptr: u32, len: u32)`
+  - `mvm_alloc(len: usize) -> u32` / `mvm_dealloc(ptr: u32, len: usize)`
+  - `mvm_engine_info() -> i32` (writes engine version, protocol version, ABI tag, and Stage 5 feature flags JSON)
+  - `mvm_verify(mbc_ptr: u32, mbc_len: usize) -> i32` (writes JSON verification report to output buffer)
+  - `mvm_disassemble(mbc_ptr: u32, mbc_len: usize) -> i32`
+  - `mvm_execute(mbc_ptr: u32, mbc_len: usize, cfg_ptr: u32, cfg_len: usize) -> i32` (supports `MAX_STEPS`, `MAX_DEPTH`, `MAX_HEAP`, `MAX_HEAP_BYTES`, `ENTRY`, and `GRANT`; returns `gcStats` + `heapObjectsAllocated` on success or canonical `errorCode` on decode/verify/runtime failure)
+  - `mvm_output_ptr() -> u32` / `mvm_output_len() -> usize`
+  - `mvm_set_host_response(ptr: u32, len: usize)`
 - Host Import:
-  - `env.mvm_host_call(req_ptr: u32, req_len: u32) -> u32` — Invoked only *after* `mvm-core` has verified `CapabilityPolicy` for external host capabilities (`time.now`, `net.get`, `db.query`). Pure intrinsics (`std::crypto::sha256`, `std::math::*`, `std::str::*`, `std::conv::*`) and virtual workspace `fs.read_text`/`fs.write_text` execute directly inside Rust `mvm-core`!
+  - `env.mvm_host_call(req_ptr: u32, req_len: usize) -> i32` (zero WASI imports) — Invoked only *after* `mvm-core` has verified `CapabilityPolicy` for external host capabilities (`time.now`, `net.get`, `db.query`). Pure intrinsics (`std::crypto::sha256`, `std::math::*`, `std::str::*`, `std::conv::*`) and virtual workspace `fs.read_text`/`fs.write_text` execute directly inside Rust `mvm-core`!
+

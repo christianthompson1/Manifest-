@@ -5,8 +5,12 @@
  */
 
 import React, { useState } from 'react';
-import { Play, CheckCircle2, XCircle, Zap, X, RefreshCw, Cpu, Layers } from 'lucide-react';
+import { Play, CheckCircle2, XCircle, AlertTriangle, Zap, X, RefreshCw, Cpu, Layers } from 'lucide-react';
 import { LiteSVMTestSuiteResult } from '../types.ts';
+import {
+  executeAndParseTestRun,
+  ParsedTestRunState,
+} from '../../../manifest-core/src/verification/result-model.ts';
 
 interface TestRunnerModalProps {
   isOpen: boolean;
@@ -24,8 +28,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
   const [activeTab, setActiveTab] = useState<'litesvm' | 'manifest-suite'>('litesvm');
   const [isRunning, setIsRunning] = useState(false);
   const [litesvmReport, setLitesvmReport] = useState<LiteSVMTestSuiteResult | null>(null);
-  const [suiteOutput, setSuiteOutput] = useState<string[]>([]);
-  const [suitePassed, setSuitePassed] = useState<boolean | null>(null);
+  const [suiteState, setSuiteState] = useState<ParsedTestRunState | null>(null);
 
   if (!isOpen) return null;
 
@@ -49,13 +52,19 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
     } catch (err: any) {
       setLitesvmReport({
         success: false,
+        status: 'failed',
+        execution: 'unavailable',
+        backend: 'unavailable',
         programName: 'Program',
         programId: '',
         durationMs: 0,
-        totalComputeUnits: 0,
         stepsCount: 0,
         passedCount: 0,
         failedCount: 1,
+        skippedCount: 0,
+        unsupportedCount: 0,
+        notRunCount: 0,
+        totalComputeUnits: 0,
         steps: [],
         idl: null,
         rustGenerated: false,
@@ -69,23 +78,16 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
 
   const handleRunManifestSuite = async () => {
     setIsRunning(true);
-    setSuiteOutput([]);
-    setSuitePassed(null);
+    setSuiteState(null);
 
     try {
-      const res = await fetch('/api/tests/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-      const data = await res.json();
-      setSuitePassed(data.success);
-      setSuiteOutput(data.logs || []);
-      onShowToast?.(data.success ? 'All Manifest Core tests passed!' : 'Some tests failed.');
-    } catch (err: any) {
-      setSuitePassed(false);
-      setSuiteOutput([`Network exception: ${err.message || String(err)}`]);
-      onShowToast?.(`Test run error: ${err.message || String(err)}`);
+      const parsed = await executeAndParseTestRun();
+      setSuiteState(parsed);
+      onShowToast?.(
+        parsed.ok
+          ? `Manifest suite passed (${parsed.passed}/${parsed.total})`
+          : `Test suite ${parsed.status === 'error' ? 'error' : 'failed'}: ${parsed.error || ''}`
+      );
     } finally {
       setIsRunning(false);
     }
@@ -129,7 +131,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
                   : 'border-transparent text-[#858585] hover:text-[#cccccc]'
               }`}
             >
-              Full Language Suite (20+ tests)
+              Full Language Suite
             </button>
           </div>
 
@@ -174,7 +176,11 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
                       )}
                       <span>
                         {litesvmReport.success
-                          ? 'LiteSVM Simulation Passed'
+                          ? `LiteSVM Runtime Checks Passed (${litesvmReport.passedCount} executed${
+                              litesvmReport.skippedCount > 0
+                                ? `, ${litesvmReport.skippedCount} skipped / uncompiled SBF`
+                                : ''
+                            })`
                           : `LiteSVM Execution Failed: ${litesvmReport.error || 'Unknown error'}`}
                       </span>
                     </div>
@@ -183,33 +189,56 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
                         <Zap className="w-3.5 h-3.5 text-[#cca700]" />
                         <strong>{(litesvmReport.totalComputeUnits || 0).toLocaleString()} CU</strong>
                       </span>
-                      <span>{litesvmReport.stepsCount || 0} Steps</span>
+                      <span>
+                        {litesvmReport.passedCount} Passed / {litesvmReport.skippedCount || 0} Skipped
+                      </span>
                     </div>
                   </div>
 
                   {/* Steps Breakdown */}
                   <div className="space-y-2">
                     <div className="font-semibold text-[11px] text-[#858585] uppercase tracking-wider">
-                      Execution Steps
+                      Execution &amp; Analysis Steps
                     </div>
                     {(litesvmReport.steps || []).map((step, idx) => (
                       <div
                         key={idx}
                         className="p-3 rounded-lg bg-[#252526] border border-[#2d2d2d] space-y-2"
                       >
-                        <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 font-medium text-[#ffffff]">
-                            {step.success ? (
+                            {step.status === 'passed' ? (
                               <CheckCircle2 className="w-3.5 h-3.5 text-[#89d185]" />
+                            ) : step.status === 'skipped' || step.status === 'unsupported' || step.status === 'not-run' ? (
+                              <AlertTriangle className="w-3.5 h-3.5 text-[#cca700]" />
                             ) : (
                               <XCircle className="w-3.5 h-3.5 text-[#f14c4c]" />
                             )}
                             <span>Step {idx + 1}: {step.stepName}</span>
                           </div>
-                          <span className="text-[11px] font-mono text-[#cca700]">
-                            {step.computeUnitsUsed} CU
-                          </span>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span
+                              className={`text-[10px] font-mono px-1.5 py-0.5 rounded uppercase ${
+                                step.status === 'passed'
+                                  ? 'bg-[#183a21] text-[#89d185]'
+                                  : step.status === 'skipped' || step.execution === 'analyzed-only'
+                                  ? 'bg-[#2d2518] text-[#cca700]'
+                                  : 'bg-[#4d1f24] text-[#f14c4c]'
+                              }`}
+                            >
+                              {step.execution === 'analyzed-only' ? 'ANALYZED (NOT RUN)' : step.status}
+                            </span>
+                            <span className="text-[11px] font-mono text-[#cca700]">
+                              {step.computeUnitsUsed} CU
+                            </span>
+                          </div>
                         </div>
+
+                        {step.reason && (
+                          <div className="text-[10px] text-[#cca700]">
+                            {step.reason}
+                          </div>
+                        )}
 
                         {step.signature && (
                           <div className="text-[10px] font-mono text-[#858585] truncate">
@@ -233,37 +262,48 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
               ) : (
                 <div className="py-12 text-center text-[#858585]">
                   <Cpu className="w-8 h-8 mx-auto mb-2 text-[#555555]" />
-                  <p>Click &quot;Run LiteSVM Suite&quot; to execute transactions, compute unit benchmarks, and assertion checks against your Solana program.</p>
+                  <p>Click &quot;Run LiteSVM Suite&quot; to execute built-in LiteSVM checks and static instruction analysis against your Solana program.</p>
                 </div>
               )}
             </div>
           ) : (
             <div>
-              {suitePassed !== null ? (
+              {suiteState !== null ? (
                 <div className="space-y-3">
                   <div
-                    className={`p-3 rounded-lg border flex items-center gap-2 font-medium ${
-                      suitePassed
+                    className={`p-3 rounded-lg border flex items-center justify-between gap-2 font-medium ${
+                      suiteState.ok
                         ? 'bg-[#1b2a1e] border-[#2ea043]/50 text-[#89d185]'
                         : 'bg-[#2d1818] border-[#f14c4c]/50 text-[#f14c4c]'
                     }`}
                   >
-                    {suitePassed ? (
-                      <CheckCircle2 className="w-4 h-4 text-[#89d185]" />
-                    ) : (
-                      <XCircle className="w-4 h-4 text-[#f14c4c]" />
-                    )}
-                    <span>{suitePassed ? 'All 20+ Language Tests Passed' : 'Test Suite Failed'}</span>
+                    <div className="flex items-center gap-2">
+                      {suiteState.ok ? (
+                        <CheckCircle2 className="w-4 h-4 text-[#89d185]" />
+                      ) : (
+                        <XCircle className="w-4 h-4 text-[#f14c4c]" />
+                      )}
+                      <span>
+                        {suiteState.status === 'error'
+                          ? `Test Runner Error: ${suiteState.error}`
+                          : suiteState.ok
+                          ? `All ${suiteState.total} Language Tests Passed`
+                          : `${suiteState.passed} passed, ${suiteState.failed} failed of ${suiteState.total} tests`}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="p-3 rounded-lg bg-[#181818] border border-[#2d2d2d] font-mono text-[11px] text-[#cccccc] space-y-1 max-h-96 overflow-y-auto custom-scrollbar">
-                    {suiteOutput.map((line, idx) => (
+                    {(suiteState.logs.length > 0
+                      ? suiteState.logs
+                      : [suiteState.error || 'No logs returned by test server.']
+                    ).map((line, idx) => (
                       <div
                         key={idx}
                         className={
                           line.includes('[PASS]') || line.includes('✓')
                             ? 'text-[#89d185]'
-                            : line.includes('[ERR]') || line.includes('Failed')
+                            : line.includes('[FAIL]') || line.includes('[ERR]') || line.includes('Error') || line.includes('Failed')
                             ? 'text-[#f14c4c]'
                             : 'text-[#858585]'
                         }
@@ -276,7 +316,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
               ) : (
                 <div className="py-12 text-center text-[#858585]">
                   <Layers className="w-8 h-8 mx-auto mb-2 text-[#555555]" />
-                  <p>Run the full end-to-end Manifest test suite covering lexing, AST parsing, v0.2 primitives, error diagnostics, and Solana code generation.</p>
+                  <p>Run the full end-to-end Manifest v1.0 test suite covering Rust type checking, Typed MIR, .mbc VM execution, error diagnostics, and Solana code generation.</p>
                 </div>
               )}
             </div>

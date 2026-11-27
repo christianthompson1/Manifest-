@@ -47,14 +47,12 @@ export class TypeChecker {
   private enums = new Map<string, SemanticType>();
   private functions = new Map<string, FunctionSignature>();
   private exprTypes = new WeakMap<SemanticExpr, SemanticType>();
-  private isLegacyApp = false;
 
   public check(module: SemanticModule): TypeCheckResult {
     this.diagnostics = [];
     this.structs.clear();
     this.enums.clear();
     this.functions.clear();
-    this.isLegacyApp = module.isLegacyApp;
 
     // Built-in Result<T, E> enum template
     this.enums.set('Result', {
@@ -83,17 +81,15 @@ export class TypeChecker {
       });
     }
 
-    // 1.5. Validate traits (honest diagnostic until trait dispatch and impl blocks are ready)
+    // 1.5. Reject traits explicitly with E_UNSUPPORTED_FEATURE (neither MIR/bytecode nor MVM supports trait dispatch yet)
     if (module.traits && module.traits.length > 0) {
       for (const tr of module.traits) {
-        this.diagnostics.push({
-          code: 'E_UNIMPLEMENTED_FEATURE',
-          severity: 'error',
-          message: `The 'trait' construct ('${tr.name}') is not yet supported by the Manifest compiler and runtime backend. Use structs with function records or standalone functions.`,
-          line: tr.span.line,
-          column: tr.span.column,
-          hint: 'Trait dispatch and `impl` blocks are scheduled for Phase 3.',
-        });
+        this.error(
+          'E_UNSUPPORTED_FEATURE',
+          `Unsupported feature: 'trait' / 'TRAIT' declaration ('${tr.name}') is not supported in Manifest v1.0 (${module.profile} profile).`,
+          tr.span,
+          'Define a struct with typed fields and standalone functions instead.'
+        );
       }
     }
 
@@ -181,7 +177,7 @@ export class TypeChecker {
       });
     }
 
-    // 6. Check module constants & top-level statements
+    // 6. Check module constants & top-level statements in the shared root module environment
     const rootScope = new Map<string, SymbolEntry>();
     for (const c of module.constants) {
       const initType = this.inferExpr(c.init, [rootScope], new Set());
@@ -196,6 +192,9 @@ export class TypeChecker {
           c.span
         );
       }
+      if (rootScope.has(c.name)) {
+        this.error('E_REDECLARATION', `Constant '${c.name}' is already declared in this module`, c.span);
+      }
       rootScope.set(c.name, {
         name: c.name,
         type: annotated,
@@ -205,9 +204,36 @@ export class TypeChecker {
       });
     }
 
-    this.checkBlock(module.topLevelStmts, [rootScope], T_ANY, 0, false, new Set());
+    for (const stmt of module.topLevelStmts) {
+      this.checkStmt(stmt, [rootScope], rootScope, T_ANY, 0, false, new Set());
+    }
 
-    // 7. Check each function body
+    // Ensure any module-level globals not represented in topLevelStmts are still bound in rootScope
+    for (const gv of module.globals) {
+      if (!rootScope.has(gv.name)) {
+        const initType = this.inferExpr(gv.init, [rootScope], new Set());
+        const targetType =
+          gv.typeAnnotation.kind === 'InferredType'
+            ? initType
+            : resolveTypeNode(gv.typeAnnotation, this.structs, this.enums, new Set(), this.diagnostics);
+        if (!typesCompatible(targetType, initType)) {
+          this.error(
+            'E_TYPE_MISMATCH',
+            `Cannot assign value of type '${formatSemanticType(initType)}' to '${gv.name}' of type '${formatSemanticType(targetType)}'`,
+            gv.span
+          );
+        }
+        rootScope.set(gv.name, {
+          name: gv.name,
+          type: targetType,
+          mutable: true,
+          isConst: false,
+          span: gv.span,
+        });
+      }
+    }
+
+    // 7. Check each function body against the module root environment
     for (const fn of module.functions) {
       this.checkFunction(fn, rootScope);
     }
@@ -323,14 +349,17 @@ export class TypeChecker {
           );
         }
 
-        if (currentScope.has(d.name) && !this.isLegacyApp) {
+        if (currentScope.has(d.name)) {
           this.error('E_REDECLARATION', `Variable '${d.name}' is already declared in this scope`, d.span);
         }
 
+        // Module-level `let` / `LET` declarations are mutable module environment bindings;
+        // local `let` bindings inside functions or nested blocks preserve explicit mutability (`let mut` / `MUTABLE`).
+        const isModuleRootBinding = scopes.length === 1;
         currentScope.set(d.name, {
           name: d.name,
           type: targetType,
-          mutable: d.mutable,
+          mutable: isModuleRootBinding ? true : d.mutable,
           isConst: false,
           span: d.span,
         });
@@ -456,7 +485,7 @@ export class TypeChecker {
 
       case 'RepeatStmt': {
         const countType = this.inferExpr(stmt.count, scopes, typeParams, inAsync);
-        if (!typesCompatible(T_I64, countType) && !(this.isLegacyApp && countType.kind === 'f64')) {
+        if (!typesCompatible(T_I64, countType)) {
           this.error(
             'E_REPEAT_COUNT_TYPE',
             `Repeat count must be 'i64', found '${formatSemanticType(countType)}'`,
@@ -572,10 +601,10 @@ export class TypeChecker {
 
       case 'TryStmt': {
         this.error(
-          'E_UNIMPLEMENTED_FEATURE',
-          `The 'try / catch' construct is not yet supported in the Manifest runtime pipeline. Use Result<T, E> (Ok / Err) and 'match' for explicit error handling.`,
+          'E_UNSUPPORTED_FEATURE',
+          `Unsupported feature: 'try / catch' / 'TRY / IF FAILED' statements are not supported in the Manifest v1.0 runtime pipeline.`,
           stmt.span,
-          `Replace 'try { ... } catch' with a function returning 'Result<T, str>' and handle with 'match'.`
+          `Replace 'try / catch' with a function returning 'Result<T, str>' and handle errors with 'match' or '?'.`
         );
         this.checkBlock(stmt.tryBody, scopes, expectedReturn, loopDepth, inAsync, typeParams);
         const catchScope = new Map<string, SymbolEntry>();
@@ -702,16 +731,6 @@ export class TypeChecker {
     if (target.kind === 'VarTarget') {
       const sym = this.lookupSymbol(target.name, scopes);
       if (!sym) {
-        if (this.isLegacyApp) {
-          currentScope.set(target.name, {
-            name: target.name,
-            type: valType,
-            mutable: true,
-            isConst: false,
-            span: target.span,
-          });
-          return;
-        }
         this.error(
           'E_UNDEFINED_VAR',
           `Cannot assign to undeclared variable '${target.name}'`,
@@ -939,10 +958,6 @@ export class TypeChecker {
 
         if (expr.op === '+') {
           if (lt.kind === 'str' && rt.kind === 'str') return T_STR;
-          // Legacy APP compatibility allows string + primitive in SHOW
-          if (this.isLegacyApp && (lt.kind === 'str' || rt.kind === 'str')) {
-            return T_STR;
-          }
           if (lt.kind === 'i64' && rt.kind === 'i64') return T_I64;
           if (lt.kind === 'f64' && rt.kind === 'f64') return T_F64;
           if (lt.kind === 'any' || rt.kind === 'any') return lt.kind === 'any' ? rt : lt;

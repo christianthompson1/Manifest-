@@ -1,18 +1,23 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::bytecode::{ExportKind, FunctionDescriptor, MbcModule};
+use crate::capabilities::capability_covers;
 use crate::errors::MvmError;
 use crate::instruction::Instruction;
 
 pub fn verify_module(module: &mut MbcModule) -> Result<(), MvmError> {
     // 1. Verify capability denies vs requires consistency
     for denied in &module.denies {
-        if module.requires.iter().any(|r| r == denied) {
+        if module
+            .requires
+            .iter()
+            .any(|r| capability_covers(denied, r) || capability_covers(r, denied))
+        {
             return Err(MvmError::VerificationFailed {
                 function: "<module>".to_string(),
                 offset: 0,
                 message: format!(
-                    "Capability '{}' is simultaneously listed in requires and denies",
+                    "Capability '{}' conflicts between requires and denies",
                     denied
                 ),
             });
@@ -24,7 +29,7 @@ pub fn verify_module(module: &mut MbcModule) -> Result<(), MvmError> {
         if module
             .denies
             .iter()
-            .any(|d| imp.capability == *d || imp.capability.starts_with(&format!("{}.", d)))
+            .any(|d| capability_covers(d, &imp.capability))
         {
             return Err(MvmError::VerificationFailed {
                 function: "<imports>".to_string(),
@@ -138,8 +143,7 @@ fn verify_function(module: &MbcModule, func: &FunctionDescriptor) -> Result<(), 
 
         let decoded = &func.decoded[pc];
         let offset = decoded.offset;
-        let (pops, pushes, terminators) =
-            instruction_effect(module, func, &decoded.op, offset)?;
+        let (pops, pushes, terminators) = instruction_effect(module, func, &decoded.op, offset)?;
 
         if height < pops {
             return Err(MvmError::VerificationFailed {

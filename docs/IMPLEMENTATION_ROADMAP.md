@@ -9,15 +9,14 @@ This roadmap records verified deliverables implemented in the repository alongsi
 
 ---
 
-## 1. Dual-Profile Language Core, Static Types & Capability Verification
+## 1. Dual-Profile Language Core, Authoritative Rust Compiler & Capability Verification
 - **Status**: **[VERIFIED]**
 - **Delivered**:
-  - Beginner Profile (`BeginnerParser`) and Professional Profile (`ProfessionalParser`) normalizing to `SemanticModule` (`ast-v2.ts`), plus lossless cross-profile formatting (`formatter.ts`).
-  - Multi-file `import`/`export` module graph resolution with private-symbol and cycle rejection (`module-resolver.ts`).
+  - Authoritative Rust compiler (`mvm/crates/manifest-compiler`, exported via `mvm-wasm` and `mvm-cli`) owning Beginner & Professional parsing, multi-file `import`/`export` linking (`E_IMPORT_PRIVATE_SYMBOL`, `E_CIRCULAR_IMPORT`), static `TypeChecker`, fixed-point transitive `Capability & Effect Analyzer`, Typed MIR lowering/optimization, and `.mbc` v1.0 bytecode compilation.
+  - Lossless cross-profile formatting (`Beginner <-> Professional`), plus explicit removal of legacy v0.x syntax (`APP`/`PAGE`/`STATE`/`ACTION`/`USE WEB`/`USE SOLANA`) with `E_LEGACY_V0_REMOVED` and opt-in `manifest migrate`.
   - Static `TypeChecker` with primitive types (`i64`, `f64`, `bool`, `str`, `void`), generics (`<T>`), structs, algebraic enums, `Result<T, E>`, `?` propagation, `Array<T>`, `Map<K, V>`, mutability checks, and `match` exhaustiveness checking.
-  - Transitive call-graph `Capability & Effect Analyzer` enforcing `requires`, `provides`, `denies`, and per-function `effects(...)`.
 - **Remaining / Future**:
-  - Dynamic trait object dispatch (`dyn Trait`) and user-defined `impl Trait for Struct` method blocks (currently `trait` interface declarations are parsed and type-checked).
+  - Dynamic trait object dispatch (`dyn Trait`) and user-defined `impl Trait for Struct` method blocks (currently `trait` declarations are explicitly rejected at type checking with `E_UNSUPPORTED_FEATURE`).
   - First-class lexical closures capturing mutable outer locals on the `.mbc` heap.
 
 ---
@@ -25,9 +24,9 @@ This roadmap records verified deliverables implemented in the repository alongsi
 ## 2. Typed Manifest IR, Binary `.mbc` v1.0 & Rust Virtual Machine (`mvm`)
 - **Status**: **[VERIFIED]**
 - **Delivered**:
-  - Target-independent `MIRModule` (`typed-ir.ts`, `typed-ir-builder.ts`) with overflow-safe constant folding, algebraic simplification, dead-branch elimination, and unreachable-code diagnostics (`ir-optimizer.ts`).
-  - Binary `.mbc` v1.0 compiler, reader, disassembler, and static abstract-stack/jump verifier (`manifest-core/src/bytecode/`).
-  - Memory-safe Rust Virtual Machine (`mvm/crates/mvm-core`, `#![forbid(unsafe_code)]`) compiled to both native CLI (`mvm/target/release/mvm`) and WebAssembly (`public/wasm/mvm_wasm.wasm`) with step, call-depth, and heap bounds plus runtime capability enforcement.
+  - Target-independent `MIRModule` (`typed-ir.ts`, `manifest-compiler`) with overflow-safe constant folding, algebraic simplification, dead-branch elimination, and unreachable-code diagnostics.
+  - Binary `.mbc` v1.0 compiler, reader, disassembler, and static abstract-stack/jump verifier (`manifest-core/src/bytecode/` and `mvm-core`).
+  - Memory-safe Rust Virtual Machine (`mvm/crates/mvm-core`, `#![forbid(unsafe_code)]`) compiled to both native CLI (`mvm-cli`) and WebAssembly (`public/wasm/mvm_wasm.wasm`) with step, call-depth, and heap bounds plus runtime capability enforcement.
 
 ---
 
@@ -35,10 +34,10 @@ This roadmap records verified deliverables implemented in the repository alongsi
 - **Status**: **[VERIFIED]** (`mvm`, `web-js`) / **[PARTIAL]** (`wasm`, `native`, `solana-sbf`) / **[PLANNED]** (`evm-solidity`, `move`, `ton-tact`)
 - **Delivered**:
   - **`mvm`**: Full v1.0 language support -> verified `.mbc` bytecode.
-  - **`web-js`**: Both reactive UI (`APP`/`PAGE`) and capability-sandboxed v1.0 ES modules (blocking `fetch`/`WebSocket`/`XHR` when `net` is not granted).
+  - **`web-js`**: Capability-sandboxed v1.0 ES modules (`__runManifestModule()`, blocking `fetch`/`WebSocket`/`XHR` when `net` is not granted).
   - **`wasm` ([PARTIAL])**: Direct W3C `.wasm` + `.wat` emission for numeric/boolean functions, globals, recursion, loops, and numeric console output. Heap-allocated strings/structs/enums require `mvm` or future linear-memory GC/WasmGC lowering.
   - **`native` ([PARTIAL])**: Emits standalone `#![forbid(unsafe_code)]` Rust source (`build/<mod>.rs`) in Studio and invokes host `rustc` in CLI builds to emit real native executables; browser sandboxes cannot link or execute native OS binaries directly.
-  - **`solana-sbf` ([PARTIAL])**: Anchor Rust (`lib.rs`) + IDL (`idl.json`) codegen and local LiteSVM / `SolanaSimulator` verification; compiling deployable `.so` SBF binaries requires external `cargo-build-sbf`.
+  - **`solana-sbf` ([PARTIAL])**: Standalone `PROGRAM ... END` parser -> Anchor Rust (`lib.rs`) + IDL (`idl.json`) codegen and local LiteSVM / `SolanaSimulator` verification; compiling deployable `.so` SBF binaries requires external `cargo-build-sbf`.
   - **`evm-solidity`, `move`, `ton-tact` ([PLANNED])**: Explicitly marked `Planned` in CLI and disabled in Studio UI.
 
 ---

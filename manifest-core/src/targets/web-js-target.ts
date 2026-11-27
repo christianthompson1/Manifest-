@@ -70,30 +70,109 @@ export function compileMIRToWebJS(mir: MIRModule): WebJsBuildResult {
   lines.push(`  if (b === 0) throw new Error("DivisionByZero: float division by zero");`);
   lines.push(`  return a / b;`);
   lines.push(`}`);
-  lines.push(`function __m_fmt(v) {`);
+  lines.push(`function __m_f64_to_i64(n) {`);
+  lines.push(`  if (!Number.isFinite(n)) throw new Error("NumericConversionTrap: non-finite f64 (" + n + ") to i64");`);
+  lines.push(`  const t = Math.trunc(n);`);
+  lines.push(`  if (t < -9223372036854775808.0 || t >= 9223372036854775808.0) throw new Error("NumericConversionTrap: f64 (" + n + ") out of i64 range");`);
+  lines.push(`  return t === 0 ? 0n : BigInt(t);`);
+  lines.push(`}`);
+  lines.push(`function __m_eq(a, b) {`);
+  lines.push(`  const stack = [[a, b]];`);
+  lines.push(`  const ids = new WeakMap();`);
+  lines.push(`  let nextId = 1;`);
+  lines.push(`  const idOf = (o) => { let id = ids.get(o); if (!id) { id = nextId++; ids.set(o, id); } return id; };`);
+  lines.push(`  const visited = new Set();`);
+  lines.push(`  while (stack.length > 0) {`);
+  lines.push(`    const pair = stack.pop();`);
+  lines.push(`    const x = pair[0], y = pair[1];`);
+  lines.push(`    if (x === y) continue;`);
+  lines.push(`    if (typeof x !== typeof y || x === null || y === null || typeof x !== 'object') return false;`);
+  lines.push(`    const pk = idOf(x) + ':' + idOf(y);`);
+  lines.push(`    if (visited.has(pk)) continue;`);
+  lines.push(`    visited.add(pk);`);
+  lines.push(`    if (Array.isArray(x)) {`);
+  lines.push(`      if (!Array.isArray(y) || x.length !== y.length) return false;`);
+  lines.push(`      for (let i = 0; i < x.length; i++) stack.push([x[i], y[i]]);`);
+  lines.push(`    } else if (x instanceof Map) {`);
+  lines.push(`      if (!(y instanceof Map) || x.size !== y.size) return false;`);
+  lines.push(`      for (const [k, v] of x.entries()) {`);
+  lines.push(`        if (!y.has(k)) return false;`);
+  lines.push(`        stack.push([v, y.get(k)]);`);
+  lines.push(`      }`);
+  lines.push(`    } else if (x.__struct) {`);
+  lines.push(`      if (!y.__struct || x.__struct !== y.__struct || x.fields.length !== y.fields.length) return false;`);
+  lines.push(`      for (let i = 0; i < x.fields.length; i++) stack.push([x.fields[i], y.fields[i]]);`);
+  lines.push(`    } else if (x.__enum) {`);
+  lines.push(`      if (!y.__enum || x.__enum !== y.__enum || x.tag !== y.tag || x.payload.length !== y.payload.length) return false;`);
+  lines.push(`      for (let i = 0; i < x.payload.length; i++) stack.push([x.payload[i], y.payload[i]]);`);
+  lines.push(`    } else { return false; }`);
+  lines.push(`  }`);
+  lines.push(`  return true;`);
+  lines.push(`}`);
+  lines.push(`const __M_SHA256_K = new Uint32Array([`);
+  lines.push(`  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,`);
+  lines.push(`  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,`);
+  lines.push(`  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,`);
+  lines.push(`  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,`);
+  lines.push(`  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,`);
+  lines.push(`  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,`);
+  lines.push(`  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,`);
+  lines.push(`  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2`);
+  lines.push(`]);`);
+  lines.push(`function __m_sha256(str) {`);
+  lines.push(`  if (typeof str !== 'string') throw new TypeError('SHA-256 expects a str argument');`);
+  lines.push(`  const bytes = new TextEncoder().encode(str);`);
+  lines.push(`  const H = new Uint32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);`);
+  lines.push(`  const bitLen = bytes.length * 8;`);
+  lines.push(`  const padLen = (bytes.length + 9 + 63) & ~63;`);
+  lines.push(`  const msg = new Uint8Array(padLen); msg.set(bytes); msg[bytes.length] = 0x80;`);
+  lines.push(`  const dv = new DataView(msg.buffer);`);
+  lines.push(`  dv.setUint32(padLen - 8, Math.floor(bitLen / 0x100000000), false);`);
+  lines.push(`  dv.setUint32(padLen - 4, bitLen >>> 0, false);`);
+  lines.push(`  const W = new Uint32Array(64);`);
+  lines.push(`  const rotr = (x, n) => (x >>> n) | (x << (32 - n));`);
+  lines.push(`  for (let off = 0; off < padLen; off += 64) {`);
+  lines.push(`    for (let i = 0; i < 16; i++) W[i] = dv.getUint32(off + i * 4, false);`);
+  lines.push(`    for (let i = 16; i < 64; i++) W[i] = (W[i-16] + (rotr(W[i-15],7)^rotr(W[i-15],18)^(W[i-15]>>>3)) + W[i-7] + (rotr(W[i-2],17)^rotr(W[i-2],19)^(W[i-2]>>>10))) >>> 0;`);
+  lines.push(`    let [a, b, c, d, e, f, g, h] = H;`);
+  lines.push(`    for (let i = 0; i < 64; i++) {`);
+  lines.push(`      const t1 = (h + (rotr(e,6)^rotr(e,11)^rotr(e,25)) + ((e&f)^(~e&g)) + __M_SHA256_K[i] + W[i]) >>> 0;`);
+  lines.push(`      const t2 = ((rotr(a,2)^rotr(a,13)^rotr(a,22)) + ((a&b)^(a&c)^(b&c))) >>> 0;`);
+  lines.push(`      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;`);
+  lines.push(`    }`);
+  lines.push(`    H[0]=(H[0]+a)>>>0; H[1]=(H[1]+b)>>>0; H[2]=(H[2]+c)>>>0; H[3]=(H[3]+d)>>>0;`);
+  lines.push(`    H[4]=(H[4]+e)>>>0; H[5]=(H[5]+f)>>>0; H[6]=(H[6]+g)>>>0; H[7]=(H[7]+h)>>>0;`);
+  lines.push(`  }`);
+  lines.push(`  return Array.from(H).map((x) => x.toString(16).padStart(8, '0')).join('');`);
+  lines.push(`}`);
+  lines.push(`function __m_fmt(v, active) {`);
   lines.push(`  if (v === undefined || v === null) return 'void';`);
   lines.push(`  if (typeof v === 'bigint') return v.toString();`);
   lines.push(`  if (typeof v === 'number') return Number.isInteger(v) ? v + '.0' : String(v);`);
   lines.push(`  if (typeof v === 'boolean') return v ? 'true' : 'false';`);
   lines.push(`  if (typeof v === 'string') return v;`);
-  lines.push(`  if (Array.isArray(v)) return '[' + v.map(__m_fmt).join(', ') + ']';`);
-  lines.push(`  if (v instanceof Map) {`);
-  lines.push(`    const entries = Array.from(v.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));`);
-  lines.push(`    return '{' + entries.map(([k, val]) => k + ': ' + __m_fmt(val)).join(', ') + '}';`);
-  lines.push(`  }`);
-  lines.push(`  if (v && v.__enum) {`);
-  lines.push(`    return v.payload.length === 0 ? v.__enum + '::' + v.variant : v.__enum + '::' + v.variant + '(' + v.payload.map(__m_fmt).join(', ') + ')';`);
-  lines.push(`  }`);
-  lines.push(`  if (v && v.__struct) {`);
-  lines.push(`    return v.__struct + ' { ' + v.fields.map(__m_fmt).join(', ') + ' }';`);
-  lines.push(`  }`);
-  lines.push(`  return String(v);`);
+  lines.push(`  const seen = active || new Set();`);
+  lines.push(`  if (typeof v === 'object') { if (seen.has(v)) return '<Cycle>'; seen.add(v); }`);
+  lines.push(`  try {`);
+  lines.push(`    if (Array.isArray(v)) return '[' + v.map((x) => __m_fmt(x, seen)).join(', ') + ']';`);
+  lines.push(`    if (v instanceof Map) {`);
+  lines.push(`      const entries = Array.from(v.entries()).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));`);
+  lines.push(`      return '{' + entries.map(([k, val]) => k + ': ' + __m_fmt(val, seen)).join(', ') + '}';`);
+  lines.push(`    }`);
+  lines.push(`    if (v && v.__enum) {`);
+  lines.push(`      return v.payload.length === 0 ? v.__enum + '::' + v.variant : v.__enum + '::' + v.variant + '(' + v.payload.map((x) => __m_fmt(x, seen)).join(', ') + ')';`);
+  lines.push(`    }`);
+  lines.push(`    if (v && v.__struct) {`);
+  lines.push(`      return v.__struct + ' { ' + v.fields.map((x) => __m_fmt(x, seen)).join(', ') + ' }';`);
+  lines.push(`    }`);
+  lines.push(`    return String(v);`);
+  lines.push(`  } finally { if (typeof v === 'object') seen.delete(v); }`);
   lines.push(`}`);
   lines.push(`function __m_intrinsic(sym, cap, args) {`);
   lines.push(`  __m_require_cap(cap, sym);`);
   lines.push(`  switch (sym) {`);
   lines.push(`    case 'console.print': {`);
-  lines.push(`      const line = args.map(__m_fmt).join(' ');`);
+  lines.push(`      const line = args.map((x) => __m_fmt(x)).join(' ');`);
   lines.push(`      __m_stdout.push(line);`);
   lines.push(`      console.log(line);`);
   lines.push(`      return undefined;`);
@@ -115,13 +194,23 @@ export function compileMIRToWebJS(mir: MIRModule): WebJsBuildResult {
   lines.push(`    case 'fs.write_text': { __m_vfs.set(args[0], __m_fmt(args[1])); return true; }`);
   lines.push(`    case 'net.get': return JSON.stringify({ url: args[0], status: 200, data: 'ok' });`);
   lines.push(`    case 'web.create_element': return '<' + args[0] + '>' + args[1] + '</' + args[0] + '>';`);
+  lines.push(`    case 'crypto.hash':`);
+  lines.push(`    case 'std::crypto::sha256':`);
+  lines.push(`    case 'std::crypto::hash': return __m_sha256(args[0]);`);
   lines.push(`    default: return '';`);
   lines.push(`  }`);
   lines.push(`}`);
   lines.push(``);
 
+  lines.push(`const __M_UNINIT = Symbol('uninitialized_global');`);
+  lines.push(`function __m_load_global(val, name) {`);
+  lines.push(`  if (val === __M_UNINIT) throw new Error("UninitializedGlobalError: Read of uninitialized module variable '" + name + "'");`);
+  lines.push(`  return val;`);
+  lines.push(`}`);
+  lines.push(``);
+
   for (const g of mir.globals) {
-    lines.push(`let __g_${g.slot} = undefined; // ${g.name}`);
+    lines.push(`let __g_${g.slot} = __M_UNINIT; // ${g.name}`);
   }
 
   for (const fn of mir.functions) {
@@ -135,6 +224,9 @@ export function compileMIRToWebJS(mir: MIRModule): WebJsBuildResult {
 
   lines.push(`export function __runManifestModule() {`);
   lines.push(`  __m_stdout.length = 0;`);
+  for (const g of mir.globals) {
+    lines.push(`  __g_${g.slot} = __M_UNINIT;`);
+  }
   lines.push(`  ${initCall}const result = ${entryCall};`);
   lines.push(`  return { returnValue: __m_fmt(result), stdout: [...__m_stdout] };`);
   lines.push(`}`);
@@ -305,7 +397,7 @@ function emitJsExpr(expr: MIRExpr): string {
     case 'LoadLocal':
       return `__l_${expr.slot}`;
     case 'LoadGlobal':
-      return `__g_${expr.slot}`;
+      return `__m_load_global(__g_${expr.slot}, ${JSON.stringify(expr.name)})`;
     case 'Unary':
       if (expr.op === '-' && expr.operand.type.kind === 'i64') {
         return `__m_i64(-(${emitJsExpr(expr.operand)}), 'neg')`;
@@ -313,7 +405,7 @@ function emitJsExpr(expr: MIRExpr): string {
       return `(${expr.op}(${emitJsExpr(expr.operand)}))`;
     case 'Cast':
       if (expr.castKind === 'i64_to_f64') return `Number(${emitJsExpr(expr.operand)})`;
-      if (expr.castKind === 'f64_to_i64') return `BigInt(Math.trunc(${emitJsExpr(expr.operand)}))`;
+      if (expr.castKind === 'f64_to_i64') return `__m_f64_to_i64(${emitJsExpr(expr.operand)})`;
       return `__m_fmt(${emitJsExpr(expr.operand)})`;
     case 'Binary': {
       const l = emitJsExpr(expr.left);
@@ -332,8 +424,8 @@ function emitJsExpr(expr: MIRExpr): string {
       if (expr.left.type.kind === 'f64' && expr.op === '/') {
         return `__m_div_f64(${l}, ${r})`;
       }
-      if (expr.op === '==') return `(${l} === ${r})`;
-      if (expr.op === '!=') return `(${l} !== ${r})`;
+      if (expr.op === '==') return `__m_eq(${l}, ${r})`;
+      if (expr.op === '!=') return `(!__m_eq(${l}, ${r}))`;
       return `(${l} ${expr.op} ${r})`;
     }
     case 'CallFunction':

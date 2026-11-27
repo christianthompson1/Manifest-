@@ -33,7 +33,11 @@ impl MemoryHostEnvironment {
         }
     }
 
-    pub fn with_virtual_file(mut self, path: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn with_virtual_file(
+        mut self,
+        path: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         self.virtual_files.insert(path.into(), content.into());
         self
     }
@@ -67,7 +71,7 @@ impl HostEnvironment for MemoryHostEnvironment {
         }
 
         match symbol {
-            "console.print" | "print" | "std::io::print" | "std::io::println" => {
+            "console.print" | "print" | "println" | "std::io::print" | "std::io::println" => {
                 let text: Vec<String> = args.iter().map(|v| heap.format_value(v, 0)).collect();
                 self.logs.push(text.join(" "));
                 Ok(Value::Void)
@@ -109,14 +113,19 @@ impl HostEnvironment for MemoryHostEnvironment {
                 self.virtual_files.insert(path, content);
                 Ok(Value::Bool(true))
             }
-            "crypto.hash" | "std::crypto::sha256" | "std::crypto::hash" => {
-                let input = match args.first() {
-                    Some(Value::Str(s)) => s.as_bytes().to_vec(),
-                    Some(other) => heap.format_value(other, 0).into_bytes(),
-                    None => Vec::new(),
-                };
-                Ok(Value::Str(stdlib::deterministic_hash_hex(&input)))
-            }
+            "crypto.hash" | "std::crypto::sha256" | "std::crypto::hash" => match args.first() {
+                Some(Value::Str(s)) => Ok(Value::Str(stdlib::deterministic_hash_hex(s.as_bytes()))),
+                Some(other) => Err(MvmError::TypeMismatch {
+                    expected: "str",
+                    actual: other.type_name(),
+                    line: None,
+                }),
+                None => Err(MvmError::TypeMismatch {
+                    expected: "str",
+                    actual: "none",
+                    line: None,
+                }),
+            },
             _ => Err(MvmError::HostError {
                 operation: symbol.to_string(),
                 message: format!(

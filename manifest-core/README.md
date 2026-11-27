@@ -40,19 +40,22 @@ Beginner Profile (.manifest)        Professional Profile (.manifest)
  (WASM & Native)   Module / DOM                   -> host `rustc`
 ```
 
-Backward compatibility is preserved for declarative Web UI (`APP` / `PAGE`) and Solana smart-contract (`PROGRAM`) files via `manifest-core/src/parser/`, `validator/`, `runtime/`, and `compiler/`.
+In production (`pipeline.ts`, `cli.ts`, and Manifest Studio), frontend checking, MIR generation, and `.mbc` compilation route directly through the authoritative Rust `manifest-compiler` inside `mvm-wasm`. Legacy v0.x syntax (`APP`, `PAGE`, `STATE`, `ACTION`, `WHEN app.starts`, `USE WEB`, `USE SOLANA`) is explicitly rejected with `E_LEGACY_V0_REMOVED` and can be converted explicitly via `manifest migrate <file>`. Standalone Solana smart contracts (`PROGRAM ... END`) compile through `solana/`.
 
 ---
 
 ## 2. Package Layout (`manifest-core/src/`)
 
-- `core/` — `profile.ts`, `ast-v2.ts`, `beginner-parser.ts`, `professional-parser.ts`, `parse-unified.ts`, `formatter.ts` (cross-profile source formatting between Beginner and Professional profiles).
-- `semantics/` — `types.ts` (canonical types & `std::*` intrinsics), `module-resolver.ts` (multi-file `import`/`export` graph + cycle detection), `type-checker.ts` (generics, structs, enums, `Result<T, E>`, `?`, exhaustiveness), `capability-analyzer.ts` (`requires`, `provides`, `denies`, fixed-point transitive call-graph effect inference).
-- `ir/` — `typed-ir.ts`, `typed-ir-builder.ts`, `ir-optimizer.ts` (overflow-checked constant folding, algebraic simplification, dead branch & unreachable statement diagnostics).
-- `bytecode/` — `mbc-format.ts`, `mbc-compiler.ts`, `mbc-reader.ts` (binary `.mbc` v1.0 encoder, decoder, static abstract-stack/jump verifier, and disassembler).
-- `vm/` — `mvm-runner.ts` & `mvm-wasm-bytes.ts` (TypeScript/WebAssembly bridge to the compiled Rust `mvm-wasm` engine with capability-gated host handlers).
-- `targets/` — `target-registry.ts`, `wasm-target.ts` (direct W3C `.wasm` + `.wat` emitter), `web-js-target.ts` (capability-sandboxed JS codegen), `native-target.ts` (standalone Rust emitter + host `rustc` driver).
-- `runtime/` — `semantic-evaluator.ts` (deterministic MIR reference evaluator) and `runtime.ts` (legacy v0.1–v0.4 AST interpreter).
+- `engine/` — `rust-engine.ts` bridge to the authoritative Rust `manifest-compiler` WASM exports (`mvm_check_source`, `mvm_compile_source`, `mvm_inspect_ir`).
+- `core/` — `profile.ts`, `ast-v2.ts`, `beginner-parser.ts`, `professional-parser.ts`, `parse-unified.ts`, `formatter.ts` (cross-profile formatting + TS reference frontend).
+- `semantics/` — `types.ts`, `module-resolver.ts`, `type-checker.ts`, `capability-analyzer.ts` (TS reference oracle & type definitions).
+- `ir/` — `typed-ir.ts`, `typed-ir-builder.ts`, `ir-optimizer.ts` (Typed Manifest IR schema + TS reference lowering).
+- `bytecode/` — `mbc-format.ts`, `mbc-compiler.ts`, `mbc-reader.ts` (`.mbc` v1.0 schema, verifier, disassembler, and TS reference emitter).
+- `vm/` — `mvm-runner.ts` & `mvm-wasm-bytes.ts` (bridge to compiled Rust `mvm-wasm` engine with capability-gated host handlers).
+- `targets/` — `target-registry.ts`, `wasm-target.ts`, `web-js-target.ts`, `native-target.ts`.
+- `solana/` — Standalone `PROGRAM ... END` parser (`solana-program-parser.ts`), Anchor Rust/IDL generator (`anchor-generator.ts`), `SolanaSimulator`, and `LiteSVMRunner`.
+- `migration/` — `v0-to-v1-migrator.ts` (explicit opt-in `manifest migrate` helper).
+- `runtime/` — `semantic-evaluator.ts` (deterministic MIR reference evaluator).
 - `pipeline.ts` & `cli.ts` — High-level `checkManifestSource`, `compileManifestV1`, `runManifestOnRustMvm`, `formatManifestSource`, and CLI entrypoint.
 
 ---
